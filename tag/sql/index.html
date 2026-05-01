@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en-US" prefix="og: https://ogp.me/ns#">
 <head><meta charset="UTF-8">
 	
@@ -157,10 +157,10 @@ gtag("config", "GT-MQRT4NL5");
 <meta name="google-adsense-platform-account" content="ca-host-pub-2644536267352236">
 <meta name="google-adsense-platform-domain" content="sitekit.withgoogle.com">
 <!-- End Google AdSense meta tags added by Site Kit -->
-<style id="uagb-style-conditional-extension">@media (min-width: 1025px){body .uag-hide-desktop.uagb-google-map__wrap,body .uag-hide-desktop{display:none !important}}@media (min-width: 768px) and (max-width: 1024px){body .uag-hide-tab.uagb-google-map__wrap,body .uag-hide-tab{display:none !important}}@media (max-width: 767px){body .uag-hide-mob.uagb-google-map__wrap,body .uag-hide-mob{display:none !important}}</style><link rel="icon" href="/wp-content/uploads/2024/09/cropped-new-fev-32x32.png" sizes="32x32">
-<link rel="icon" href="/wp-content/uploads/2024/09/cropped-new-fev-192x192.png" sizes="192x192">
-<link rel="apple-touch-icon" href="/wp-content/uploads/2024/09/cropped-new-fev-180x180.png">
-<meta name="msapplication-TileImage" content="/wp-content/uploads/2024/09/cropped-new-fev-270x270.png">
+<style id="uagb-style-conditional-extension">@media (min-width: 1025px){body .uag-hide-desktop.uagb-google-map__wrap,body .uag-hide-desktop{display:none !important}}@media (min-width: 768px) and (max-width: 1024px){body .uag-hide-tab.uagb-google-map__wrap,body .uag-hide-tab{display:none !important}}@media (max-width: 767px){body .uag-hide-mob.uagb-google-map__wrap,body .uag-hide-mob{display:none !important}}</style><link rel="icon" type="image/svg+xml" href="/favicon.svg">
+
+<link rel="apple-touch-icon" href="/favicon.svg">
+
 		<style id="wp-custom-css">
 			.main-navigation .main-nav ul li a {
   line-height: 45px;
@@ -189,7 +189,7 @@ gtag("config", "GT-MQRT4NL5");
 }
 
 .widget-area .widget{margin-bottom:10px;
-margin-bottom:-3.5rem;}
+margin-bottom:1.25rem;}
 
 .site-header{position:sticky;
 top:0px;
@@ -200,24 +200,10 @@ z-index:999;}
 
 
 
-    /* Adjust image size to fit mobile screens */
-    img {
-        max-width: 100%;
-        height: auto;
-    }
-
-    
-
-    /* Ensure navigation is mobile-friendly */
-    .navigation-menu {
-        display: flex;
-        flex-direction: column;
-    }
-
-    /* Remove horizontal scroll on mobile */
-    body {
-        overflow-x: hidden;
-    }
+    @media only screen and (max-width: 768px) {
+    img { max-width: 100%; height: auto; }
+    .navigation-menu { display: flex; flex-direction: column; }
+    body { overflow-x: hidden; }
 }
 
 
@@ -368,15 +354,14 @@ h5.author-title {
 /*# sourceURL=core-block-supports-inline-css */
 </style>
 
+<link rel="stylesheet" id="sqltips-redesign-css" href="/sqltips-redesign.css" media="all">
 </head>
 
 <body class="archive tag tag-sql tag-5 wp-custom-logo wp-embed-responsive wp-theme-generatepress sticky-menu-fade right-sidebar nav-float-right one-container header-aligned-left dropdown-hover" itemtype="https://schema.org/Blog" itemscope>
 	<a class="screen-reader-text skip-link" href="#content" title="Skip to content">Skip to content</a>		<header class="site-header grid-container has-inline-mobile-toggle" id="masthead" aria-label="Site" itemtype="https://schema.org/WPHeader" itemscope>
 			<div class="inside-header grid-container">
 				<div class="site-logo">
-					<a href="/" rel="home">
-						<img class="header-image is-logo-image" alt="SQL Tips" src="/wp-content/uploads/2026/02/cropped-Logo.png" srcset="/wp-content/uploads/2026/02/cropped-Logo.png 1x, /wp-content/uploads/2026/02/cropped-Logo.png 2x" width="163" height="100">
-					</a>
+					<a href="/" rel="home"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 60" width="200" height="44" class="sqltips-svg-logo"><defs><linearGradient id="tealGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" style="stop-color:#00e5bf"/><stop offset="100%" style="stop-color:#00a88a"/></linearGradient></defs><ellipse cx="30" cy="12" rx="18" ry="7" fill="url(#tealGrad)" opacity="0.9"/><path d="M12 12v8c0 3.9 8 7 18 7s18-3.1 18-7v-8" fill="none" stroke="url(#tealGrad)" stroke-width="2.5"/><ellipse cx="30" cy="20" rx="18" ry="7" fill="none" stroke="url(#tealGrad)" stroke-width="0.5" opacity="0.4"/><path d="M12 20v8c0 3.9 8 7 18 7s18-3.1 18-7v-8" fill="none" stroke="url(#tealGrad)" stroke-width="2.5"/><ellipse cx="30" cy="28" rx="18" ry="7" fill="none" stroke="url(#tealGrad)" stroke-width="0.5" opacity="0.4"/><path d="M12 28v8c0 3.9 8 7 18 7s18-3.1 18-7v-8" fill="none" stroke="url(#tealGrad)" stroke-width="2.5"/><ellipse cx="30" cy="36" rx="18" ry="7" fill="none" stroke="url(#tealGrad)" stroke-width="0.5" opacity="0.3"/><text x="68" y="25" font-family="Inter,Poppins,Arial,sans-serif" font-size="22" font-weight="800" fill="#ffffff" letter-spacing="-0.5">SQL</text><text x="68" y="46" font-family="Inter,Poppins,Arial,sans-serif" font-size="18" font-weight="500" fill="#00c9a7" letter-spacing="3">TIPS</text></svg></a>
 				</div>	<nav class="main-navigation mobile-menu-control-wrapper" id="mobile-menu-control-wrapper" aria-label="Mobile Toggle">
 				<button data-nav="site-navigation" class="menu-toggle" aria-controls="primary-menu" aria-expanded="false">
 			<span class="gp-icon icon-menu-bars"><svg viewbox="0 0 512 512" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M0 96c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24zm0 160c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24zm0 160c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24z"></path></svg><svg viewbox="0 0 512 512" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M71.029 71.029c9.373-9.372 24.569-9.372 33.942 0L256 222.059l151.029-151.03c9.373-9.372 24.569-9.372 33.942 0 9.372 9.373 9.372 24.569 0 33.942L289.941 256l151.03 151.029c9.372 9.373 9.372 24.569 0 33.942-9.373 9.372-24.569 9.372-33.942 0L256 289.941l-151.029 151.03c-9.373 9.372-24.569 9.372-33.942 0-9.372-9.373-9.372-24.569 0-33.942L222.059 256 71.029 104.971c-9.372-9.373-9.372-24.569 0-33.942z"></path></svg></span><span class="screen-reader-text">Menu</span>		</button>
@@ -411,18 +396,18 @@ h5.author-title {
 		<article id="post-875" class="post-875 post type-post status-publish format-standard has-post-thumbnail hentry category-plsql category-sql tag-plsql tag-sql" itemtype="https://schema.org/CreativeWork" itemscope>
 	<div class="inside-article">
 					<header class="entry-header">
-				<div class="gp-custom-category-section"><a href="/category/plsql/">PLSQL</a> / <a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/" rel="bookmark">Mastering Oracle Database Architecture: A Comprehensive Overview</a></h2>		<div class="entry-meta">
+				<div class="gp-custom-category-section"><a href="/category/plsql/">PLSQL</a> / <a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/" rel="bookmark">Mastering Oracle Database Architecture: A Comprehensive Overview</a></h2>		<div class="entry-meta">
 			<div class="gp-post-date-author"><span class="posted-on"><time class="entry-date published" datetime="2026-02-19T16:49:28+05:30" itemprop="datePublished">19/02/2026</time></span> <span class="byline">by <span class="author vcard" itemprop="author" itemtype="https://schema.org/Person" itemscope><a class="url fn n" href="/author/ganesh379/" title="View all posts by PT Ganesh" rel="author" itemprop="url"><span class="author-name" itemprop="name">PT Ganesh</span></a></span></span> </div>		</div>
 					</header>
 			<div class="post-image">
 						
-						<a href="/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/">
+						<a href="/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/">
 							<img width="2560" height="1429" src="/wp-content/uploads/2026/02/unnamed-scaled.png" class="attachment-full size-full wp-post-image" alt="ORACLE" itemprop="image" decoding="async" fetchpriority="high" srcset="/wp-content/uploads/2026/02/unnamed-scaled.png 2560w, /wp-content/uploads/2026/02/unnamed-300x167.png 300w, /wp-content/uploads/2026/02/unnamed-1024x572.png 1024w, /wp-content/uploads/2026/02/unnamed-768x429.png 768w, /wp-content/uploads/2026/02/unnamed-1536x857.png 1536w, /wp-content/uploads/2026/02/unnamed-2048x1143.png 2048w" sizes="(max-width: 2560px) 100vw, 2560px">
 						</a>
 					</div>
 			<div class="entry-summary" itemprop="text">
 				<p>Ever wondered what happens behind the scenes when you hit “Execute” on a SQL query? It’s not just magic; it’s a sophisticated symphony of memory structures, specialized background processes, and a meticulously organized physical storage hierarchy. This intricate system is what allows Oracle to handle petabytes of data, ensure high concurrency, and guarantee rock-solid data</p>
-<div class="read-more-section"><a class="custom-readmore-button" href="/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/">Continue Reading →</a></div>
+<div class="read-more-section"><a class="custom-readmore-button" href="/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/">Continue Reading →</a></div>
 			</div>
 
 				<footer class="entry-meta" aria-label="Entry meta">
@@ -432,12 +417,12 @@ h5.author-title {
 <article id="post-769" class="post-769 post type-post status-publish format-standard has-post-thumbnail hentry category-sql tag-sql" itemtype="https://schema.org/CreativeWork" itemscope>
 	<div class="inside-article">
 					<header class="entry-header">
-				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/sql-query-design-patterns-writing-efficient-queries/" rel="bookmark">SQL Query Design Patterns: Writing Efficient Queries</a></h2>		<div class="entry-meta">
+				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/posts/sql/sql-query-design-patterns-writing-efficient-queries/" rel="bookmark">SQL Query Design Patterns: Writing Efficient Queries</a></h2>		<div class="entry-meta">
 			<div class="gp-post-date-author"><span class="posted-on"><time class="entry-date published" datetime="2024-10-22T18:08:10+05:30" itemprop="datePublished">22/10/2024</time></span> <span class="byline">by <span class="author vcard" itemprop="author" itemtype="https://schema.org/Person" itemscope><a class="url fn n" href="/author/ganesh379/" title="View all posts by PT Ganesh" rel="author" itemprop="url"><span class="author-name" itemprop="name">PT Ganesh</span></a></span></span> </div>		</div>
 					</header>
 			<div class="post-image">
 						
-						<a href="/sql-query-design-patterns-writing-efficient-queries/">
+						<a href="/posts/sql/sql-query-design-patterns-writing-efficient-queries/">
 							<img width="1200" height="600" src="/wp-content/uploads/2024/10/SQL-Query-Design-Patterns-Writing-Efficient-Queries.png" class="attachment-full size-full wp-post-image" alt="SQL query design patterns" itemprop="image" decoding="async" srcset="/wp-content/uploads/2024/10/SQL-Query-Design-Patterns-Writing-Efficient-Queries.png 1200w, /wp-content/uploads/2024/10/SQL-Query-Design-Patterns-Writing-Efficient-Queries-300x150.png 300w, /wp-content/uploads/2024/10/SQL-Query-Design-Patterns-Writing-Efficient-Queries-1024x512.png 1024w, /wp-content/uploads/2024/10/SQL-Query-Design-Patterns-Writing-Efficient-Queries-768x384.png 768w" sizes="(max-width: 1200px) 100vw, 1200px">
 						</a>
 					</div>
@@ -452,12 +437,12 @@ h5.author-title {
 <article id="post-535" class="post-535 post type-post status-publish format-standard has-post-thumbnail hentry category-sql tag-sql" itemtype="https://schema.org/CreativeWork" itemscope>
 	<div class="inside-article">
 					<header class="entry-header">
-				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/top-10-common-oracle-errors-and-proven-ways-to-fix-them/" rel="bookmark">Top 10 Common Oracle Errors and Proven Ways to Fix Them</a></h2>		<div class="entry-meta">
+				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/" rel="bookmark">Top 10 Common Oracle Errors and Proven Ways to Fix Them</a></h2>		<div class="entry-meta">
 			<div class="gp-post-date-author"><span class="posted-on"><time class="entry-date published" datetime="2024-10-14T13:19:37+05:30" itemprop="datePublished">14/10/2024</time></span> <span class="byline">by <span class="author vcard" itemprop="author" itemtype="https://schema.org/Person" itemscope><a class="url fn n" href="/author/ganesh379/" title="View all posts by PT Ganesh" rel="author" itemprop="url"><span class="author-name" itemprop="name">PT Ganesh</span></a></span></span> </div>		</div>
 					</header>
 			<div class="post-image">
 						
-						<a href="/top-10-common-oracle-errors-and-proven-ways-to-fix-them/">
+						<a href="/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/">
 							<img width="1200" height="600" src="/wp-content/uploads/2024/10/ORACLE-ERRORS.png" class="attachment-full size-full wp-post-image" alt="ORACLE ERRORS" itemprop="image" decoding="async" srcset="/wp-content/uploads/2024/10/ORACLE-ERRORS.png 1200w, /wp-content/uploads/2024/10/ORACLE-ERRORS-300x150.png 300w, /wp-content/uploads/2024/10/ORACLE-ERRORS-1024x512.png 1024w, /wp-content/uploads/2024/10/ORACLE-ERRORS-768x384.png 768w" sizes="(max-width: 1200px) 100vw, 1200px">
 						</a>
 					</div>
@@ -472,12 +457,12 @@ h5.author-title {
 <article id="post-503" class="post-503 post type-post status-publish format-standard has-post-thumbnail hentry category-sql tag-sql" itemtype="https://schema.org/CreativeWork" itemscope>
 	<div class="inside-article">
 					<header class="entry-header">
-				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips/" rel="bookmark">How to Use PIVOT in SQL – Easy to Follow Examples and Tips</a></h2>		<div class="entry-meta">
+				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/posts/sql/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips/" rel="bookmark">How to Use PIVOT in SQL – Easy to Follow Examples and Tips</a></h2>		<div class="entry-meta">
 			<div class="gp-post-date-author"><span class="posted-on"><time class="entry-date published" datetime="2024-10-08T10:12:51+05:30" itemprop="datePublished">08/10/2024</time></span> <span class="byline">by <span class="author vcard" itemprop="author" itemtype="https://schema.org/Person" itemscope><a class="url fn n" href="/author/ganesh379/" title="View all posts by PT Ganesh" rel="author" itemprop="url"><span class="author-name" itemprop="name">PT Ganesh</span></a></span></span> </div>		</div>
 					</header>
 			<div class="post-image">
 						
-						<a href="/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips/">
+						<a href="/posts/sql/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips/">
 							<img width="1200" height="600" src="/wp-content/uploads/2024/10/pivot-in-sql.png" class="attachment-full size-full wp-post-image" alt="pivot in sql" itemprop="image" decoding="async" loading="lazy" srcset="/wp-content/uploads/2024/10/pivot-in-sql.png 1200w, /wp-content/uploads/2024/10/pivot-in-sql-300x150.png 300w, /wp-content/uploads/2024/10/pivot-in-sql-1024x512.png 1024w, /wp-content/uploads/2024/10/pivot-in-sql-768x384.png 768w, /wp-content/uploads/2024/10/pivot-in-sql-150x75.png 150w" sizes="auto, (max-width: 1200px) 100vw, 1200px">
 						</a>
 					</div>
@@ -492,18 +477,18 @@ h5.author-title {
 <article id="post-495" class="post-495 post type-post status-publish format-standard has-post-thumbnail hentry category-sql tag-sql" itemtype="https://schema.org/CreativeWork" itemscope>
 	<div class="inside-article">
 					<header class="entry-header">
-				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/mastering-normalization-in-sql-explained-with-powerful-examples/" rel="bookmark">Mastering Normalization in SQL – Explained with Powerful Examples</a></h2>		<div class="entry-meta">
+				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/posts/sql/mastering-normalization-in-sql-explained-with-powerful-examples/" rel="bookmark">Mastering Normalization in SQL – Explained with Powerful Examples</a></h2>		<div class="entry-meta">
 			<div class="gp-post-date-author"><span class="posted-on"><time class="updated" datetime="2024-10-07T21:02:08+05:30" itemprop="dateModified">07/10/2024</time><time class="entry-date published" datetime="2024-10-07T15:08:42+05:30" itemprop="datePublished">07/10/2024</time></span> <span class="byline">by <span class="author vcard" itemprop="author" itemtype="https://schema.org/Person" itemscope><a class="url fn n" href="/author/ganesh379/" title="View all posts by PT Ganesh" rel="author" itemprop="url"><span class="author-name" itemprop="name">PT Ganesh</span></a></span></span> </div>		</div>
 					</header>
 			<div class="post-image">
 						
-						<a href="/mastering-normalization-in-sql-explained-with-powerful-examples/">
+						<a href="/posts/sql/mastering-normalization-in-sql-explained-with-powerful-examples/">
 							<img width="1200" height="600" src="/wp-content/uploads/2024/10/types-of-normalization.png" class="attachment-full size-full wp-post-image" alt="Types of Normalization in SQL and DBMS: Explained with Examples" itemprop="image" decoding="async" loading="lazy" srcset="/wp-content/uploads/2024/10/types-of-normalization.png 1200w, /wp-content/uploads/2024/10/types-of-normalization-300x150.png 300w, /wp-content/uploads/2024/10/types-of-normalization-1024x512.png 1024w, /wp-content/uploads/2024/10/types-of-normalization-768x384.png 768w" sizes="auto, (max-width: 1200px) 100vw, 1200px">
 						</a>
 					</div>
 			<div class="entry-summary" itemprop="text">
 				<p>Introduction to Database Normalization in SQL : In the realm of database management, the concept of normalization plays a pivotal role in optimizing data organization and efficiency. Database normalization in SQL and DBMS is a systematic approach designed to reduce data redundancy and enhance data integrity. By structuring data into a series of related tables,</p>
-<div class="read-more-section"><a class="custom-readmore-button" href="/mastering-normalization-in-sql-explained-with-powerful-examples/">Continue Reading →</a></div>
+<div class="read-more-section"><a class="custom-readmore-button" href="/posts/sql/mastering-normalization-in-sql-explained-with-powerful-examples/">Continue Reading →</a></div>
 			</div>
 
 				<footer class="entry-meta" aria-label="Entry meta">
@@ -513,18 +498,18 @@ h5.author-title {
 <article id="post-315" class="post-315 post type-post status-publish format-standard has-post-thumbnail hentry category-sql category-interview-questions tag-interview-questions tag-sql" itemtype="https://schema.org/CreativeWork" itemscope>
 	<div class="inside-article">
 					<header class="entry-header">
-				<div class="gp-custom-category-section"><a href="/category/interview-questions/">Interview Questions</a> / <a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/top-10-sql-window-function-queries/" rel="bookmark">Top 10 SQL Window Function Queries</a></h2>		<div class="entry-meta">
+				<div class="gp-custom-category-section"><a href="/category/interview-questions/">Interview Questions</a> / <a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/posts/sql/top-10-sql-window-function-queries/" rel="bookmark">Top 10 SQL Window Function Queries</a></h2>		<div class="entry-meta">
 			<div class="gp-post-date-author"><span class="posted-on"><time class="entry-date published" datetime="2024-10-02T08:12:46+05:30" itemprop="datePublished">02/10/2024</time></span> <span class="byline">by <span class="author vcard" itemprop="author" itemtype="https://schema.org/Person" itemscope><a class="url fn n" href="/author/ganesh379/" title="View all posts by PT Ganesh" rel="author" itemprop="url"><span class="author-name" itemprop="name">PT Ganesh</span></a></span></span> </div>		</div>
 					</header>
 			<div class="post-image">
 						
-						<a href="/top-10-sql-window-function-queries/">
+						<a href="/posts/sql/top-10-sql-window-function-queries/">
 							<img width="1200" height="600" src="/wp-content/uploads/2024/10/sql-window-functions-examples.png" class="attachment-full size-full wp-post-image" alt="sql window functions examples" itemprop="image" decoding="async" loading="lazy" srcset="/wp-content/uploads/2024/10/sql-window-functions-examples.png 1200w, /wp-content/uploads/2024/10/sql-window-functions-examples-300x150.png 300w, /wp-content/uploads/2024/10/sql-window-functions-examples-1024x512.png 1024w, /wp-content/uploads/2024/10/sql-window-functions-examples-768x384.png 768w" sizes="auto, (max-width: 1200px) 100vw, 1200px">
 						</a>
 					</div>
 			<div class="entry-summary" itemprop="text">
 				<p>Definition of SQL Window Functions 1. Sales Table This table contains information about individual sales transactions. sale_id salesperson_id sale_amount sale_date region 1 101 150 2024-01-01 North 2 102 200 2024-01-02 South 3 101 250 2024-01-03 North 4 103 300 2024-01-04 East 5 102 400 2024-01-05 South 2. Salesperson Table This table contains details about salespeople.</p>
-<div class="read-more-section"><a class="custom-readmore-button" href="/top-10-sql-window-function-queries/">Continue Reading →</a></div>
+<div class="read-more-section"><a class="custom-readmore-button" href="/posts/sql/top-10-sql-window-function-queries/">Continue Reading →</a></div>
 			</div>
 
 				<footer class="entry-meta" aria-label="Entry meta">
@@ -534,12 +519,12 @@ h5.author-title {
 <article id="post-309" class="post-309 post type-post status-publish format-standard has-post-thumbnail hentry category-sql tag-sql" itemtype="https://schema.org/CreativeWork" itemscope>
 	<div class="inside-article">
 					<header class="entry-header">
-				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/mastering-sql-window-functions-types-and-uses-with-examples/" rel="bookmark">Mastering SQL Window Functions: Types and Uses with Examples</a></h2>		<div class="entry-meta">
+				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/" rel="bookmark">Mastering SQL Window Functions: Types and Uses with Examples</a></h2>		<div class="entry-meta">
 			<div class="gp-post-date-author"><span class="posted-on"><time class="entry-date published" datetime="2024-10-02T07:37:42+05:30" itemprop="datePublished">02/10/2024</time></span> <span class="byline">by <span class="author vcard" itemprop="author" itemtype="https://schema.org/Person" itemscope><a class="url fn n" href="/author/ganesh379/" title="View all posts by PT Ganesh" rel="author" itemprop="url"><span class="author-name" itemprop="name">PT Ganesh</span></a></span></span> </div>		</div>
 					</header>
 			<div class="post-image">
 						
-						<a href="/mastering-sql-window-functions-types-and-uses-with-examples/">
+						<a href="/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/">
 							<img width="1200" height="600" src="/wp-content/uploads/2024/10/sql-window-functions.png" class="attachment-full size-full wp-post-image" alt="Mastering SQL Window Functions: Types and Uses with Examples" itemprop="image" decoding="async" loading="lazy" srcset="/wp-content/uploads/2024/10/sql-window-functions.png 1200w, /wp-content/uploads/2024/10/sql-window-functions-300x150.png 300w, /wp-content/uploads/2024/10/sql-window-functions-1024x512.png 1024w, /wp-content/uploads/2024/10/sql-window-functions-768x384.png 768w" sizes="auto, (max-width: 1200px) 100vw, 1200px">
 						</a>
 					</div>
@@ -554,12 +539,12 @@ h5.author-title {
 <article id="post-301" class="post-301 post type-post status-publish format-standard has-post-thumbnail hentry category-interview-questions category-sql tag-interview-questions tag-sql" itemtype="https://schema.org/CreativeWork" itemscope>
 	<div class="inside-article">
 					<header class="entry-header">
-				<div class="gp-custom-category-section"><a href="/category/interview-questions/">Interview Questions</a> / <a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/tricky-sql-queries-for-interview-preparation/" rel="bookmark">Tricky SQL Queries for interview Preparation</a></h2>		<div class="entry-meta">
+				<div class="gp-custom-category-section"><a href="/category/interview-questions/">Interview Questions</a> / <a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/posts/interview-questions/tricky-sql-queries-for-interview-preparation/" rel="bookmark">Tricky SQL Queries for interview Preparation</a></h2>		<div class="entry-meta">
 			<div class="gp-post-date-author"><span class="posted-on"><time class="entry-date published" datetime="2024-10-01T09:33:02+05:30" itemprop="datePublished">01/10/2024</time></span> <span class="byline">by <span class="author vcard" itemprop="author" itemtype="https://schema.org/Person" itemscope><a class="url fn n" href="/author/ganesh379/" title="View all posts by PT Ganesh" rel="author" itemprop="url"><span class="author-name" itemprop="name">PT Ganesh</span></a></span></span> </div>		</div>
 					</header>
 			<div class="post-image">
 						
-						<a href="/tricky-sql-queries-for-interview-preparation/">
+						<a href="/posts/interview-questions/tricky-sql-queries-for-interview-preparation/">
 							<img width="1200" height="600" src="/wp-content/uploads/2024/10/tricky-sql-queries-for-interview.png" class="attachment-full size-full wp-post-image" alt="Tricky SQL Queries for interview Preparation" itemprop="image" decoding="async" loading="lazy" srcset="/wp-content/uploads/2024/10/tricky-sql-queries-for-interview.png 1200w, /wp-content/uploads/2024/10/tricky-sql-queries-for-interview-300x150.png 300w, /wp-content/uploads/2024/10/tricky-sql-queries-for-interview-1024x512.png 1024w, /wp-content/uploads/2024/10/tricky-sql-queries-for-interview-768x384.png 768w" sizes="auto, (max-width: 1200px) 100vw, 1200px">
 						</a>
 					</div>
@@ -574,12 +559,12 @@ h5.author-title {
 <article id="post-276" class="post-276 post type-post status-publish format-standard has-post-thumbnail hentry category-interview-questions category-sql tag-sql" itemtype="https://schema.org/CreativeWork" itemscope>
 	<div class="inside-article">
 					<header class="entry-header">
-				<div class="gp-custom-category-section"><a href="/category/interview-questions/">Interview Questions</a> / <a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/sql-queries-for-interview/" rel="bookmark">ultimate SQL Queries for Interview</a></h2>		<div class="entry-meta">
+				<div class="gp-custom-category-section"><a href="/category/interview-questions/">Interview Questions</a> / <a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/posts/interview-questions/sql-queries-for-interview/" rel="bookmark">ultimate SQL Queries for Interview</a></h2>		<div class="entry-meta">
 			<div class="gp-post-date-author"><span class="posted-on"><time class="updated" datetime="2024-10-07T15:54:58+05:30" itemprop="dateModified">07/10/2024</time><time class="entry-date published" datetime="2024-09-30T14:26:58+05:30" itemprop="datePublished">30/09/2024</time></span> <span class="byline">by <span class="author vcard" itemprop="author" itemtype="https://schema.org/Person" itemscope><a class="url fn n" href="/author/ganesh379/" title="View all posts by PT Ganesh" rel="author" itemprop="url"><span class="author-name" itemprop="name">PT Ganesh</span></a></span></span> </div>		</div>
 					</header>
 			<div class="post-image">
 						
-						<a href="/sql-queries-for-interview/">
+						<a href="/posts/interview-questions/sql-queries-for-interview/">
 							<img width="1200" height="600" src="/wp-content/uploads/2024/09/top-10-sql-queries.png" class="attachment-full size-full wp-post-image" alt="top 10 sql queries for interview" itemprop="image" decoding="async" loading="lazy" srcset="/wp-content/uploads/2024/09/top-10-sql-queries.png 1200w, /wp-content/uploads/2024/09/top-10-sql-queries-300x150.png 300w, /wp-content/uploads/2024/09/top-10-sql-queries-1024x512.png 1024w, /wp-content/uploads/2024/09/top-10-sql-queries-768x384.png 768w" sizes="auto, (max-width: 1200px) 100vw, 1200px">
 						</a>
 					</div>
@@ -594,12 +579,12 @@ h5.author-title {
 <article id="post-118" class="post-118 post type-post status-publish format-standard has-post-thumbnail hentry category-sql tag-sql" itemtype="https://schema.org/CreativeWork" itemscope>
 	<div class="inside-article">
 					<header class="entry-header">
-				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/difference-between-sql-and-plsql/" rel="bookmark">Difference between SQL and PLSQL?</a></h2>		<div class="entry-meta">
+				<div class="gp-custom-category-section"><a href="/category/sql/">SQL</a></div><h2 class="entry-title" itemprop="headline"><a href="/posts/sql/difference-between-sql-and-plsql/" rel="bookmark">Difference between SQL and PLSQL?</a></h2>		<div class="entry-meta">
 			<div class="gp-post-date-author"><span class="posted-on"><time class="updated" datetime="2024-10-07T21:22:38+05:30" itemprop="dateModified">07/10/2024</time><time class="entry-date published" datetime="2024-09-27T10:45:53+05:30" itemprop="datePublished">27/09/2024</time></span> <span class="byline">by <span class="author vcard" itemprop="author" itemtype="https://schema.org/Person" itemscope><a class="url fn n" href="/author/ganesh379/" title="View all posts by PT Ganesh" rel="author" itemprop="url"><span class="author-name" itemprop="name">PT Ganesh</span></a></span></span> </div>		</div>
 					</header>
 			<div class="post-image">
 						
-						<a href="/difference-between-sql-and-plsql/">
+						<a href="/posts/sql/difference-between-sql-and-plsql/">
 							<img width="1366" height="768" src="/wp-content/uploads/2024/09/SQL-PLSQL-BANNER.png" class="attachment-full size-full wp-post-image" alt="SQL" itemprop="image" decoding="async" loading="lazy" srcset="/wp-content/uploads/2024/09/SQL-PLSQL-BANNER.png 1366w, /wp-content/uploads/2024/09/SQL-PLSQL-BANNER-300x169.png 300w, /wp-content/uploads/2024/09/SQL-PLSQL-BANNER-1024x576.png 1024w, /wp-content/uploads/2024/09/SQL-PLSQL-BANNER-768x432.png 768w" sizes="auto, (max-width: 1366px) 100vw, 1366px">
 						</a>
 					</div>
@@ -636,11 +621,11 @@ h5.author-title {
 <h3 class="wp-block-heading has-contrast-color has-text-color has-link-color wp-elements-a5b1a42520a2383ce7ccc4808b27dfdb"><strong>Latest Posts</strong></h3>
 
 
-<ul style="font-size:15px;" class="wp-block-latest-posts__list alignleft cat_widget wp-block-latest-posts"><li><a class="wp-block-latest-posts__post-title" href="/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/">Mastering Oracle SQL Joins: The Ultimate Guide to Data Retrieval and Performance</a></li>
-<li><a class="wp-block-latest-posts__post-title" href="/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/">Mastering Oracle Database Architecture: A Comprehensive Overview</a></li>
-<li><a class="wp-block-latest-posts__post-title" href="/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/">Mastering PostgreSQL Architecture: 6 Powerful Steps to Optimize Performance &amp; Scalability</a></li>
-<li><a class="wp-block-latest-posts__post-title" href="/understanding-oracle-triggers-a-comprehensive-guide-with-examples/">Understanding Oracle Triggers – A Comprehensive Guide with Examples</a></li>
-<li><a class="wp-block-latest-posts__post-title" href="/sql-query-design-patterns-writing-efficient-queries/">SQL Query Design Patterns: Writing Efficient Queries</a></li>
+<ul style="font-size:15px;" class="wp-block-latest-posts__list alignleft cat_widget wp-block-latest-posts"><li><a class="wp-block-latest-posts__post-title" href="/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/">Mastering Oracle SQL Joins: The Ultimate Guide to Data Retrieval and Performance</a></li>
+<li><a class="wp-block-latest-posts__post-title" href="/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/">Mastering Oracle Database Architecture: A Comprehensive Overview</a></li>
+<li><a class="wp-block-latest-posts__post-title" href="/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/">Mastering PostgreSQL Architecture: 6 Powerful Steps to Optimize Performance &amp; Scalability</a></li>
+<li><a class="wp-block-latest-posts__post-title" href="/posts/plsql/understanding-oracle-triggers-a-comprehensive-guide-with-examples/">Understanding Oracle Triggers – A Comprehensive Guide with Examples</a></li>
+<li><a class="wp-block-latest-posts__post-title" href="/posts/sql/sql-query-design-patterns-writing-efficient-queries/">SQL Query Design Patterns: Writing Efficient Queries</a></li>
 </ul></div></div>
 </div></div>
 </div></div>
@@ -671,7 +656,7 @@ h5.author-title {
 </aside><aside id="block-25" class="widget inner-padding widget_block">
 <div class="wp-block-group" style="font-style:normal;font-weight:600"><div class="wp-block-group__inner-container is-layout-constrained wp-block-group-is-layout-constrained">
 <div class="wp-block-group"><div class="wp-block-group__inner-container is-layout-constrained wp-block-group-is-layout-constrained">
-<h3 class="wp-block-heading"><strong><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-contrast-color">Archieves</mark></strong></h3>
+<h3 class="wp-block-heading"><strong><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-contrast-color">Archives</mark></strong></h3>
 
 
 <ul style="font-size:15px;" class="wp-block-archives-list wp-block-archives">	<li><a href="/2026/02/">February 2026</a> (2)</li>
@@ -702,7 +687,35 @@ h5.author-title {
 						</div>
 				</div>
 			</div>
-					<footer class="site-info" aria-label="Site" itemtype="https://schema.org/WPFooter" itemscope>
+					<div class="sqltips-footer-custom">
+<div class="sqltips-footer-grid">
+<div class="sqltips-footer-col">
+<h4>About SQL Tips</h4>
+<p>SQL Tips is your go-to resource for learning SQL, PL/SQL, PostgreSQL, and Oracle database concepts. We publish practical tutorials, interview questions, and expert examples to help you master databases.</p>
+</div>
+<div class="sqltips-footer-col">
+<h4>Quick Links</h4>
+<ul>
+<li><a href="/sql-2/">SQL Tutorials</a></li>
+<li><a href="/plsql-2/">PL/SQL Guides</a></li>
+<li><a href="/postgresql/">PostgreSQL</a></li>
+<li><a href="/interview-questions/">Interview Questions</a></li>
+<li><a href="/contact-us/">Contact Us</a></li>
+</ul>
+</div>
+<div class="sqltips-footer-col">
+<h4>Popular Posts</h4>
+<ul>
+<li><a href="/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/">Oracle SQL Joins Guide</a></li>
+<li><a href="/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/">SQL Window Functions</a></li>
+<li><a href="/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/">Query Optimization Tips</a></li>
+<li><a href="/posts/interview-questions/what-is-cursor-in-sql-types-examples-benefits/">SQL Cursors Explained</a></li>
+</ul>
+</div>
+</div>
+<div class="sqltips-footer-bottom">&copy; 2026 SQL Tips &bull; All Rights Reserved</div>
+</div>
+<footer class="site-info" aria-label="Site" itemtype="https://schema.org/WPFooter" itemscope>
 			<div class="inside-site-info grid-container">
 						<div class="footer-bar">
 			<aside id="block-10" class="widget inner-padding widget_block">
@@ -740,7 +753,7 @@ h5.author-title {
                 --wpbottommenu-text-color: #000000;
                 --wpbottommenu-h-text-color: #000000;
                 --wpbottommenu-icon-color: #01c6c6;
-                --wpbottommenu-h-icon-color: #e81700;
+                --wpbottommenu-h-icon-color: #00c9a7;
                 --wpbottommenu-bgcolor: #ffffff;
                 --wpbottommenu-zindex: 9999;
                 --wpbottommenu-cart-count-bgcolor: #ff0000;

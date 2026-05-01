@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en-US" prefix="og: https://ogp.me/ns#">
 <head><meta charset="UTF-8">
 	
@@ -160,10 +160,10 @@ gtag("config", "GT-MQRT4NL5");
 <meta name="google-adsense-platform-account" content="ca-host-pub-2644536267352236">
 <meta name="google-adsense-platform-domain" content="sitekit.withgoogle.com">
 <!-- End Google AdSense meta tags added by Site Kit -->
-<style id="uagb-style-conditional-extension">@media (min-width: 1025px){body .uag-hide-desktop.uagb-google-map__wrap,body .uag-hide-desktop{display:none !important}}@media (min-width: 768px) and (max-width: 1024px){body .uag-hide-tab.uagb-google-map__wrap,body .uag-hide-tab{display:none !important}}@media (max-width: 767px){body .uag-hide-mob.uagb-google-map__wrap,body .uag-hide-mob{display:none !important}}</style><link rel="icon" href="/wp-content/uploads/2024/09/cropped-new-fev-32x32.png" sizes="32x32">
-<link rel="icon" href="/wp-content/uploads/2024/09/cropped-new-fev-192x192.png" sizes="192x192">
-<link rel="apple-touch-icon" href="/wp-content/uploads/2024/09/cropped-new-fev-180x180.png">
-<meta name="msapplication-TileImage" content="/wp-content/uploads/2024/09/cropped-new-fev-270x270.png">
+<style id="uagb-style-conditional-extension">@media (min-width: 1025px){body .uag-hide-desktop.uagb-google-map__wrap,body .uag-hide-desktop{display:none !important}}@media (min-width: 768px) and (max-width: 1024px){body .uag-hide-tab.uagb-google-map__wrap,body .uag-hide-tab{display:none !important}}@media (max-width: 767px){body .uag-hide-mob.uagb-google-map__wrap,body .uag-hide-mob{display:none !important}}</style><link rel="icon" type="image/svg+xml" href="/favicon.svg">
+
+<link rel="apple-touch-icon" href="/favicon.svg">
+
 		<style id="wp-custom-css">
 			.main-navigation .main-nav ul li a {
   line-height: 45px;
@@ -192,7 +192,7 @@ gtag("config", "GT-MQRT4NL5");
 }
 
 .widget-area .widget{margin-bottom:10px;
-margin-bottom:-3.5rem;}
+margin-bottom:1.25rem;}
 
 .site-header{position:sticky;
 top:0px;
@@ -203,24 +203,10 @@ z-index:999;}
 
 
 
-    /* Adjust image size to fit mobile screens */
-    img {
-        max-width: 100%;
-        height: auto;
-    }
-
-    
-
-    /* Ensure navigation is mobile-friendly */
-    .navigation-menu {
-        display: flex;
-        flex-direction: column;
-    }
-
-    /* Remove horizontal scroll on mobile */
-    body {
-        overflow-x: hidden;
-    }
+    @media only screen and (max-width: 768px) {
+    img { max-width: 100%; height: auto; }
+    .navigation-menu { display: flex; flex-direction: column; }
+    body { overflow-x: hidden; }
 }
 
 
@@ -371,15 +357,14 @@ h5.author-title {
 /*# sourceURL=core-block-supports-inline-css */
 </style>
 
+<link rel="stylesheet" id="sqltips-redesign-css" href="/sqltips-redesign.css" media="all">
 </head>
 
 <body class="wp-singular page-template-default page page-id-36 wp-custom-logo wp-embed-responsive wp-theme-generatepress sticky-menu-fade right-sidebar nav-float-right one-container header-aligned-left dropdown-hover" itemtype="https://schema.org/WebPage" itemscope>
 	<a class="screen-reader-text skip-link" href="#content" title="Skip to content">Skip to content</a>		<header class="site-header grid-container has-inline-mobile-toggle" id="masthead" aria-label="Site" itemtype="https://schema.org/WPHeader" itemscope>
 			<div class="inside-header grid-container">
 				<div class="site-logo">
-					<a href="/" rel="home">
-						<img class="header-image is-logo-image" alt="SQL Tips" src="/wp-content/uploads/2026/02/cropped-Logo.png" srcset="/wp-content/uploads/2026/02/cropped-Logo.png 1x, /wp-content/uploads/2026/02/cropped-Logo.png 2x" width="163" height="100">
-					</a>
+					<a href="/" rel="home"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 60" width="200" height="44" class="sqltips-svg-logo"><defs><linearGradient id="tealGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" style="stop-color:#00e5bf"/><stop offset="100%" style="stop-color:#00a88a"/></linearGradient></defs><ellipse cx="30" cy="12" rx="18" ry="7" fill="url(#tealGrad)" opacity="0.9"/><path d="M12 12v8c0 3.9 8 7 18 7s18-3.1 18-7v-8" fill="none" stroke="url(#tealGrad)" stroke-width="2.5"/><ellipse cx="30" cy="20" rx="18" ry="7" fill="none" stroke="url(#tealGrad)" stroke-width="0.5" opacity="0.4"/><path d="M12 20v8c0 3.9 8 7 18 7s18-3.1 18-7v-8" fill="none" stroke="url(#tealGrad)" stroke-width="2.5"/><ellipse cx="30" cy="28" rx="18" ry="7" fill="none" stroke="url(#tealGrad)" stroke-width="0.5" opacity="0.4"/><path d="M12 28v8c0 3.9 8 7 18 7s18-3.1 18-7v-8" fill="none" stroke="url(#tealGrad)" stroke-width="2.5"/><ellipse cx="30" cy="36" rx="18" ry="7" fill="none" stroke="url(#tealGrad)" stroke-width="0.5" opacity="0.3"/><text x="68" y="25" font-family="Inter,Poppins,Arial,sans-serif" font-size="22" font-weight="800" fill="#ffffff" letter-spacing="-0.5">SQL</text><text x="68" y="46" font-family="Inter,Poppins,Arial,sans-serif" font-size="18" font-weight="500" fill="#00c9a7" letter-spacing="3">TIPS</text></svg></a>
 				</div>	<nav class="main-navigation mobile-menu-control-wrapper" id="mobile-menu-control-wrapper" aria-label="Mobile Toggle">
 				<button data-nav="site-navigation" class="menu-toggle" aria-controls="primary-menu" aria-expanded="false">
 			<span class="gp-icon icon-menu-bars"><svg viewbox="0 0 512 512" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M0 96c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24zm0 160c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24zm0 160c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24z"></path></svg><svg viewbox="0 0 512 512" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M71.029 71.029c9.373-9.372 24.569-9.372 33.942 0L256 222.059l151.029-151.03c9.373-9.372 24.569-9.372 33.942 0 9.372 9.373 9.372 24.569 0 33.942L289.941 256l151.03 151.029c9.372 9.373 9.372 24.569 0 33.942-9.373 9.372-24.569 9.372-33.942 0L256 289.941l-151.029 151.03c-9.373 9.372-24.569 9.372-33.942 0-9.372-9.373-9.372-24.569 0-33.942L222.059 256 71.029 104.971c-9.372-9.373-9.372-24.569 0-33.942z"></path></svg></span><span class="screen-reader-text">Menu</span>		</button>
@@ -494,11 +479,11 @@ h5.author-title {
 <h3 class="wp-block-heading has-contrast-color has-text-color has-link-color wp-elements-a5b1a42520a2383ce7ccc4808b27dfdb"><strong>Latest Posts</strong></h3>
 
 
-<ul style="font-size:15px;" class="wp-block-latest-posts__list alignleft cat_widget wp-block-latest-posts"><li><a class="wp-block-latest-posts__post-title" href="/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/">Mastering Oracle SQL Joins: The Ultimate Guide to Data Retrieval and Performance</a></li>
-<li><a class="wp-block-latest-posts__post-title" href="/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/">Mastering Oracle Database Architecture: A Comprehensive Overview</a></li>
-<li><a class="wp-block-latest-posts__post-title" href="/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/">Mastering PostgreSQL Architecture: 6 Powerful Steps to Optimize Performance &amp; Scalability</a></li>
-<li><a class="wp-block-latest-posts__post-title" href="/understanding-oracle-triggers-a-comprehensive-guide-with-examples/">Understanding Oracle Triggers – A Comprehensive Guide with Examples</a></li>
-<li><a class="wp-block-latest-posts__post-title" href="/sql-query-design-patterns-writing-efficient-queries/">SQL Query Design Patterns: Writing Efficient Queries</a></li>
+<ul style="font-size:15px;" class="wp-block-latest-posts__list alignleft cat_widget wp-block-latest-posts"><li><a class="wp-block-latest-posts__post-title" href="/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/">Mastering Oracle SQL Joins: The Ultimate Guide to Data Retrieval and Performance</a></li>
+<li><a class="wp-block-latest-posts__post-title" href="/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/">Mastering Oracle Database Architecture: A Comprehensive Overview</a></li>
+<li><a class="wp-block-latest-posts__post-title" href="/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/">Mastering PostgreSQL Architecture: 6 Powerful Steps to Optimize Performance &amp; Scalability</a></li>
+<li><a class="wp-block-latest-posts__post-title" href="/posts/plsql/understanding-oracle-triggers-a-comprehensive-guide-with-examples/">Understanding Oracle Triggers – A Comprehensive Guide with Examples</a></li>
+<li><a class="wp-block-latest-posts__post-title" href="/posts/sql/sql-query-design-patterns-writing-efficient-queries/">SQL Query Design Patterns: Writing Efficient Queries</a></li>
 </ul></div></div>
 </div></div>
 </div></div>
@@ -529,7 +514,7 @@ h5.author-title {
 </aside><aside id="block-25" class="widget inner-padding widget_block">
 <div class="wp-block-group" style="font-style:normal;font-weight:600"><div class="wp-block-group__inner-container is-layout-constrained wp-block-group-is-layout-constrained">
 <div class="wp-block-group"><div class="wp-block-group__inner-container is-layout-constrained wp-block-group-is-layout-constrained">
-<h3 class="wp-block-heading"><strong><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-contrast-color">Archieves</mark></strong></h3>
+<h3 class="wp-block-heading"><strong><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-contrast-color">Archives</mark></strong></h3>
 
 
 <ul style="font-size:15px;" class="wp-block-archives-list wp-block-archives">	<li><a href="/2026/02/">February 2026</a> (2)</li>
@@ -560,7 +545,35 @@ h5.author-title {
 						</div>
 				</div>
 			</div>
-					<footer class="site-info" aria-label="Site" itemtype="https://schema.org/WPFooter" itemscope>
+					<div class="sqltips-footer-custom">
+<div class="sqltips-footer-grid">
+<div class="sqltips-footer-col">
+<h4>About SQL Tips</h4>
+<p>SQL Tips is your go-to resource for learning SQL, PL/SQL, PostgreSQL, and Oracle database concepts. We publish practical tutorials, interview questions, and expert examples to help you master databases.</p>
+</div>
+<div class="sqltips-footer-col">
+<h4>Quick Links</h4>
+<ul>
+<li><a href="/sql-2/">SQL Tutorials</a></li>
+<li><a href="/plsql-2/">PL/SQL Guides</a></li>
+<li><a href="/postgresql/">PostgreSQL</a></li>
+<li><a href="/interview-questions/">Interview Questions</a></li>
+<li><a href="/contact-us/">Contact Us</a></li>
+</ul>
+</div>
+<div class="sqltips-footer-col">
+<h4>Popular Posts</h4>
+<ul>
+<li><a href="/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/">Oracle SQL Joins Guide</a></li>
+<li><a href="/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/">SQL Window Functions</a></li>
+<li><a href="/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/">Query Optimization Tips</a></li>
+<li><a href="/posts/interview-questions/what-is-cursor-in-sql-types-examples-benefits/">SQL Cursors Explained</a></li>
+</ul>
+</div>
+</div>
+<div class="sqltips-footer-bottom">&copy; 2026 SQL Tips &bull; All Rights Reserved</div>
+</div>
+<footer class="site-info" aria-label="Site" itemtype="https://schema.org/WPFooter" itemscope>
 			<div class="inside-site-info grid-container">
 						<div class="footer-bar">
 			<aside id="block-10" class="widget inner-padding widget_block">
@@ -598,7 +611,7 @@ h5.author-title {
                 --wpbottommenu-text-color: #000000;
                 --wpbottommenu-h-text-color: #000000;
                 --wpbottommenu-icon-color: #01c6c6;
-                --wpbottommenu-h-icon-color: #e81700;
+                --wpbottommenu-h-icon-color: #00c9a7;
                 --wpbottommenu-bgcolor: #ffffff;
                 --wpbottommenu-zindex: 9999;
                 --wpbottommenu-cart-count-bgcolor: #ff0000;

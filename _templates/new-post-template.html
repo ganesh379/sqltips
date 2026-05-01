@@ -1,0 +1,280 @@
+﻿<!DOCTYPE html>
+<html lang="en-US" prefix="og: https://ogp.me/ns#">
+<head><meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{POST_TITLE}} - SQL Tips</title>
+<meta name="description" content="{{META_DESCRIPTION}}">
+<meta name="robots" content="follow, index, max-snippet:-1, max-video-preview:-1, max-image-preview:large">
+<link rel="canonical" href="/{{POST_SLUG}}/">
+<meta property="og:locale" content="en_US">
+<meta property="og:type" content="article">
+<meta property="og:title" content="{{POST_TITLE}} - SQL Tips">
+<meta property="og:description" content="{{META_DESCRIPTION}}">
+<meta property="og:url" content="/{{POST_SLUG}}/">
+<meta property="og:site_name" content="SQL Tips">
+<meta property="article:section" content="{{CATEGORY}}">
+<meta property="og:image" content="/wp-content/uploads/{{FEATURED_IMAGE}}">
+<meta property="article:published_time" content="{{DATE_ISO}}">
+<meta property="article:modified_time" content="{{DATE_ISO}}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{POST_TITLE}} - SQL Tips">
+<meta name="twitter:description" content="{{META_DESCRIPTION}}">
+<meta name="twitter:image" content="/wp-content/uploads/{{FEATURED_IMAGE}}">
+<meta name="twitter:label1" content="Written by">
+<meta name="twitter:data1" content="PT Ganesh">
+<meta name="twitter:label2" content="Time to read">
+<meta name="twitter:data2" content="{{READ_TIME}} minutes">
+<script type="application/ld+json">{
+  "@context":"https://schema.org",
+  "@type":"BlogPosting",
+  "headline":"{{POST_TITLE}}",
+  "datePublished":"{{DATE_ISO}}",
+  "dateModified":"{{DATE_ISO}}",
+  "author":{"@type":"Person","name":"PT Ganesh","url":"/author/ganesh379/"},
+  "publisher":{"@type":"Organization","name":"SQL Tips","logo":{"@type":"ImageObject","url":"/wp-content/uploads/2026/02/cropped-Logo-150x100.png"}},
+  "description":"{{META_DESCRIPTION}}",
+  "image":"/wp-content/uploads/{{FEATURED_IMAGE}}"
+}</script>
+
+<link href="https://fonts.gstatic.com/" crossorigin rel="preconnect">
+<link href="https://fonts.googleapis.com/" crossorigin rel="preconnect">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Poppins:300,400,500,600,700&display=auto">
+<link rel="stylesheet" href="/wp-content/themes/generatepress/assets/css/main.min.css?ver=3.6.0" media="all">
+<link rel="stylesheet" href="/wp-content/plugins/wp-bottom-menu/assets/css/style.css?ver=2.2.4" media="all">
+<link rel="stylesheet" href="/wp-content/plugins/wp-bottom-menu/inc/customizer/customizer-repeater/css/font-awesome.min.css?ver=1.1.0" media="all">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+
+<link rel="apple-touch-icon" href="/favicon.svg">
+
+<!-- Theme inline styles -->
+<style id="generate-style-inline-css">
+body{background-color:var(--base-2);color:var(--contrast);}a{color:var(--accent);}a:hover,a:focus{text-decoration:underline;}.entry-title a,.site-branding a,a.button,.wp-block-button__link,.main-navigation a{text-decoration:none;}.grid-container{max-width:1280px;}.site-header .header-image{width:110px;}:root{--contrast:#222222;--contrast-2:#575760;--contrast-3:#b2b2be;--base:#f0f0f0;--base-2:#f7f8f9;--base-3:#ffffff;--accent:#00c9a7;}.main-navigation a,.main-navigation .menu-toggle,.main-navigation .menu-bar-items{font-family:Poppins,sans-serif;font-weight:bold;font-size:20px;}.main-title{font-family:Poppins,sans-serif;font-weight:bold;font-size:40px;}body,button,input,select,textarea{font-family:Poppins,sans-serif;}.site-header{background-color:var(--accent);color:var(--contrast);}.main-navigation .main-nav ul li a,.main-navigation .menu-toggle,.main-navigation .menu-bar-items{color:var(--base-3);}.site-info{color:var(--base-3);background-color:var(--accent);}.is-right-sidebar{width:30%;}.site-content .content-area{width:70%;}@media(max-width:768px){.main-navigation .menu-toggle,.sidebar-nav-mobile:not(#sticky-placeholder){display:block;}.main-navigation ul,.gen-sidebar-nav,.main-navigation:not(.slideout-navigation):not(.toggled) .main-nav>ul,.has-inline-mobile-toggle #site-navigation .inside-navigation>*:not(.navigation-search):not(.main-nav){display:none;}.has-inline-mobile-toggle .mobile-menu-control-wrapper{display:flex;flex-wrap:wrap;}.has-inline-mobile-toggle .inside-header{flex-direction:row;text-align:left;flex-wrap:wrap;}}
+</style>
+
+<!-- Redesign CSS -->
+<link rel="stylesheet" id="sqltips-redesign-css" href="/sqltips-redesign.css" media="all">
+
+<!-- Google Analytics -->
+<script src="https://www.googletagmanager.com/gtag/js?id=GT-MQRT4NL5" async></script>
+<script>
+window.dataLayer = window.dataLayer || [];function gtag(){dataLayer.push(arguments);}
+gtag("js", new Date());
+gtag("config", "GT-MQRT4NL5");
+</script>
+
+<!-- AdSense -->
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7491448216620938" crossorigin="anonymous"></script>
+
+<style>
+  /* Bottom menu */
+  :root{--wpbottommenu-font-size:12px;--wpbottommenu-icon-size:24px;--wpbottommenu-text-color:#000;--wpbottommenu-h-text-color:#000;--wpbottommenu-icon-color:#00c9a7;--wpbottommenu-h-icon-color:#00c9a7;--wpbottommenu-bgcolor:#fff;--wpbottommenu-zindex:9999;--wpbottommenu-wrapper-padding:10px 0;}
+  @media(max-width:1024px){.wp-bottom-menu{display:flex;}}
+</style>
+</head>
+
+<body class="wp-singular post-template-default single single-post wp-custom-logo wp-embed-responsive wp-theme-generatepress right-sidebar nav-float-right one-container header-aligned-left dropdown-hover">
+	<a class="screen-reader-text skip-link" href="#content">Skip to content</a>
+    <header class="site-header grid-container has-inline-mobile-toggle" id="masthead">
+		<div class="inside-header grid-container">
+			<div class="site-logo">
+				<a href="/" rel="home"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 60" width="200" height="44" class="sqltips-svg-logo"><defs><linearGradient id="tealGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" style="stop-color:#00e5bf"/><stop offset="100%" style="stop-color:#00a88a"/></linearGradient></defs><ellipse cx="30" cy="12" rx="18" ry="7" fill="url(#tealGrad)" opacity="0.9"/><path d="M12 12v8c0 3.9 8 7 18 7s18-3.1 18-7v-8" fill="none" stroke="url(#tealGrad)" stroke-width="2.5"/><ellipse cx="30" cy="20" rx="18" ry="7" fill="none" stroke="url(#tealGrad)" stroke-width="0.5" opacity="0.4"/><path d="M12 20v8c0 3.9 8 7 18 7s18-3.1 18-7v-8" fill="none" stroke="url(#tealGrad)" stroke-width="2.5"/><ellipse cx="30" cy="28" rx="18" ry="7" fill="none" stroke="url(#tealGrad)" stroke-width="0.5" opacity="0.4"/><path d="M12 28v8c0 3.9 8 7 18 7s18-3.1 18-7v-8" fill="none" stroke="url(#tealGrad)" stroke-width="2.5"/><ellipse cx="30" cy="36" rx="18" ry="7" fill="none" stroke="url(#tealGrad)" stroke-width="0.5" opacity="0.3"/><text x="68" y="25" font-family="Inter,Poppins,Arial,sans-serif" font-size="22" font-weight="800" fill="#ffffff" letter-spacing="-0.5">SQL</text><text x="68" y="46" font-family="Inter,Poppins,Arial,sans-serif" font-size="18" font-weight="500" fill="#00c9a7" letter-spacing="3">TIPS</text></svg></a>
+			</div>
+        <nav class="main-navigation mobile-menu-control-wrapper" id="mobile-menu-control-wrapper" aria-label="Mobile Toggle">
+			<button data-nav="site-navigation" class="menu-toggle" aria-controls="primary-menu" aria-expanded="false">
+                <span class="gp-icon icon-menu-bars"><svg viewbox="0 0 512 512" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M0 96c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24zm0 160c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24zm0 160c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24z"></path></svg></span><span class="screen-reader-text">Menu</span>
+            </button>
+        </nav>
+		<nav class="main-navigation sub-menu-right" id="site-navigation" aria-label="Primary">
+			<div class="inside-navigation grid-container">
+				<button class="menu-toggle" aria-controls="primary-menu" aria-expanded="false">
+                    <span class="gp-icon icon-menu-bars"><svg viewbox="0 0 512 512" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M0 96c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24zm0 160c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24zm0 160c0-13.255 10.745-24 24-24h464c13.255 0 24 10.745 24 24s-10.745 24-24 24H24c-13.255 0-24-10.745-24-24z"></path></svg></span><span class="screen-reader-text">Menu</span>
+                </button>
+				<div id="primary-menu" class="main-nav"><ul id="menu-sql" class="menu sf-menu">
+                    <li class="menu-item"><a href="/">Home</a></li>
+                    <li class="menu-item"><a href="/sql-2/">SQL</a></li>
+                    <li class="menu-item"><a href="/plsql-2/">PLSQL</a></li>
+                    <li class="menu-item"><a href="/postgresql/">PostgreSQL</a></li>
+                    <li class="menu-item"><a href="/interview-questions/">Interview Questions</a></li>
+                    <li class="menu-item"><a href="/author/">Author</a></li>
+                    <li class="menu-item"><a href="/contact-us/">Contact us</a></li>
+                </ul></div>
+            </div>
+		</nav>
+		</div>
+	</header>
+	
+	<div class="site grid-container container hfeed" id="page">
+		<div class="site-content" id="content">
+	
+	<div class="content-area" id="primary">
+		<main class="site-main" id="main">
+			
+<article class="post type-post status-publish format-standard has-post-thumbnail hentry category-{{CATEGORY_SLUG}}">
+	<div class="inside-article">
+		<header class="entry-header">
+            <div class="gp-custom-category-section"><a href="/category/{{CATEGORY_SLUG}}/">{{CATEGORY}}</a></div>
+            <h1 class="entry-title" itemprop="headline">{{POST_TITLE}}</h1>
+            <div class="entry-meta">
+                <span class="posted-on"><time class="entry-date published" datetime="{{DATE_ISO}}">{{DATE_DISPLAY}}</time></span>
+                <span class="byline">by <a href="/author/ganesh379/">PT Ganesh</a></span>
+            </div>
+		</header>
+        <img class="single-featured-image" src="/wp-content/uploads/{{FEATURED_IMAGE}}" alt="{{POST_TITLE}}">
+		<div class="entry-content" itemprop="text">
+			
+<!-- ============================================ -->
+<!-- WRITE YOUR BLOG POST CONTENT BELOW THIS LINE -->
+<!-- ============================================ -->
+
+<p>{{INTRO_PARAGRAPH}}</p>
+
+<h2 class="wp-block-heading">Section 1 Heading</h2>
+
+<p>Your content here...</p>
+
+<h3 class="wp-block-heading">Sub-section</h3>
+
+<p>More content...</p>
+
+<!-- SQL Code Block Example -->
+<pre class="wp-block-code"><code>SELECT column1, column2
+FROM table_name
+WHERE condition = 'value'
+ORDER BY column1;</code></pre>
+
+<h2 class="wp-block-heading">Section 2 Heading</h2>
+
+<p>Your content here...</p>
+
+<!-- Table Example -->
+<figure class="wp-block-table">
+<table>
+<thead><tr><th>Feature</th><th>Description</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td>Row 1</td><td>Description</td><td>Example</td></tr>
+<tr><td>Row 2</td><td>Description</td><td>Example</td></tr>
+</tbody>
+</table>
+</figure>
+
+<h2 class="wp-block-heading">Key Takeaways</h2>
+
+<ul class="wp-block-list">
+<li><strong>Point 1:</strong> Summary of key takeaway</li>
+<li><strong>Point 2:</strong> Summary of key takeaway</li>
+<li><strong>Point 3:</strong> Summary of key takeaway</li>
+</ul>
+
+<!-- ============================================ -->
+<!-- END OF BLOG POST CONTENT                     -->
+<!-- ============================================ -->
+
+		</div>
+
+        <!-- Tags -->
+        <footer class="entry-meta">
+            <span class="tags-links">Tagged: <a href="/tag/{{TAG_SLUG}}/" rel="tag">{{TAG}}</a></span>
+        </footer>
+
+        <!-- Author Box -->
+        <div class="author-box">
+            <div class="avatar">
+                <img src="https://secure.gravatar.com/avatar/95bdd81adb2b8fc895bfdf0b73021910a4fb8f19b399ab07fd9a6e69fa03b398?s=96" alt="PT Ganesh" width="96" height="96">
+            </div>
+            <div>
+                <h5 class="author-title">PT Ganesh</h5>
+                <div class="author-description">Database enthusiast and technical writer. Passionate about SQL, PL/SQL, and helping developers master database concepts.</div>
+            </div>
+        </div>
+
+	</div>
+</article>
+		</main>
+	</div>
+
+    <!-- Sidebar -->
+	<div class="widget-area sidebar is-right-sidebar" id="right-sidebar">
+	<div class="inside-right-sidebar">
+		<aside class="widget inner-padding widget_block">
+            <div class="wp-block-group has-base-3-background-color has-background" style="font-size:14px">
+            <div class="wp-block-group__inner-container">
+                <form role="search" method="get" action="/" class="wp-block-search__button-outside wp-block-search__text-button wp-block-search">
+                    <div class="wp-block-search__inside-wrapper">
+                        <input class="wp-block-search__input" placeholder="Search SQL Tips..." value="" type="search" name="s" required>
+                        <button class="wp-block-search__button wp-element-button" type="submit">Search</button>
+                    </div>
+                </form>
+                <h3 class="wp-block-heading"><strong>Latest Posts</strong></h3>
+                <ul class="wp-block-latest-posts__list cat_widget wp-block-latest-posts" style="font-size:15px;">
+                    <li><a class="wp-block-latest-posts__post-title" href="/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/">Mastering Oracle SQL Joins Guide</a></li>
+                    <li><a class="wp-block-latest-posts__post-title" href="/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/">Oracle Database Architecture</a></li>
+                    <li><a class="wp-block-latest-posts__post-title" href="/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/">PostgreSQL Architecture Guide</a></li>
+                    <li><a class="wp-block-latest-posts__post-title" href="/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/">SQL Window Functions</a></li>
+                </ul>
+            </div></div>
+        </aside>
+        <aside class="widget inner-padding widget_block">
+            <div class="wp-block-group" style="font-weight:600">
+            <div class="wp-block-group__inner-container">
+                <h3 class="wp-block-heading"><strong>Categories</strong></h3>
+                <ul class="wp-block-categories-list cat_widget wp-block-categories">
+                    <li><a href="/category/interview-questions/">Interview Questions</a></li>
+                    <li><a href="/category/plsql/">PLSQL</a></li>
+                    <li><a href="/category/postgresql/">PostgreSQL</a></li>
+                    <li><a href="/category/sql/">SQL</a></li>
+                </ul>
+            </div></div>
+        </aside>
+	</div>
+	</div>
+
+	</div>
+</div>
+
+<!-- Custom Footer -->
+<div class="sqltips-footer-custom">
+<div class="sqltips-footer-grid">
+<div class="sqltips-footer-col">
+<h4>About SQL Tips</h4>
+<p>SQL Tips is your go-to resource for learning SQL, PL/SQL, PostgreSQL, and Oracle database concepts with practical tutorials and interview prep.</p>
+</div>
+<div class="sqltips-footer-col">
+<h4>Quick Links</h4>
+<ul>
+<li><a href="/sql-2/">SQL Tutorials</a></li>
+<li><a href="/plsql-2/">PL/SQL Guides</a></li>
+<li><a href="/postgresql/">PostgreSQL</a></li>
+<li><a href="/interview-questions/">Interview Questions</a></li>
+<li><a href="/contact-us/">Contact Us</a></li>
+</ul>
+</div>
+<div class="sqltips-footer-col">
+<h4>Popular Posts</h4>
+<ul>
+<li><a href="/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/">Oracle SQL Joins Guide</a></li>
+<li><a href="/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/">SQL Window Functions</a></li>
+<li><a href="/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/">Query Optimization Tips</a></li>
+</ul>
+</div>
+</div>
+<div class="sqltips-footer-bottom">&copy; 2026 SQL Tips &bull; All Rights Reserved</div>
+</div>
+
+<footer class="site-info" aria-label="Site">
+	<div class="inside-site-info grid-container">
+		<div class="copyright-bar">© 2026 SQL Tips • All Rights Reserved!</div>
+	</div>
+</footer>
+
+<!-- Bottom Mobile Menu -->
+<div class="wp-bottom-menu" id="wp-bottom-menu">
+    <a href="/" class="wp-bottom-menu-item"><div class="wp-bottom-menu-icon-wrapper"><i class="wp-bottom-menu-item-icons fa fa-home"></i></div><span>Home</span></a>
+    <a href="/sql-2/" class="wp-bottom-menu-item"><div class="wp-bottom-menu-icon-wrapper"><i class="wp-bottom-menu-item-icons fa fa-solid fa-database"></i></div><span>SQL</span></a>
+    <a href="/plsql-2/" class="wp-bottom-menu-item"><div class="wp-bottom-menu-icon-wrapper"><i class="wp-bottom-menu-item-icons fa fa-solid fa-code"></i></div><span>PLSQL</span></a>
+    <a href="/interview-questions/" class="wp-bottom-menu-item"><div class="wp-bottom-menu-icon-wrapper"><i class="wp-bottom-menu-item-icons fa fa-regular fa-folder-open"></i></div><span>Interview Q&amp;A</span></a>
+</div>
+
+<script src="/wp-content/themes/generatepress/assets/js/menu.min.js?ver=3.6.0"></script>
+<script src="/wp-content/plugins/wp-bottom-menu/assets/js/main.js?ver=2.2.4"></script>
+</body>
+</html>
