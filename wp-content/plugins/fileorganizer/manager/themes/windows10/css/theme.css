@@ -1,0 +1,38 @@
+/**
+ * elFinder Theme Template
+ * @author lokothodida
+ */
+
+/* Reset */
+@import url('/wp-content/plugins/fileorganizer/manager/themes/windows10/css/reset.css');
+
+/* Google Fonts */
+@import url('//fonts.googleapis.com/css?family=Open+Sans:300');
+
+/* Main features of the whole UI */
+@import url('/wp-content/plugins/fileorganizer/manager/themes/windows10/css/main.css');
+
+/* Icons */
+@import url('/wp-content/plugins/fileorganizer/manager/themes/windows10/css/icons.css');
+
+/* Toolbar (top panel) */
+@import url('/wp-content/plugins/fileorganizer/manager/themes/windows10/css/toolbar.css');
+
+/* Navbar (left panel) */
+@import url('/wp-content/plugins/fileorganizer/manager/themes/windows10/css/navbar.css');
+
+/* Views (List and Thumbnail) */
+@import url('/wp-content/plugins/fileorganizer/manager/themes/windows10/css/view-list.css');
+@import url('/wp-content/plugins/fileorganizer/manager/themes/windows10/css/view-thumbnail.css');
+
+/* Context menu */
+@import url('/wp-content/plugins/fileorganizer/manager/themes/windows10/css/contextmenu.css');
+
+/* (Modal) Dialogs */
+@import url('/wp-content/plugins/fileorganizer/manager/themes/windows10/css/dialog.css');
+
+/* Status Bar */
+@import url('/wp-content/plugins/fileorganizer/manager/themes/windows10/css/statusbar.css');
+
+/* Quicklook Dialog */
+@import url('/wp-content/plugins/fileorganizer/manager/themes/windows10/css/quicklook.css');
