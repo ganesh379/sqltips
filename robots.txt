@@ -1,5 +1,34 @@
+# robots.txt — sqltips.in
+# This is a static site: there is no WordPress admin to protect.
+
 User-agent: *
-Disallow: /wp-admin/
-Allow: /wp-admin/admin-ajax.php
+Allow: /
+
+# Crawler traps and duplicate surfaces
+Disallow: /*?query-*
+Disallow: /*?s=
+Disallow: /*?replytocom=
+Disallow: /wp-includes/
+Disallow: /wp-content/plugins/
+
+# Let crawlers fetch the assets needed to render and judge the page
+Allow: /wp-content/uploads/
+Allow: /*.css$
+Allow: /*.js$
+Allow: /*.svg$
+Allow: /*.png$
+Allow: /*.jpg$
+Allow: /*.webp$
+
+# AI crawlers that provide attribution are welcome; adjust to taste.
+User-agent: GPTBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
 
 Sitemap: https://sqltips.in/sitemap_index.xml
+Sitemap: https://sqltips.in/post-sitemap.xml
+Sitemap: https://sqltips.in/page-sitemap.xml
+Sitemap: https://sqltips.in/category-sitemap.xml
+Sitemap: https://sqltips.in/author-sitemap.xml

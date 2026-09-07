@@ -674,6 +674,10 @@ a { transition: color var(--st-transition-fast); }
    7. SECTION HEADINGS
    ========================================================================== */
 
+/* h1 is included because topic landing pages (/sql-2/, /interview-questions/)
+   have their page heading promoted from h3 to h1 for correct document
+   structure — it must keep the identical look. */
+.entry-content > h1.wp-block-heading,
 .entry-content > h3.wp-block-heading,
 .entry-content > h3.gb-headline.gb-headline-text {
   position: relative;
@@ -685,6 +689,7 @@ a { transition: color var(--st-transition-fast); }
   padding-bottom: 9px;
 }
 
+.entry-content > h1.wp-block-heading::after,
 .entry-content > h3.wp-block-heading::after,
 .entry-content > h3.gb-headline.gb-headline-text::after {
   content: '';

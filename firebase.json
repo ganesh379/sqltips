@@ -1,263 +1,309 @@
-﻿{
-    "hosting":  {
-                    "ignore":  [
-                                   "firebase.json",
-                                   "**/.*",
-                                   "**/node_modules/**",
-                                   "_templates/**"
-                               ],
-                    "redirects":  [
-                                      {
-                                          "destination":  "/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/index.html",
-                                          "source":  "/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/index.html",
-                                          "source":  "/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/index.html",
-                                          "source":  "/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/index.html",
-                                          "source":  "/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips/index.html",
-                                          "source":  "/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips/index.html",
-                                          "source":  "/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/tricky-sql-queries-for-interview-preparation/index.html",
-                                          "source":  "/tricky-sql-queries-for-interview-preparation/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/tricky-sql-queries-for-interview-preparation/index.html",
-                                          "source":  "/tricky-sql-queries-for-interview-preparation",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/plsql/forward-and-backward-navigation-in-oracle-pl-sql-expert-examples/index.html",
-                                          "source":  "/forward-and-backward-navigation-in-oracle-pl-sql-expert-examples/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/plsql/forward-and-backward-navigation-in-oracle-pl-sql-expert-examples/index.html",
-                                          "source":  "/forward-and-backward-navigation-in-oracle-pl-sql-expert-examples",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/index.html",
-                                          "source":  "/mastering-sql-window-functions-types-and-uses-with-examples/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/index.html",
-                                          "source":  "/mastering-sql-window-functions-types-and-uses-with-examples",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/master-oracle-interview-questions-key-concepts-examples-for-2024/index.html",
-                                          "source":  "/master-oracle-interview-questions-key-concepts-examples-for-2024/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/master-oracle-interview-questions-key-concepts-examples-for-2024/index.html",
-                                          "source":  "/master-oracle-interview-questions-key-concepts-examples-for-2024",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/top-10-sql-window-function-queries/index.html",
-                                          "source":  "/top-10-sql-window-function-queries/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/top-10-sql-window-function-queries/index.html",
-                                          "source":  "/top-10-sql-window-function-queries",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/sql-query-design-patterns-writing-efficient-queries/index.html",
-                                          "source":  "/sql-query-design-patterns-writing-efficient-queries/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/sql-query-design-patterns-writing-efficient-queries/index.html",
-                                          "source":  "/sql-query-design-patterns-writing-efficient-queries",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/ace-your-pl-sql-interview-questions-for-success-part-4/index.html",
-                                          "source":  "/ace-your-pl-sql-interview-questions-for-success-part-4/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/ace-your-pl-sql-interview-questions-for-success-part-4/index.html",
-                                          "source":  "/ace-your-pl-sql-interview-questions-for-success-part-4",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/plsql-developer-interview-questions-part-2/index.html",
-                                          "source":  "/plsql-developer-interview-questions-part-2/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/plsql-developer-interview-questions-part-2/index.html",
-                                          "source":  "/plsql-developer-interview-questions-part-2",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/difference-between-sql-and-plsql/index.html",
-                                          "source":  "/difference-between-sql-and-plsql/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/difference-between-sql-and-plsql/index.html",
-                                          "source":  "/difference-between-sql-and-plsql",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/plsql-developer-interview-questions/index.html",
-                                          "source":  "/plsql-developer-interview-questions/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/plsql-developer-interview-questions/index.html",
-                                          "source":  "/plsql-developer-interview-questions",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/introduction-to-sql-what-it-is-and-why-you-should-learn-it/index.html",
-                                          "source":  "/introduction-to-sql-what-it-is-and-why-you-should-learn-it/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/introduction-to-sql-what-it-is-and-why-you-should-learn-it/index.html",
-                                          "source":  "/introduction-to-sql-what-it-is-and-why-you-should-learn-it",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/plsql/understanding-oracle-triggers-a-comprehensive-guide-with-examples/index.html",
-                                          "source":  "/understanding-oracle-triggers-a-comprehensive-guide-with-examples/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/plsql/understanding-oracle-triggers-a-comprehensive-guide-with-examples/index.html",
-                                          "source":  "/understanding-oracle-triggers-a-comprehensive-guide-with-examples",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/top-10-essential-plsql-developer-interview-questions-part-3-ace-your-interview/index.html",
-                                          "source":  "/top-10-essential-plsql-developer-interview-questions-part-3-ace-your-interview/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/top-10-essential-plsql-developer-interview-questions-part-3-ace-your-interview/index.html",
-                                          "source":  "/top-10-essential-plsql-developer-interview-questions-part-3-ace-your-interview",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/index.html",
-                                          "source":  "/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/index.html",
-                                          "source":  "/oracle-database-architecture-the-hidden-engine-of-data-powerhouse",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/plsql/what-are-the-triggers-in-plsql-how-do-they-work/index.html",
-                                          "source":  "/what-are-the-triggers-in-plsql-how-do-they-work/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/plsql/what-are-the-triggers-in-plsql-how-do-they-work/index.html",
-                                          "source":  "/what-are-the-triggers-in-plsql-how-do-they-work",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/index.html",
-                                          "source":  "/query-optimization-in-sql-best-practices-and-examples/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/index.html",
-                                          "source":  "/query-optimization-in-sql-best-practices-and-examples",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/mastering-normalization-in-sql-explained-with-powerful-examples/index.html",
-                                          "source":  "/mastering-normalization-in-sql-explained-with-powerful-examples/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/mastering-normalization-in-sql-explained-with-powerful-examples/index.html",
-                                          "source":  "/mastering-normalization-in-sql-explained-with-powerful-examples",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/sql-queries-for-interview/index.html",
-                                          "source":  "/sql-queries-for-interview/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/sql-queries-for-interview/index.html",
-                                          "source":  "/sql-queries-for-interview",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/index.html",
-                                          "source":  "/top-10-common-oracle-errors-and-proven-ways-to-fix-them/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/index.html",
-                                          "source":  "/top-10-common-oracle-errors-and-proven-ways-to-fix-them",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/what-is-cursor-in-sql-types-examples-benefits/index.html",
-                                          "source":  "/what-is-cursor-in-sql-types-examples-benefits/**",
-                                          "type":  301
-                                      },
-                                      {
-                                          "destination":  "/posts/interview-questions/what-is-cursor-in-sql-types-examples-benefits/index.html",
-                                          "source":  "/what-is-cursor-in-sql-types-examples-benefits",
-                                          "type":  301
-                                      }
-                                  ],
-                    "public":  ".",
-                    "headers":  [
-                                    {
-                                        "headers":  [
-                                                        {
-                                                            "key":  "Cache-Control",
-                                                            "value":  "no-cache"
-                                                        }
-                                                    ],
-                                        "source":  "**/*.html"
-                                    },
-                                    {
-                                        "headers":  [
-                                                        {
-                                                            "key":  "Cache-Control",
-                                                            "value":  "max-age=604800"
-                                                        }
-                                                    ],
-                                        "source":  "**/*.css"
-                                    }
-                                ]
-                }
+{
+  "hosting": {
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**",
+      "_templates/**",
+      "_tools/**",
+      "**/*.bak"
+    ],
+    "redirects": [
+      {
+        "destination": "/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/index.html",
+        "source": "/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/index.html",
+        "source": "/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/index.html",
+        "source": "/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/index.html",
+        "source": "/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips/index.html",
+        "source": "/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips/index.html",
+        "source": "/how-to-use-pivot-in-sql-easy-to-follow-examples-and-tips",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/tricky-sql-queries-for-interview-preparation/index.html",
+        "source": "/tricky-sql-queries-for-interview-preparation/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/tricky-sql-queries-for-interview-preparation/index.html",
+        "source": "/tricky-sql-queries-for-interview-preparation",
+        "type": 301
+      },
+      {
+        "destination": "/posts/plsql/forward-and-backward-navigation-in-oracle-pl-sql-expert-examples/index.html",
+        "source": "/forward-and-backward-navigation-in-oracle-pl-sql-expert-examples/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/plsql/forward-and-backward-navigation-in-oracle-pl-sql-expert-examples/index.html",
+        "source": "/forward-and-backward-navigation-in-oracle-pl-sql-expert-examples",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/index.html",
+        "source": "/mastering-sql-window-functions-types-and-uses-with-examples/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/index.html",
+        "source": "/mastering-sql-window-functions-types-and-uses-with-examples",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/master-oracle-interview-questions-key-concepts-examples-for-2024/index.html",
+        "source": "/master-oracle-interview-questions-key-concepts-examples-for-2024/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/master-oracle-interview-questions-key-concepts-examples-for-2024/index.html",
+        "source": "/master-oracle-interview-questions-key-concepts-examples-for-2024",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/top-10-sql-window-function-queries/index.html",
+        "source": "/top-10-sql-window-function-queries/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/top-10-sql-window-function-queries/index.html",
+        "source": "/top-10-sql-window-function-queries",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/sql-query-design-patterns-writing-efficient-queries/index.html",
+        "source": "/sql-query-design-patterns-writing-efficient-queries/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/sql-query-design-patterns-writing-efficient-queries/index.html",
+        "source": "/sql-query-design-patterns-writing-efficient-queries",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/ace-your-pl-sql-interview-questions-for-success-part-4/index.html",
+        "source": "/ace-your-pl-sql-interview-questions-for-success-part-4/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/ace-your-pl-sql-interview-questions-for-success-part-4/index.html",
+        "source": "/ace-your-pl-sql-interview-questions-for-success-part-4",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/plsql-developer-interview-questions-part-2/index.html",
+        "source": "/plsql-developer-interview-questions-part-2/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/plsql-developer-interview-questions-part-2/index.html",
+        "source": "/plsql-developer-interview-questions-part-2",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/difference-between-sql-and-plsql/index.html",
+        "source": "/difference-between-sql-and-plsql/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/difference-between-sql-and-plsql/index.html",
+        "source": "/difference-between-sql-and-plsql",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/plsql-developer-interview-questions/index.html",
+        "source": "/plsql-developer-interview-questions/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/plsql-developer-interview-questions/index.html",
+        "source": "/plsql-developer-interview-questions",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/introduction-to-sql-what-it-is-and-why-you-should-learn-it/index.html",
+        "source": "/introduction-to-sql-what-it-is-and-why-you-should-learn-it/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/introduction-to-sql-what-it-is-and-why-you-should-learn-it/index.html",
+        "source": "/introduction-to-sql-what-it-is-and-why-you-should-learn-it",
+        "type": 301
+      },
+      {
+        "destination": "/posts/plsql/understanding-oracle-triggers-a-comprehensive-guide-with-examples/index.html",
+        "source": "/understanding-oracle-triggers-a-comprehensive-guide-with-examples/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/plsql/understanding-oracle-triggers-a-comprehensive-guide-with-examples/index.html",
+        "source": "/understanding-oracle-triggers-a-comprehensive-guide-with-examples",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/top-10-essential-plsql-developer-interview-questions-part-3-ace-your-interview/index.html",
+        "source": "/top-10-essential-plsql-developer-interview-questions-part-3-ace-your-interview/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/top-10-essential-plsql-developer-interview-questions-part-3-ace-your-interview/index.html",
+        "source": "/top-10-essential-plsql-developer-interview-questions-part-3-ace-your-interview",
+        "type": 301
+      },
+      {
+        "destination": "/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/index.html",
+        "source": "/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/index.html",
+        "source": "/oracle-database-architecture-the-hidden-engine-of-data-powerhouse",
+        "type": 301
+      },
+      {
+        "destination": "/posts/plsql/what-are-the-triggers-in-plsql-how-do-they-work/index.html",
+        "source": "/what-are-the-triggers-in-plsql-how-do-they-work/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/plsql/what-are-the-triggers-in-plsql-how-do-they-work/index.html",
+        "source": "/what-are-the-triggers-in-plsql-how-do-they-work",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/index.html",
+        "source": "/query-optimization-in-sql-best-practices-and-examples/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/index.html",
+        "source": "/query-optimization-in-sql-best-practices-and-examples",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/mastering-normalization-in-sql-explained-with-powerful-examples/index.html",
+        "source": "/mastering-normalization-in-sql-explained-with-powerful-examples/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/mastering-normalization-in-sql-explained-with-powerful-examples/index.html",
+        "source": "/mastering-normalization-in-sql-explained-with-powerful-examples",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/sql-queries-for-interview/index.html",
+        "source": "/sql-queries-for-interview/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/sql-queries-for-interview/index.html",
+        "source": "/sql-queries-for-interview",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/index.html",
+        "source": "/top-10-common-oracle-errors-and-proven-ways-to-fix-them/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/index.html",
+        "source": "/top-10-common-oracle-errors-and-proven-ways-to-fix-them",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/what-is-cursor-in-sql-types-examples-benefits/index.html",
+        "source": "/what-is-cursor-in-sql-types-examples-benefits/**",
+        "type": 301
+      },
+      {
+        "destination": "/posts/interview-questions/what-is-cursor-in-sql-types-examples-benefits/index.html",
+        "source": "/what-is-cursor-in-sql-types-examples-benefits",
+        "type": 301
+      }
+    ],
+    "public": ".",
+    "headers": [
+      {
+        "source": "**/*.html",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(xml|txt)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=3600"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(css|js)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=2592000"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(jpg|jpeg|png|gif|webp|avif|svg|ico)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(woff|woff2|ttf|otf|eot)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          },
+          {
+            "key": "Access-Control-Allow-Origin",
+            "value": "*"
+          }
+        ]
+      },
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "X-Content-Type-Options",
+            "value": "nosniff"
+          },
+          {
+            "key": "Referrer-Policy",
+            "value": "strict-origin-when-cross-origin"
+          }
+        ]
+      }
+    ]
+  }
 }

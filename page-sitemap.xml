@@ -1,180 +1,93 @@
-<?xml version="1.0" encoding="UTF-8"?><?xml-stylesheet type="text/xsl" href="/main-sitemap.xsl"?>
-<urlset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd http://www.google.com/schemas/sitemap-image/1.1 http://www.google.com/schemas/sitemap-image/1.1/sitemap-image.xsd" xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="https://sqltips.in/main-sitemap.xsl"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
 	<url>
-		<loc>/</loc>
-		<lastmod>2024-10-21T10:20:08+00:00</lastmod>
-		<image:image>
-			<image:loc>/wp-content/uploads/2025/04/PostgreSQL-Architecture-Explained-Optimize-Performance-Scalability.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Oracle-Triggers.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/SQL-Query-Design-Patterns-Writing-Efficient-Queries.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Master-Oracle-Interview-Questions-Key-Concepts-Examples-for-2024.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Heading.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Forward-and-backward-in-oracle.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2025/04/PostgreSQL-Architecture-Explained-Optimize-Performance-Scalability.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Oracle-Triggers.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/SQL-Query-Design-Patterns-Writing-Efficient-Queries.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Master-Oracle-Interview-Questions-Key-Concepts-Examples-for-2024.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Heading.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Forward-and-backward-in-oracle.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/ORACLE-ERRORS.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/query-optimization-1.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/pivot-in-sql.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/types-of-normalization.png</image:loc>
-		</image:image>
+		<loc>https://sqltips.in/</loc>
+		<lastmod>2026-09-07T17:53:47+00:00</lastmod>
 	</url>
 	<url>
-		<loc>/postgresql/</loc>
-		<lastmod>2025-04-16T06:24:48+00:00</lastmod>
-		<image:image>
-			<image:loc>/wp-content/uploads/2025/04/PostgreSQL-Architecture-Explained-Optimize-Performance-Scalability.png</image:loc>
-		</image:image>
-	</url>
-	<url>
-		<loc>/author/</loc>
-		<lastmod>2025-04-07T06:58:05+00:00</lastmod>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/1687447745154-edited-1-scaled.jpg</image:loc>
-		</image:image>
-	</url>
-	<url>
-		<loc>/plsql-2/</loc>
-		<lastmod>2024-10-16T16:05:27+00:00</lastmod>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Oracle-Triggers.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Forward-and-backward-in-oracle.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/triggers-in-plsql.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/09/PLSQL-DEVELOPER-Interview-Questions-part-2.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/09/PLSQL-DEVELOPER-Interview-Questions-2.png</image:loc>
-		</image:image>
-	</url>
-	<url>
-		<loc>/sql-2/</loc>
-		<lastmod>2024-10-16T15:57:50+00:00</lastmod>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/SQL-Query-Design-Patterns-Writing-Efficient-Queries.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/ORACLE-ERRORS.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/pivot-in-sql.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/types-of-normalization.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/sql-window-functions-examples.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/sql-window-functions.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/tricky-sql-queries-for-interview.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/09/top-10-sql-queries.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/09/SQL-PLSQL-BANNER.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/09/banner-1.png</image:loc>
-		</image:image>
-	</url>
-	<url>
-		<loc>/interview-questions/</loc>
-		<lastmod>2024-10-16T15:56:08+00:00</lastmod>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Master-Oracle-Interview-Questions-Key-Concepts-Examples-for-2024.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/Heading.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/query-optimization-1.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/PLSQL-DEVELOPER-Interview-Questions-part-3.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/triggers-in-plsql.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/sql-window-functions-examples.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/10/tricky-sql-queries-for-interview.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/09/top-10-sql-queries.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/09/cursors.png</image:loc>
-		</image:image>
-		<image:image>
-			<image:loc>/wp-content/uploads/2024/09/PLSQL-DEVELOPER-Interview-Questions-part-2.png</image:loc>
-		</image:image>
-	</url>
-	<url>
-		<loc>/about-us/</loc>
+		<loc>https://sqltips.in/about-us/</loc>
 		<lastmod>2024-09-30T08:20:43+00:00</lastmod>
 	</url>
 	<url>
-		<loc>/contact-us/</loc>
+		<loc>https://sqltips.in/contact-us/</loc>
 		<lastmod>2024-09-26T10:44:42+00:00</lastmod>
 		<image:image>
-			<image:loc>/wp-content/plugins/wpforms-lite/assets/images/submit-spin.svg</image:loc>
+			<image:loc>https://sqltips.in/wp-content/plugins/wpforms-lite/assets/images/submit-spin.svg</image:loc>
 		</image:image>
 	</url>
 	<url>
-		<loc>/privacy-policy-2/</loc>
+		<loc>https://sqltips.in/disclaimer/</loc>
+		<lastmod>2024-09-26T09:24:04+00:00</lastmod>
+	</url>
+	<url>
+		<loc>https://sqltips.in/interview-questions/</loc>
+		<lastmod>2024-10-16T15:56:08+00:00</lastmod>
+		<image:image>
+			<image:loc>https://sqltips.in/wp-content/uploads/2024/10/Master-Oracle-Interview-Questions-Key-Concepts-Examples-for-2024.png</image:loc>
+		</image:image>
+	</url>
+	<url>
+		<loc>https://sqltips.in/page/2/</loc>
+		<lastmod>2026-09-07T17:50:32+00:00</lastmod>
+	</url>
+	<url>
+		<loc>https://sqltips.in/page/3/</loc>
+		<lastmod>2026-09-07T17:50:32+00:00</lastmod>
+	</url>
+	<url>
+		<loc>https://sqltips.in/plsql-2/</loc>
+		<lastmod>2024-10-16T16:05:27+00:00</lastmod>
+		<image:image>
+			<image:loc>https://sqltips.in/wp-content/uploads/2024/10/Oracle-Triggers.png</image:loc>
+		</image:image>
+	</url>
+	<url>
+		<loc>https://sqltips.in/postgresql/</loc>
+		<lastmod>2025-04-16T06:24:48+00:00</lastmod>
+		<image:image>
+			<image:loc>https://sqltips.in/wp-content/uploads/2025/04/PostgreSQL-Architecture-Explained-Optimize-Performance-Scalability.png</image:loc>
+		</image:image>
+	</url>
+	<url>
+		<loc>https://sqltips.in/privacy-policy-2/</loc>
 		<lastmod>2024-09-26T09:25:41+00:00</lastmod>
 	</url>
 	<url>
-		<loc>/terms-and-conditions/</loc>
-		<lastmod>2024-09-26T09:24:49+00:00</lastmod>
+		<loc>https://sqltips.in/sql-2/</loc>
+		<lastmod>2024-10-16T15:57:50+00:00</lastmod>
+		<image:image>
+			<image:loc>https://sqltips.in/wp-content/uploads/2024/10/SQL-Query-Design-Patterns-Writing-Efficient-Queries.png</image:loc>
+		</image:image>
 	</url>
 	<url>
-		<loc>/disclaimer/</loc>
-		<lastmod>2024-09-26T09:24:04+00:00</lastmod>
+		<loc>https://sqltips.in/tag/interview-questions/</loc>
+		<lastmod>2024-10-16T15:56:08+00:00</lastmod>
+		<image:image>
+			<image:loc>https://sqltips.in/wp-content/uploads/2024/10/Master-Oracle-Interview-Questions-Key-Concepts-Examples-for-2024.png</image:loc>
+		</image:image>
+	</url>
+	<url>
+		<loc>https://sqltips.in/tag/plsql/</loc>
+		<lastmod>2024-10-29T07:45:42+00:00</lastmod>
+	</url>
+	<url>
+		<loc>https://sqltips.in/tag/postgresql/</loc>
+		<lastmod>2025-04-16T06:24:48+00:00</lastmod>
+		<image:image>
+			<image:loc>https://sqltips.in/wp-content/uploads/2025/04/PostgreSQL-Architecture-Explained-Optimize-Performance-Scalability.png</image:loc>
+		</image:image>
+	</url>
+	<url>
+		<loc>https://sqltips.in/tag/sql/</loc>
+		<lastmod>2024-10-22T12:38:12+00:00</lastmod>
+	</url>
+	<url>
+		<loc>https://sqltips.in/tag/sql/page/2/</loc>
+		<lastmod>2026-09-07T17:50:32+00:00</lastmod>
+	</url>
+	<url>
+		<loc>https://sqltips.in/terms-and-conditions/</loc>
+		<lastmod>2024-09-26T09:24:49+00:00</lastmod>
 	</url>
 </urlset>
-<!-- XML Sitemap generated by Rank Math SEO Plugin (c) Rank Math - rankmath.com -->
