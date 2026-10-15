@@ -1,1 +1,2 @@
 - 2026-10-15 [PostgreSQL] postgresql for update skip locked -> _drafts/2026-10-15-postgresql-postgresql-for-update-skip-locked-job-queue.json
+- 2026-10-15 [Oracle] oracle merge statement example -> _drafts/2026-10-15-oracle-oracle-merge-statement-example.json

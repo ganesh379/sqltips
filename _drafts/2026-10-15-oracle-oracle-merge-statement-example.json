@@ -1,0 +1,783 @@
+{
+ "schemaVersion": 1,
+ "title": "Oracle MERGE Statement Example: Upsert, Update and Delete",
+ "slug": "oracle-merge-statement-example",
+ "category": "plsql",
+ "description": "Learn the Oracle MERGE statement with examples: upsert, conditional update, DELETE WHERE, single-row upsert, and fixes for ORA-30926 and ORA-38104.",
+ "focusKeyword": "oracle merge statement example",
+ "tags": [
+  "oracle",
+  "merge",
+  "dml",
+  "upsert",
+  "plsql"
+ ],
+ "related": [
+  "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/",
+  "/posts/plsql/understanding-oracle-triggers-a-comprehensive-guide-with-examples/",
+  "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle Database 19c SQL Language Reference: MERGE",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/MERGE.html"
+  },
+  {
+   "title": "Oracle error help: ORA-30926",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-30926/"
+  },
+  {
+   "title": "Oracle error help: ORA-38104",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-38104/"
+  },
+  {
+   "title": "Oracle Database 19c PL/SQL Packages: DBMS_ERRLOG",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_ERRLOG.html"
+  }
+ ],
+ "reviewNotes": "All examples written from the Oracle 19c MERGE docs and not executed; they need a test run on 19c (and ideally 23ai). Please check: (1) exact ORA-30926 text on 19c vs 23ai, and the exact ORA-38104 text (quoted column name format); (2) output tables are hand-derived from the sample data; (3) the claim that a WITH clause works inside the USING subquery but not before MERGE; (4) the concurrency note that two sessions merging the same new key can hit ORA-00001; (5) LOG ERRORS example, including whether ERR$_PRODUCTS captures the NOT NULL violation as described. SQL*Plus 'rows merged' feedback and SQL%ROWCOUNT were deliberately left out because the docs I read did not specify them.",
+ "generatedAt": "2026-10-15T00:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The Oracle <code class=\"inline-code\">MERGE</code> statement lets you insert, update and even delete rows in one table based on the rows of another table, in a single SQL statement. You give it a target table, a source, and a join condition. Rows that match get updated, rows that don't match get inserted. This is what most people call an <b>upsert</b>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial walks through a complete Oracle MERGE statement example on a small product table, then adds conditional updates, conditional inserts, the DELETE clause, a single-row upsert from PL/SQL, and the two errors almost everyone hits: ORA-30926 and ORA-38104. Every example uses the same sample data, so you can run them one after another."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How the MERGE statement works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "MERGE joins a <b>source</b> (a table, view or subquery) to a <b>target</b> table using the condition in the <code class=\"inline-code\">ON</code> clause. For each source row, Oracle checks whether the condition finds a target row."
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "If it does, the <code class=\"inline-code\">WHEN MATCHED THEN UPDATE</code> branch runs for that target row.",
+      "items": []
+     },
+     {
+      "content": "If it does not, the <code class=\"inline-code\">WHEN NOT MATCHED THEN INSERT</code> branch inserts a new row built from the source row.",
+      "items": []
+     },
+     {
+      "content": "Optionally, a <code class=\"inline-code\">DELETE WHERE</code> clause inside the matched branch removes rows that were just updated.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here is the basic shape:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "MERGE INTO target_table t\nUSING source_table s\nON (t.key_column = s.key_column)\nWHEN MATCHED THEN\n  UPDATE SET t.col1 = s.col1,\n             t.col2 = s.col2\nWHEN NOT MATCHED THEN\n  INSERT (key_column, col1, col2)\n  VALUES (s.key_column, s.col1, s.col2);",
+    "caption": "MERGE syntax skeleton"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Three things in this skeleton matter more than they look. The <code class=\"inline-code\">ON</code> condition must be wrapped in parentheses in Oracle. You need at least one of the two branches, but not both. And the source drives everything: target rows that have no matching source row are never touched."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Why use MERGE instead of an UPDATE followed by an INSERT? Two separate statements read the data twice and need extra logic (usually NOT EXISTS) to avoid inserting rows that already exist. MERGE does the join once, in one statement, and the whole thing succeeds or fails as a unit."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You will merge a daily supplier feed into a <code class=\"inline-code\">products</code> table. The <code class=\"inline-code\">products</code> table is the target. The <code class=\"inline-code\">product_feed</code> table is the source, the kind of staging table you load from a CSV file."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE products (\n  product_id   NUMBER        PRIMARY KEY,\n  product_name VARCHAR2(50)  NOT NULL,\n  price        NUMBER(10,2)  NOT NULL,\n  status       VARCHAR2(15)  DEFAULT 'ACTIVE' NOT NULL\n);\n\nCREATE TABLE product_feed (\n  product_id   NUMBER,\n  product_name VARCHAR2(50),\n  price        NUMBER(10,2),\n  discontinued CHAR(1)\n);\n\nINSERT INTO products VALUES (1, 'USB-C Cable',    299,  'ACTIVE');\nINSERT INTO products VALUES (2, 'Wireless Mouse', 799,  'ACTIVE');\nINSERT INTO products VALUES (3, 'Laptop Stand',   1499, 'ACTIVE');\n\nINSERT INTO product_feed VALUES (2, 'Wireless Mouse', 749,  'N');\nINSERT INTO product_feed VALUES (3, 'Laptop Stand',   1499, 'Y');\nINSERT INTO product_feed VALUES (4, 'Webcam HD',      2499, 'N');\nINSERT INTO product_feed VALUES (5, 'Old Keyboard',   999,  'Y');\n\nCOMMIT;",
+    "caption": "Create the sample tables"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Look at the feed before going on. Product 2 has a new price. Product 3 has the same price but is now discontinued. Products 4 and 5 are new, and product 5 is already discontinued. Product 1 is not in the feed at all."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "Each example below ends with <code class=\"inline-code\">ROLLBACK</code>, so the tables go back to this starting state and you can run the next example on the same data."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 1: a basic upsert",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The simplest MERGE updates matched products with the feed values and inserts the new ones."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "MERGE INTO products p\nUSING product_feed f\nON (p.product_id = f.product_id)\nWHEN MATCHED THEN\n  UPDATE SET p.product_name = f.product_name,\n             p.price        = f.price\nWHEN NOT MATCHED THEN\n  INSERT (product_id, product_name, price)\n  VALUES (f.product_id, f.product_name, f.price);\n\nSELECT * FROM products ORDER BY product_id;",
+    "caption": "Basic upsert"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "PRODUCT_ID PRODUCT_NAME     PRICE STATUS\n---------- -------------- ------- -------\n         1 USB-C Cable        299 ACTIVE\n         2 Wireless Mouse     749 ACTIVE\n         3 Laptop Stand      1499 ACTIVE\n         4 Webcam HD         2499 ACTIVE\n         5 Old Keyboard       999 ACTIVE",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Products 2 and 3 matched, so they were updated. Product 2 now costs 749. Product 3 was \"updated\" to the same values it already had. Products 4 and 5 did not match, so they were inserted, and their <code class=\"inline-code\">status</code> came from the column default because the INSERT column list left it out. Product 1 was not in the feed, so it is unchanged."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two problems are visible in this result. Product 3 was rewritten for no reason, and product 5 was added even though the supplier has discontinued it. The next example fixes both."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ROLLBACK;",
+    "caption": "Undo before the next example"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 2: conditional update and insert with WHERE",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both branches accept an optional <code class=\"inline-code\">WHERE</code> clause. A row that fails the WHERE condition is simply skipped by that branch."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "MERGE INTO products p\nUSING product_feed f\nON (p.product_id = f.product_id)\nWHEN MATCHED THEN\n  UPDATE SET p.product_name = f.product_name,\n             p.price        = f.price\n  WHERE p.price <> f.price\nWHEN NOT MATCHED THEN\n  INSERT (product_id, product_name, price)\n  VALUES (f.product_id, f.product_name, f.price)\n  WHERE f.discontinued = 'N';\n\nSELECT * FROM products ORDER BY product_id;",
+    "caption": "MERGE with WHERE clauses"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "PRODUCT_ID PRODUCT_NAME     PRICE STATUS\n---------- -------------- ------- -------\n         1 USB-C Cable        299 ACTIVE\n         2 Wireless Mouse     749 ACTIVE\n         3 Laptop Stand      1499 ACTIVE\n         4 Webcam HD         2499 ACTIVE",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now only product 2 was updated, because it is the only matched row whose price changed. Product 4 was inserted. Product 5 was skipped by the insert branch because its discontinued flag is Y."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There is one rule to remember here. The update WHERE clause can refer to both the source and the target. The insert WHERE clause can refer <b>only to source columns</b>, which makes sense: when no row matched, there is no target row to look at."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "Skipping unchanged rows is more than tidiness. Every row the update branch touches generates redo and undo, fires update triggers and takes a row lock. A <code class=\"inline-code\">WHERE p.price <> f.price</code> filter avoids all of that for rows that did not change. If the compared columns can be NULL, remember that <code class=\"inline-code\">NULL <> 5</code> is not true, so use a NULL-safe test such as <code class=\"inline-code\">DECODE(p.price, f.price, 0, 1) = 1</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ROLLBACK;",
+    "caption": "Undo before the next example"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 3: delete rows with MERGE DELETE WHERE",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The matched branch can also delete rows. The <code class=\"inline-code\">DELETE WHERE</code> clause goes after the UPDATE SET (and its optional WHERE), and it is the part of MERGE that confuses people most, so take it one step at a time."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: write the statement",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here the feed marks product 3 as discontinued. You want to remove discontinued products from the table during the same merge."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "MERGE INTO products p\nUSING product_feed f\nON (p.product_id = f.product_id)\nWHEN MATCHED THEN\n  UPDATE SET p.price  = f.price,\n             p.status = CASE f.discontinued\n                          WHEN 'Y' THEN 'DISCONTINUED'\n                          ELSE 'ACTIVE'\n                        END\n  DELETE WHERE p.status = 'DISCONTINUED'\nWHEN NOT MATCHED THEN\n  INSERT (product_id, product_name, price)\n  VALUES (f.product_id, f.product_name, f.price)\n  WHERE f.discontinued = 'N';\n\nSELECT * FROM products ORDER BY product_id;",
+    "caption": "MERGE with DELETE WHERE"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "PRODUCT_ID PRODUCT_NAME     PRICE STATUS\n---------- -------------- ------- -------\n         1 USB-C Cable        299 ACTIVE\n         2 Wireless Mouse     749 ACTIVE\n         4 Webcam HD         2499 ACTIVE",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: understand what happened",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Product 3 matched, so the UPDATE set its status to DISCONTINUED. Then the DELETE WHERE checked the row and found <code class=\"inline-code\">status = 'DISCONTINUED'</code>, so it deleted it. The key point is that <b>DELETE WHERE sees the updated values</b>, not the values the row had before the merge. The original status of product 3 was ACTIVE, yet it was deleted."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Product 2 was updated and its new status is ACTIVE, so it stays. Product 4 was inserted. Product 5 was skipped by the insert WHERE."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: know what DELETE WHERE cannot do",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "DELETE WHERE only acts on rows that the merge has just updated. Two consequences follow:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "A target row that is not in the source is never deleted. Product 1 is missing from the feed, but MERGE has no way to remove it. If you need \"delete what is not in the feed\", run a separate DELETE ... WHERE NOT EXISTS.",
+      "items": []
+     },
+     {
+      "content": "A matched row that the update WHERE clause skipped is not updated, so it is not a candidate for deletion either.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "MERGE with DELETE fires delete triggers for each deleted row, and needs the DELETE privilege on the target table in addition to INSERT and UPDATE."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ROLLBACK;",
+    "caption": "Undo before the next example"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 4: update-only and insert-only MERGE",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You do not have to write both branches. An update-only MERGE is a clean way to update one table from another, which is awkward with a plain UPDATE because Oracle's UPDATE has no FROM clause."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "MERGE INTO products p\nUSING product_feed f\nON (p.product_id = f.product_id)\nWHEN MATCHED THEN\n  UPDATE SET p.price = f.price;",
+    "caption": "Update-only MERGE: sync prices from the feed"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This touches products 2 and 3 only. New products in the feed are ignored because there is no NOT MATCHED branch."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An insert-only MERGE adds missing rows and leaves existing ones alone. It replaces the common INSERT ... SELECT ... WHERE NOT EXISTS pattern:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "MERGE INTO products p\nUSING product_feed f\nON (p.product_id = f.product_id)\nWHEN NOT MATCHED THEN\n  INSERT (product_id, product_name, price)\n  VALUES (f.product_id, f.product_name, f.price);\n\nSELECT product_id, product_name, price FROM products ORDER BY product_id;\n\nROLLBACK;",
+    "caption": "Insert-only MERGE: add new products, never change existing ones"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "PRODUCT_ID PRODUCT_NAME     PRICE\n---------- -------------- -------\n         1 USB-C Cable        299\n         2 Wireless Mouse     799\n         3 Laptop Stand      1499\n         4 Webcam HD         2499\n         5 Old Keyboard       999",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Products 2 and 3 keep their old prices, and products 4 and 5 are added."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 5: upsert a single row from PL/SQL",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Often there is no source table at all. An application or procedure has a few values and wants to \"insert or update\" one row. Build a one-row source from <code class=\"inline-code\">DUAL</code> with the values as parameters or bind variables:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "CREATE OR REPLACE PROCEDURE save_product (\n  p_id    IN products.product_id%TYPE,\n  p_name  IN products.product_name%TYPE,\n  p_price IN products.price%TYPE\n) AS\nBEGIN\n  MERGE INTO products p\n  USING (SELECT p_id    AS product_id,\n                p_name  AS product_name,\n                p_price AS price\n           FROM dual) s\n  ON (p.product_id = s.product_id)\n  WHEN MATCHED THEN\n    UPDATE SET p.product_name = s.product_name,\n               p.price        = s.price\n  WHEN NOT MATCHED THEN\n    INSERT (product_id, product_name, price)\n    VALUES (s.product_id, s.product_name, s.price);\nEND save_product;\n/\n\nBEGIN\n  save_product(1, 'USB-C Cable 2m', 349);   -- exists: updated\n  save_product(6, 'HDMI Cable',     399);   -- new: inserted\nEND;\n/\n\nSELECT * FROM products ORDER BY product_id;",
+    "caption": "One-row upsert procedure"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "PRODUCT_ID PRODUCT_NAME     PRICE STATUS\n---------- -------------- ------- -------\n         1 USB-C Cable 2m     349 ACTIVE\n         2 Wireless Mouse     799 ACTIVE\n         3 Laptop Stand      1499 ACTIVE\n         6 HDMI Cable         399 ACTIVE",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The caller does not need to check first whether the row exists. That check-then-act pattern (SELECT COUNT(*), then INSERT or UPDATE) is slower, and between the check and the write another session may already have inserted the same key."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "MERGE does not fully remove that race. If two sessions merge the same <i>new</i> key at the same moment, both can take the insert branch, and the second one fails with ORA-00001 when the primary key is checked. Keep a primary key or unique constraint on the join column, and catch <code class=\"inline-code\">DUP_VAL_ON_INDEX</code> and retry where concurrent upserts of the same key are possible."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ROLLBACK;",
+    "caption": "Undo before the next example"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ORA-30926: duplicate keys in the source",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "MERGE is deterministic: Oracle will not update the same target row twice in one statement. If the source contains two rows with the same key, both match one target row and the statement fails."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "INSERT INTO product_feed VALUES (2, 'Wireless Mouse', 699, 'N');\n\nMERGE INTO products p\nUSING product_feed f\nON (p.product_id = f.product_id)\nWHEN MATCHED THEN\n  UPDATE SET p.price = f.price;",
+    "caption": "Product 2 now appears twice in the feed"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-30926: unable to get a stable set of rows in the source tables",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle 19c reports the message above. The current Oracle error documentation also lists a newer wording for the same code: \"The operation attempted to update the same row (rowid: '...') twice.\" Either way, the fix is to make the source return one row per key. Decide which duplicate wins and filter the others out:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "MERGE INTO products p\nUSING (SELECT product_id, product_name, price, discontinued\n         FROM (SELECT f.*,\n                      ROW_NUMBER() OVER (PARTITION BY product_id\n                                         ORDER BY price) AS rn\n                 FROM product_feed f)\n        WHERE rn = 1) s\nON (p.product_id = s.product_id)\nWHEN MATCHED THEN\n  UPDATE SET p.price = s.price;\n\nROLLBACK;",
+    "caption": "Keep one row per product_id (here: the lowest price)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In real feeds you would order by a load timestamp so the latest row wins. Find duplicates before merging with GROUP BY product_id HAVING COUNT(*) > 1."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ORA-38104: updating a column used in the ON clause",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You cannot change a column that the ON condition uses, because changing it would change which rows match."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "MERGE INTO products p\nUSING product_feed f\nON (p.product_id = f.product_id)\nWHEN MATCHED THEN\n  UPDATE SET p.product_id = f.product_id,\n             p.price      = f.price;",
+    "caption": "Fails: product_id is in the ON clause"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-38104: Columns referenced in the ON Clause cannot be updated: <column name>",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Remove the join column from UPDATE SET. Its value is already equal on both sides, so there is nothing to update."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Other mistakes",
+    "level": 3
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Missing parentheses around ON.</b> Oracle requires <code class=\"inline-code\">ON (condition)</code>. Writing <code class=\"inline-code\">ON p.id = f.id</code> without them is a syntax error.",
+      "items": []
+     },
+     {
+      "content": "<b>NULL keys in the source.</b> A NULL never equals anything, so a source row with a NULL key always goes to the insert branch. With a NOT NULL primary key it fails, without one it creates junk rows. Filter NULL keys out of the source.",
+      "items": []
+     },
+     {
+      "content": "<b>Expecting MERGE to delete rows missing from the source.</b> It cannot. Use a separate DELETE with NOT EXISTS.",
+      "items": []
+     },
+     {
+      "content": "<b>Referencing the target in the insert WHERE clause.</b> Only source columns are allowed there.",
+      "items": []
+     },
+     {
+      "content": "<b>Forgetting to COMMIT.</b> MERGE is ordinary DML. Nothing is permanent until the transaction commits.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Use one set-based MERGE, not a MERGE per row in a loop.</b> A single statement over the whole staging table lets the optimizer choose a hash join and avoids a round trip per row. Keep the single-row pattern from Example 5 for application calls that really handle one row.",
+      "items": []
+     },
+     {
+      "content": "<b>Index the target join column.</b> When the source is small and the target is large, an index on the target key (usually the primary key) lets Oracle find matches without scanning the whole table.",
+      "items": []
+     },
+     {
+      "content": "<b>Keep the source narrow.</b> Select only the columns and rows you need in the USING subquery. Filtering there is cheaper than filtering in the branch WHERE clauses.",
+      "items": []
+     },
+     {
+      "content": "<b>Skip unchanged rows</b> with an update WHERE clause, as in Example 2, to cut redo, undo and trigger work.",
+      "items": []
+     },
+     {
+      "content": "<b>Check the plan</b> with EXPLAIN PLAN like any other statement. A MERGE plan shows the join between source and target, and that join is where the time goes.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For large loads where a few bad rows should not roll back the whole statement, MERGE supports DML error logging, which behaves the same way as for INSERT. Create the error table once, then add the LOG ERRORS clause:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "EXEC DBMS_ERRLOG.CREATE_ERROR_LOG('PRODUCTS');\n\nMERGE INTO products p\nUSING product_feed f\nON (p.product_id = f.product_id)\nWHEN MATCHED THEN\n  UPDATE SET p.price = f.price\nWHEN NOT MATCHED THEN\n  INSERT (product_id, product_name, price)\n  VALUES (f.product_id, f.product_name, f.price)\nLOG ERRORS INTO err$_products ('feed load') REJECT LIMIT UNLIMITED;",
+    "caption": "Log bad rows instead of failing the whole MERGE"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Rows that fail, for example a NULL price hitting the NOT NULL constraint, are written to <code class=\"inline-code\">ERR$_PRODUCTS</code> with the error message and the tag 'feed load', and the rest of the merge continues."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is MERGE faster than separate UPDATE and INSERT statements?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Usually, yes. MERGE joins source and target once, while separate statements read the data at least twice and need a NOT EXISTS check for the insert. The bigger gain is avoiding row-by-row processing. Check the execution plan for your own data rather than assuming."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I use a WITH clause (CTE) in an Oracle MERGE?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Not before the MERGE keyword. Put the WITH clause inside the USING subquery instead: <code class=\"inline-code\">USING (WITH latest AS (...) SELECT ... FROM latest) s</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does MERGE fire triggers in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes. If the update branch runs, the update triggers on the target fire. If the insert branch runs, the insert triggers fire. Rows removed by DELETE WHERE fire delete triggers."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can MERGE update the same row twice?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. If two source rows match one target row, the statement fails with ORA-30926. De-duplicate the source first, as shown above."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What privileges do I need to run MERGE?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "INSERT and UPDATE on the target table, SELECT on the source, and DELETE on the target if you use the DELETE WHERE clause."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "MERGE INTO target USING source ON (condition) updates matched rows and inserts unmatched ones in one statement.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Wrap the ON condition in parentheses and make sure the source returns one row per key, or you get ORA-30926.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Never update a column used in the ON clause (ORA-38104).",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use the update WHERE clause to skip unchanged rows. The insert WHERE clause can use only source columns.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "DELETE WHERE sees updated values and only removes rows the merge just updated, never rows missing from the source.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use a one-row USING (SELECT ... FROM dual) source for single-row upserts, and keep a unique constraint on the key.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Merge whole sets, not one row at a time in a loop, and consider LOG ERRORS for large loads.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ]
+}
