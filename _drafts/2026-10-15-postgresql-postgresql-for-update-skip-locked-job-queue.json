@@ -1,0 +1,891 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL FOR UPDATE SKIP LOCKED: Build a Safe Job Queue",
+ "slug": "postgresql-for-update-skip-locked-job-queue",
+ "category": "postgresql",
+ "description": "Learn how FOR UPDATE SKIP LOCKED lets many workers take jobs from one PostgreSQL table without waiting or double work, with real examples and output.",
+ "focusKeyword": "postgresql for update skip locked",
+ "tags": [
+  "postgresql",
+  "locking",
+  "skip-locked",
+  "job-queue",
+  "concurrency"
+ ],
+ "related": [
+  "/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/",
+  "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL docs: SELECT, The Locking Clause",
+   "url": "https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE"
+  },
+  {
+   "title": "PostgreSQL docs: Explicit Locking (row-level locks)",
+   "url": "https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS"
+  },
+  {
+   "title": "PostgreSQL docs: pgrowlocks",
+   "url": "https://www.postgresql.org/docs/current/pgrowlocks.html"
+  },
+  {
+   "title": "PostgreSQL docs: System Information Functions (pg_blocking_pids)",
+   "url": "https://www.postgresql.org/docs/current/functions-info.html"
+  },
+  {
+   "title": "PostgreSQL docs: Partial Indexes",
+   "url": "https://www.postgresql.org/docs/current/indexes-partial.html"
+  }
+ ],
+ "reviewNotes": "All examples were run on PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) in a scratch database; outputs are real, with trailing spaces trimmed and some command tags omitted. Concurrent sessions were driven from separate psql processes, so pids will differ for readers. postgresql.org, sqltips.in and Google autocomplete were blocked from the run environment: docs were read from the official postgresql-doc-16 package (same text as the online v16 docs), the related-article list came from the repo master branch instead of search-index.json, and the focus keyword is based on web search results, not autocomplete. Please confirm: (1) SKIP LOCKED introduced in 9.5 (from memory and a search snippet, not checked against release notes in this run); (2) the related URLs are live; (3) the Step 4 three-worker output came from a run with pg_sleep(3) inside each transaction.",
+ "generatedAt": "2026-10-15T19:09:48Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">FOR UPDATE SKIP LOCKED</code> tells PostgreSQL to lock the rows a query selects, but to quietly skip any row that another transaction has already locked instead of waiting for it. That one clause lets several workers pull jobs from the same table at the same time without blocking each other and without two workers picking the same job."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This guide builds a small job queue on a real table, runs two and three sessions side by side, and shows the actual output at each step. You will see why a plain <code class=\"inline-code\">FOR UPDATE</code> makes workers wait in line, what <code class=\"inline-code\">NOWAIT</code> does instead, how to claim a job in a single safe statement, and the mistakes that quietly break a queue."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How FOR UPDATE SKIP LOCKED works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A normal <code class=\"inline-code\">SELECT</code> takes no row locks. Adding <code class=\"inline-code\">FOR UPDATE</code> locks every row the query returns until your transaction ends with <code class=\"inline-code\">COMMIT</code> or <code class=\"inline-code\">ROLLBACK</code>. If another transaction already holds a conflicting lock on one of those rows, your query stops and waits."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The locking clause has two options that change what happens on a conflict:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Clause",
+      "What happens if a row is already locked",
+      "Typical use"
+     ],
+     [
+      "FOR UPDATE",
+      "Waits until the other transaction finishes",
+      "Updating a specific row safely"
+     ],
+     [
+      "FOR UPDATE NOWAIT",
+      "Fails at once with an error",
+      "Fail fast instead of hanging"
+     ],
+     [
+      "FOR UPDATE SKIP LOCKED",
+      "Leaves that row out of the result and moves on",
+      "Queue tables with many consumers"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">SKIP LOCKED</code> is available from PostgreSQL 9.5 onward. The full syntax is <code class=\"inline-code\">FOR lock_strength [ OF table_name [, ...] ] [ NOWAIT | SKIP LOCKED ]</code>, where the lock strength is <code class=\"inline-code\">UPDATE</code>, <code class=\"inline-code\">NO KEY UPDATE</code>, <code class=\"inline-code\">SHARE</code> or <code class=\"inline-code\">KEY SHARE</code>. This article uses <code class=\"inline-code\">FOR UPDATE</code> because a worker is about to change the job row."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Not for normal reads",
+    "text": "The PostgreSQL documentation says skipping locked rows gives an inconsistent view of the data. A report that uses <code class=\"inline-code\">SKIP LOCKED</code> will silently miss rows. Use it for work-distribution tables like queues, not for queries whose answer must be complete."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup: a jobs table",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a scratch database and this table. Each row is a background job, such as sending an order email or building an invoice. Higher priority jobs should run first."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE jobs (\n    job_id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    job_type    text        NOT NULL,\n    payload     jsonb       NOT NULL,\n    status      text        NOT NULL DEFAULT 'pending',\n    priority    int         NOT NULL DEFAULT 0,\n    attempts    int         NOT NULL DEFAULT 0,\n    created_at  timestamptz NOT NULL DEFAULT now(),\n    started_at  timestamptz\n);\n\nINSERT INTO jobs (job_type, payload, priority) VALUES\n  ('send_email',   '{\"order_id\": 1001}', 0),\n  ('send_email',   '{\"order_id\": 1002}', 0),\n  ('make_invoice', '{\"order_id\": 1001}', 5),\n  ('send_sms',     '{\"order_id\": 1003}', 0),\n  ('make_invoice', '{\"order_id\": 1002}', 5);\n\nSELECT job_id, job_type, payload, status, priority\n  FROM jobs\n ORDER BY job_id;",
+    "caption": "Create the jobs table and five pending jobs"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "job_id",
+      "job_type",
+      "payload",
+      "status",
+      "priority"
+     ],
+     [
+      "1",
+      "send_email",
+      "{\"order_id\": 1001}",
+      "pending",
+      "0"
+     ],
+     [
+      "2",
+      "send_email",
+      "{\"order_id\": 1002}",
+      "pending",
+      "0"
+     ],
+     [
+      "3",
+      "make_invoice",
+      "{\"order_id\": 1001}",
+      "pending",
+      "5"
+     ],
+     [
+      "4",
+      "send_sms",
+      "{\"order_id\": 1003}",
+      "pending",
+      "0"
+     ],
+     [
+      "5",
+      "make_invoice",
+      "{\"order_id\": 1002}",
+      "pending",
+      "5"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every worker wants \"the next pending job\": highest <code class=\"inline-code\">priority</code> first, oldest <code class=\"inline-code\">job_id</code> first within the same priority. With this data, that means job 3, then job 5, then jobs 1, 2 and 4."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: see the problem with plain FOR UPDATE",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Open two psql sessions. Session A starts a transaction and locks the next job, then keeps the transaction open, as a worker does while it processes the job."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Session A\nBEGIN;\n\nSELECT job_id, job_type, payload\n  FROM jobs\n WHERE status = 'pending'\n ORDER BY priority DESC, job_id\n LIMIT 1\n   FOR UPDATE;",
+    "caption": "Session A locks the next job"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\n job_id |   job_type   |      payload\n--------+--------------+--------------------\n      3 | make_invoice | {\"order_id\": 1001}\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now session B runs the exact same query. It does not return. It sits there, waiting for session A to finish."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find out who is waiting on whom",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "From a third session, <code class=\"inline-code\">pg_stat_activity</code> and <code class=\"inline-code\">pg_blocking_pids()</code> show the wait:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, state, wait_event_type, wait_event\n  FROM pg_stat_activity\n WHERE datname = 'qdemo'\n   AND pid <> pg_backend_pid();\n\nSELECT pid, pg_blocking_pids(pid) AS blocked_by\n  FROM pg_stat_activity\n WHERE cardinality(pg_blocking_pids(pid)) > 0;",
+    "caption": "Check which session is blocked"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  |        state        | wait_event_type |  wait_event\n------+---------------------+-----------------+---------------\n 1326 | idle in transaction | Client          | ClientRead\n 1330 | active              | Lock            | transactionid\n(2 rows)\n\n pid  | blocked_by\n------+------------\n 1330 | {1326}\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Session A (pid 1326) is <code class=\"inline-code\">idle in transaction</code>: it holds the lock and is waiting for its client to send the next command. Session B (pid 1330) has <code class=\"inline-code\">wait_event_type = Lock</code> and is blocked by A. It waits on A's transaction ID because PostgreSQL records row locks on the row itself, so a waiter has to wait for the locking transaction to end. Your pids will differ, and <code class=\"inline-code\">qdemo</code> is the scratch database name used here."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is safe, but it does not scale. With ten workers, nine of them wait behind the first one, so your \"parallel\" workers process one job at a time."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: fail fast with NOWAIT",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "While session A still holds its lock, run the query in session B with <code class=\"inline-code\">NOWAIT</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Session B\nSELECT job_id, job_type, payload\n  FROM jobs\n WHERE status = 'pending'\n ORDER BY priority DESC, job_id\n LIMIT 1\n   FOR UPDATE NOWAIT;",
+    "caption": "NOWAIT raises an error instead of waiting"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  could not obtain lock on row in relation \"jobs\"",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No waiting, but no job either. The error aborts session B's transaction if it was inside one, so the application must catch it, roll back and retry. <code class=\"inline-code\">NOWAIT</code> suits cases like \"let a user edit this record only if nobody else is editing it\". It is a poor fit for a queue, because the workers keep hitting the same top row and failing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: skip the locked job with SKIP LOCKED",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Still with session A holding job 3, run the query in session B with <code class=\"inline-code\">SKIP LOCKED</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Session B\nSELECT job_id, job_type, payload\n  FROM jobs\n WHERE status = 'pending'\n ORDER BY priority DESC, job_id\n LIMIT 1\n   FOR UPDATE SKIP LOCKED;",
+    "caption": "SKIP LOCKED returns the next free job"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " job_id |   job_type   |      payload\n--------+--------------+--------------------\n      5 | make_invoice | {\"order_id\": 1002}\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Session B returns immediately with job 5, the next job in priority order that nobody holds. Job 3 is still pending in the table. It is just invisible to B while A has it locked."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Why does LIMIT 1 still return a row after skipping one? Look at the plan. The lock step sits below the limit, so PostgreSQL keeps pulling sorted rows and trying to lock them until it has one it could lock:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (COSTS OFF)\nSELECT job_id, job_type, payload\n  FROM jobs\n WHERE status = 'pending'\n ORDER BY priority DESC, job_id\n LIMIT 1\n   FOR UPDATE SKIP LOCKED;",
+    "caption": "Show the plan"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                       QUERY PLAN\n--------------------------------------------------------\n Limit\n   ->  LockRows\n         ->  Sort\n               Sort Key: priority DESC, job_id\n               ->  Seq Scan on jobs\n                     Filter: (status = 'pending'::text)\n(6 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: claim a job in one statement",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Selecting the job is only half the work. The worker must also mark it as taken. Do both in one <code class=\"inline-code\">UPDATE</code> with a subquery. <code class=\"inline-code\">UPDATE</code> itself has no <code class=\"inline-code\">SKIP LOCKED</code> option, so the locking clause goes inside the subquery:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE jobs\n   SET status = 'running',\n       started_at = now(),\n       attempts = attempts + 1\n WHERE job_id = (\n         SELECT job_id\n           FROM jobs\n          WHERE status = 'pending'\n          ORDER BY priority DESC, job_id\n          LIMIT 1\n          FOR UPDATE SKIP LOCKED\n       )\nRETURNING job_id, job_type, payload, attempts;",
+    "caption": "Claim the next job atomically"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">RETURNING</code> hands the claimed job back to the application, so no second query is needed. To test it under real concurrency, three sessions each ran <code class=\"inline-code\">BEGIN</code>, this statement, then <code class=\"inline-code\">SELECT pg_sleep(3)</code> to simulate work, then <code class=\"inline-code\">COMMIT</code>, all started within a second of each other:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-- worker 1\n job_id |   job_type   |      payload       | attempts\n--------+--------------+--------------------+----------\n      3 | make_invoice | {\"order_id\": 1001} |        1\n\n-- worker 2\n job_id |   job_type   |      payload       | attempts\n--------+--------------+--------------------+----------\n      5 | make_invoice | {\"order_id\": 1002} |        1\n\n-- worker 3\n job_id |  job_type  |      payload       | attempts\n--------+------------+--------------------+----------\n      1 | send_email | {\"order_id\": 1001} |        1",
+    "caption": "Output from three workers running at once"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each worker got a different job, in priority order, and none of them waited for another. After all three committed, the table looks like this:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "job_id",
+      "job_type",
+      "status",
+      "attempts"
+     ],
+     [
+      "1",
+      "send_email",
+      "running",
+      "1"
+     ],
+     [
+      "2",
+      "send_email",
+      "pending",
+      "0"
+     ],
+     [
+      "3",
+      "make_invoice",
+      "running",
+      "1"
+     ],
+     [
+      "4",
+      "send_sms",
+      "pending",
+      "0"
+     ],
+     [
+      "5",
+      "make_invoice",
+      "running",
+      "1"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Claim several jobs at once",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If a worker can handle a batch, swap <code class=\"inline-code\">=</code> for <code class=\"inline-code\">IN</code> and raise the limit. This claimed the two remaining pending jobs:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE jobs\n   SET status = 'running',\n       started_at = now(),\n       attempts = attempts + 1\n WHERE job_id IN (\n         SELECT job_id\n           FROM jobs\n          WHERE status = 'pending'\n          ORDER BY priority DESC, job_id\n          LIMIT 10\n          FOR UPDATE SKIP LOCKED\n       )\nRETURNING job_id, job_type;",
+    "caption": "Claim up to 10 jobs"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " job_id |  job_type\n--------+------------\n      2 | send_email\n      4 | send_sms\n(2 rows)\n\nUPDATE 2",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When the queue is empty, or every pending row is locked by someone else, the same statement simply returns <code class=\"inline-code\">UPDATE 0</code> and no rows. Your worker should treat that as \"nothing to do\" and sleep briefly before polling again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: finish, retry or recover a job",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There are two common ways to run a worker, and they differ in how long the transaction stays open."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Pattern A: keep the transaction open while working",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run <code class=\"inline-code\">BEGIN</code>, the claim, the work, then mark the job done and <code class=\"inline-code\">COMMIT</code>. If the worker crashes, PostgreSQL rolls the transaction back, the row lock disappears, and the job is automatically pending again. The cost is one open transaction and one database connection per busy worker for the whole job. Keep this pattern for jobs that take seconds, not minutes."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Pattern B: claim, commit, then work",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Commit right after the claim so the status <code class=\"inline-code\">running</code> is saved and the lock is released. Do the work outside any transaction, then record the result:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- success\nUPDATE jobs\n   SET status = 'done'\n WHERE job_id = 3;\n\n-- failure: retry up to 3 attempts, then give up\nUPDATE jobs\n   SET status     = CASE WHEN attempts >= 3 THEN 'failed' ELSE 'pending' END,\n       started_at = NULL\n WHERE job_id = 5;",
+    "caption": "Record the outcome of a job"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now a crashed worker leaves its job stuck in <code class=\"inline-code\">running</code> forever, so you need a small cleanup job that puts old running jobs back in the queue. Choose a timeout comfortably longer than your slowest normal job:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE jobs\n   SET status = 'pending',\n       started_at = NULL\n WHERE status = 'running'\n   AND started_at < now() - interval '15 minutes'\nRETURNING job_id, job_type, attempts;",
+    "caption": "Requeue jobs that have been running too long"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " job_id |  job_type  | attempts\n--------+------------+----------\n      1 | send_email |        1\n(1 row)\n\nUPDATE 1",
+    "caption": "Output (job 1's started_at was set 20 minutes in the past to simulate a crash)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Because a job can now run more than once (a slow worker might finish after being requeued), the work itself should be safe to repeat. Sending the same email twice is the classic example; check whether it was already sent before sending."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Putting the lock outside a CTE",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Many people write the \"pick a job\" step as a CTE and add the locking clause to the outer query. PostgreSQL accepts it, but the documentation says locking clauses do not apply to WITH queries referenced by the main query. You can confirm with the pgrowlocks extension, which reads row locks from the table:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE EXTENSION pgrowlocks;\n\nBEGIN;\nWITH next_job AS (\n  SELECT job_id FROM jobs\n   WHERE status = 'pending'\n   ORDER BY job_id LIMIT 1\n)\nSELECT * FROM next_job FOR UPDATE SKIP LOCKED;\n\nSELECT locked_row, modes FROM pgrowlocks('jobs');\nROLLBACK;",
+    "caption": "Wrong: lock clause on the outer query"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " job_id\n--------\n      1\n(1 row)\n\n locked_row | modes\n------------+-------\n(0 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The query returned job 1 but locked nothing, so two workers can take the same job. Move <code class=\"inline-code\">FOR UPDATE SKIP LOCKED</code> inside the CTE and the lock appears:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\nWITH next_job AS (\n  SELECT job_id FROM jobs\n   WHERE status = 'pending'\n   ORDER BY job_id LIMIT 1\n     FOR UPDATE SKIP LOCKED\n)\nSELECT * FROM next_job;\n\nSELECT locked_row, modes FROM pgrowlocks('jobs');\nROLLBACK;",
+    "caption": "Right: lock clause inside the CTE"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " job_id\n--------\n      1\n(1 row)\n\n locked_row |     modes\n------------+----------------\n (0,19)     | {\"For Update\"}\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Running the SELECT without a transaction",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In autocommit mode, a lone <code class=\"inline-code\">SELECT ... FOR UPDATE SKIP LOCKED</code> commits as soon as it finishes, and the lock is gone before your code reads the result. Either wrap the select and the status update in one transaction, or use the single <code class=\"inline-code\">UPDATE ... RETURNING</code> statement from Step 4."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Using it with aggregates",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT count(*) FROM jobs WHERE status = 'pending' FOR UPDATE SKIP LOCKED;",
+    "caption": "Locking clauses need real rows"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  FOR UPDATE is not allowed with aggregate functions",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A count is not a row you can lock. Count without the locking clause, and accept that the number is approximate while workers are running."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Forgetting ORDER BY or LIMIT",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Without <code class=\"inline-code\">LIMIT</code>, the first worker locks every pending row and the others get nothing. Without <code class=\"inline-code\">ORDER BY</code>, you get whichever rows the scan finds first, which is not a fair or predictable order."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A queue table usually holds a few pending jobs and a lot of finished ones. With 200,000 done rows added to the sample table, the claim query reads the whole table to find four pending jobs:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Limit (actual rows=1 loops=1)\n  ->  LockRows (actual rows=1 loops=1)\n        ->  Sort (actual rows=1 loops=1)\n              Sort Key: priority DESC, job_id\n              Sort Method: quicksort  Memory: 25kB\n              ->  Seq Scan on jobs (actual rows=4 loops=1)\n                    Filter: (status = 'pending'::text)\n                    Rows Removed by Filter: 200001",
+    "caption": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) before indexing"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A partial index that matches the <code class=\"inline-code\">WHERE</code> and <code class=\"inline-code\">ORDER BY</code> of the claim query fixes this:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX jobs_pending_idx\n    ON jobs (priority DESC, job_id)\n WHERE status = 'pending';",
+    "caption": "Index only the pending jobs"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Limit (actual rows=1 loops=1)\n  ->  LockRows (actual rows=1 loops=1)\n        ->  Index Scan using jobs_pending_idx on jobs (actual rows=1 loops=1)\n              Filter: (status = 'pending'::text)",
+    "caption": "Same query after the index"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The plan now reads one index entry and stops. The partial index was 16 kB, against 4408 kB for the primary key on the same table, because it only covers pending rows."
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Every claim and every status change is an <code class=\"inline-code\">UPDATE</code>, which leaves a dead row version behind. Make sure autovacuum keeps up on the jobs table, and move or delete finished jobs regularly instead of keeping millions of <code class=\"inline-code\">done</code> rows.",
+      "items": []
+     },
+     {
+      "content": "Keep transactions short. A long-open transaction holds row locks and also stops VACUUM from cleaning dead rows across the database.",
+      "items": []
+     },
+     {
+      "content": "When the queue is empty, let workers sleep for a short interval before polling again instead of running the claim query in a tight loop.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Test with real concurrency",
+    "text": "Single-session tests cannot show locking bugs. Open two or three psql windows, keep one transaction open, and run your claim query in the others, exactly as in Steps 1 to 4."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What does SKIP LOCKED do in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It makes a <code class=\"inline-code\">SELECT ... FOR UPDATE</code> (or <code class=\"inline-code\">FOR SHARE</code>) skip any row it cannot lock immediately, instead of waiting. The query returns only rows it managed to lock."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Which PostgreSQL version added SKIP LOCKED?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL 9.5. Every supported version today has it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between NOWAIT and SKIP LOCKED?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">NOWAIT</code> raises <code class=\"inline-code\">ERROR: could not obtain lock on row</code> as soon as it meets a locked row. <code class=\"inline-code\">SKIP LOCKED</code> leaves that row out and returns the others. Neither waits."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I use SKIP LOCKED directly in an UPDATE or DELETE?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. The locking clause belongs to <code class=\"inline-code\">SELECT</code>. Put a <code class=\"inline-code\">SELECT ... FOR UPDATE SKIP LOCKED</code> subquery in the <code class=\"inline-code\">WHERE</code> clause of the <code class=\"inline-code\">UPDATE</code> or <code class=\"inline-code\">DELETE</code>, as shown in Step 4."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does SKIP LOCKED skip rows locked by the table-level lock?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. <code class=\"inline-code\">NOWAIT</code> and <code class=\"inline-code\">SKIP LOCKED</code> apply only to row-level locks. The query still takes its normal <code class=\"inline-code\">ROW SHARE</code> table lock and will wait if, for example, an <code class=\"inline-code\">ALTER TABLE</code> holds an <code class=\"inline-code\">ACCESS EXCLUSIVE</code> lock on the table."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Plain <code class=\"inline-code\">FOR UPDATE</code> is safe but makes workers wait for each other.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">NOWAIT</code> errors on a locked row; <code class=\"inline-code\">SKIP LOCKED</code> moves on to the next free row.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Claim jobs with one <code class=\"inline-code\">UPDATE ... WHERE job_id = (SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING</code> statement.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Put the locking clause inside the CTE or subquery, never only on the outer query.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Always use <code class=\"inline-code\">ORDER BY</code> and <code class=\"inline-code\">LIMIT</code> in the claim query.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "If you commit before doing the work, add a timeout job that requeues stuck <code class=\"inline-code\">running</code> rows, and make jobs safe to repeat.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Add a partial index on pending rows and keep finished jobs out of the hot table.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Never use <code class=\"inline-code\">SKIP LOCKED</code> for reports or any query that must see every row.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ]
+}
