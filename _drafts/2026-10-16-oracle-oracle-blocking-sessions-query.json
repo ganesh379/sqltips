@@ -1,0 +1,979 @@
+{
+ "schemaVersion": 1,
+ "title": "Oracle Blocking Sessions Query: Find and Fix Lock Waits",
+ "slug": "oracle-blocking-sessions-query",
+ "category": "plsql",
+ "description": "Find blocking sessions in Oracle with V$SESSION and V$LOCK, trace the root blocker and locked row, and resolve the block safely. With example output.",
+ "focusKeyword": "oracle blocking sessions query",
+ "tags": [
+  "oracle",
+  "locking",
+  "performance",
+  "dba"
+ ],
+ "related": [
+  "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/",
+  "/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/",
+  "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle Database 19c Reference: V$SESSION",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/V-SESSION.html"
+  },
+  {
+   "title": "Oracle Database 19c Reference: V$LOCK",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/V-LOCK.html"
+  },
+  {
+   "title": "Oracle Database 19c Reference: V$ACTIVE_SESSION_HISTORY",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/V-ACTIVE_SESSION_HISTORY.html"
+  },
+  {
+   "title": "Oracle Database 19c SQL Language Reference: ALTER SYSTEM",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/ALTER-SYSTEM.html"
+  },
+  {
+   "title": "Oracle Database 19c Concepts: Data Concurrency and Consistency",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/cncpt/data-concurrency-and-consistency.html"
+  },
+  {
+   "title": "Oracle Database 19c PL/SQL Packages: DBMS_ROWID",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_ROWID.html"
+  },
+  {
+   "title": "Oracle Database 19c Licensing Information (Diagnostics Pack)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/dblic/Licensing-Information.html"
+  }
+ ],
+ "reviewNotes": "Written from the Oracle 19c docs; no Oracle instance was available, so every query and every output block needs a test run (SIDs, serial numbers, file/block numbers and wait times are illustrative). Please verify: (1) the '@inst_id' form of KILL SESSION for RAC (the 19c ALTER SYSTEM text describes an optional integer3 instance ID; confirm the exact string syntax in the syntax diagram); (2) the 'about a minute' wait before the marked-for-kill message, taken from the ALTER SYSTEM text; (3) the DBMS_ROWID query (DATA_OBJECT_ID plus relative file number via DBA_DATA_FILES) returns the locked row 101; (4) the hierarchical query output layout; (5) the unindexed foreign key and NOWAIT/ORA-00054 statements, which come from general Oracle knowledge rather than a page fetched for this draft. The V$LOCKED_OBJECT FAQ answer is also not backed by a fetched source. FINAL_BLOCKING_SESSION is stated only as available in 19c; I did not confirm the earliest release.",
+ "generatedAt": "2026-10-16T00:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To find blocking sessions in Oracle, query <code class=\"inline-code\">V$SESSION</code> for rows where <code class=\"inline-code\">BLOCKING_SESSION</code> is not null. Each row is a session that is stuck waiting, and the <code class=\"inline-code\">BLOCKING_SESSION</code> column tells you the SID of the session holding the lock it needs."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "That one query answers the urgent question. This tutorial goes further: you will build a real blocking situation on a small table, read the output column by column, find the root blocker in a chain, see which table and row are locked, and learn the safe ways to clear the block. The queries use views that exist in Oracle 19c and later releases."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How blocking works in Oracle",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a transaction runs <code class=\"inline-code\">INSERT</code>, <code class=\"inline-code\">UPDATE</code>, <code class=\"inline-code\">DELETE</code>, <code class=\"inline-code\">MERGE</code> or <code class=\"inline-code\">SELECT ... FOR UPDATE</code>, Oracle takes a row lock (a <b>TX lock</b>) on every row it changes. That lock stays until the transaction commits or rolls back. It does not expire on its own."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If a second session tries to change one of those same rows, it has to wait. The waiting session is <b>blocked</b>, and the session holding the lock is the <b>blocker</b>. While it waits, the second session shows the wait event <code class=\"inline-code\">enq: TX - row lock contention</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A few rules from Oracle's concurrency model help you reason about what you see:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "A writer blocks another writer of the <b>same row</b>. Different rows in the same table do not block each other.",
+      "items": []
+     },
+     {
+      "content": "A plain <code class=\"inline-code\">SELECT</code> never blocks a writer, and a writer never blocks a plain <code class=\"inline-code\">SELECT</code>. Readers get a consistent older version of the row instead.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">SELECT ... FOR UPDATE</code> does lock rows, so it can block and be blocked like an <code class=\"inline-code\">UPDATE</code>.",
+      "items": []
+     },
+     {
+      "content": "Oracle never escalates row locks to a table lock, no matter how many rows you lock.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "So almost every blocking problem has the same shape: one transaction changed some rows and has not ended yet. The most common cause is an application, script or SQL tool that ran DML and never committed."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small <code class=\"inline-code\">orders</code> table and add a few rows. You need three separate connections (three SQL*Plus or SQL Developer sessions) to reproduce the block, plus one more connection with access to the <code class=\"inline-code\">V$</code> views to watch it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE orders (\n  order_id     NUMBER PRIMARY KEY,\n  customer     VARCHAR2(50),\n  status       VARCHAR2(20),\n  amount       NUMBER(10,2)\n);\n\nINSERT INTO orders VALUES (101, 'Asha',  'NEW',     2500);\nINSERT INTO orders VALUES (102, 'Ravi',  'NEW',     1800);\nINSERT INTO orders VALUES (103, 'Meena', 'SHIPPED', 4200);\nCOMMIT;",
+    "caption": "Sample table and data"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now create the block. Run each statement in the session shown, and do not commit in any of them."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Session 1: updates order 101 and does NOT commit\nUPDATE orders SET status = 'PAID' WHERE order_id = 101;\n\n-- Session 2: tries to update the same row. It hangs.\nUPDATE orders SET amount = 2600 WHERE order_id = 101;\n\n-- Session 3: also wants order 101. It hangs too.\nDELETE FROM orders WHERE order_id = 101;",
+    "caption": "Three sessions competing for one row"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Session 1 returns at once with \"1 row updated\". Sessions 2 and 3 appear frozen. They are not broken, they are waiting for Session 1 to commit or roll back."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "To query V$ views you need a privilege such as <code class=\"inline-code\">SELECT ANY DICTIONARY</code> or the <code class=\"inline-code\">SELECT_CATALOG_ROLE</code> role. DBA accounts have this already. Ask your DBA if you get ORA-00942 on V$SESSION."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: find blocked sessions with V$SESSION",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "From your monitoring connection, run the basic blocking sessions query:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT sid,\n       serial#,\n       username,\n       blocking_session,\n       event,\n       ROUND(wait_time_micro / 1e6) AS wait_secs,\n       sql_id\n  FROM v$session\n WHERE blocking_session IS NOT NULL\n ORDER BY wait_secs DESC;",
+    "caption": "Which sessions are blocked, and by whom"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Your SID, SERIAL# and SQL_ID values will differ."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "SID",
+      "SERIAL#",
+      "USERNAME",
+      "BLOCKING_SESSION",
+      "EVENT",
+      "WAIT_SECS",
+      "SQL_ID"
+     ],
+     [
+      "72",
+      "31877",
+      "APP_USER",
+      "45",
+      "enq: TX - row lock contention",
+      "95",
+      "(update sql_id)"
+     ],
+     [
+      "88",
+      "12043",
+      "APP_USER",
+      "45",
+      "enq: TX - row lock contention",
+      "40",
+      "(delete sql_id)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it like this: sessions 72 and 88 are waiting, and both point to session 45. Session 45 is the blocker. <code class=\"inline-code\">WAIT_SECS</code> shows how long each one has been in its current wait, and <code class=\"inline-code\">SQL_ID</code> identifies the statement that is stuck."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">BLOCKING_SESSION</code> value is only meaningful when <code class=\"inline-code\">BLOCKING_SESSION_STATUS</code> is <code class=\"inline-code\">VALID</code>. The other documented values are <code class=\"inline-code\">NO HOLDER</code> (nobody is blocking this session), <code class=\"inline-code\">NOT IN WAIT</code> (the session is not waiting) and <code class=\"inline-code\">UNKNOWN</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If this query returns no rows, nothing is blocked right now. Slowness at that moment has some other cause."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: look at the blocking session",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now find out who session 45 is and what it is doing. This query lists every session that is blocking at least one other session:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT s.sid,\n       s.serial#,\n       s.username,\n       s.status,\n       s.machine,\n       s.program,\n       s.event,\n       s.last_call_et AS secs_in_status,\n       s.prev_sql_id\n  FROM v$session s\n WHERE s.sid IN (SELECT blocking_session\n                   FROM v$session\n                  WHERE blocking_session IS NOT NULL);",
+    "caption": "Details of the blocker"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "SID",
+      "SERIAL#",
+      "USERNAME",
+      "STATUS",
+      "MACHINE",
+      "PROGRAM",
+      "EVENT",
+      "SECS_IN_STATUS",
+      "PREV_SQL_ID"
+     ],
+     [
+      "45",
+      "20511",
+      "APP_USER",
+      "INACTIVE",
+      "app-server-01",
+      "sqlplus.exe",
+      "SQL*Net message from client",
+      "130",
+      "(update sql_id)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the classic picture. The blocker is <code class=\"inline-code\">INACTIVE</code> and waiting on <code class=\"inline-code\">SQL*Net message from client</code>, which means it finished its last statement and is waiting for the client to send something. It is idle while still holding a lock. The client ran the <code class=\"inline-code\">UPDATE</code> and never committed."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">LAST_CALL_ET</code> is the number of seconds the session has been in its current status, so here it has sat idle for over two minutes. <code class=\"inline-code\">SQL_ID</code> is usually empty for an idle session, which is why the query shows <code class=\"inline-code\">PREV_SQL_ID</code>, the last statement it ran. Use <code class=\"inline-code\">MACHINE</code> and <code class=\"inline-code\">PROGRAM</code> to find the person or application behind it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see the text of that last statement, look it up in <code class=\"inline-code\">V$SQL</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT sql_text\n  FROM v$sql\n WHERE sql_id = '&prev_sql_id';",
+    "caption": "Statement text for a SQL_ID"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the blocker's <code class=\"inline-code\">STATUS</code> is <code class=\"inline-code\">ACTIVE</code> instead, it is still working, for example a long batch update. Killing it would throw away that work and start a rollback, so check with the owner first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: find the root blocker in a chain",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Blocking can form chains. Session A blocks B, and B, while waiting, holds locks that C needs. The direct blocker of C is B, but the session you need to deal with is A. Oracle tracks this for you in <code class=\"inline-code\">FINAL_BLOCKING_SESSION</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT sid,\n       blocking_session,\n       final_blocking_session,\n       event\n  FROM v$session\n WHERE final_blocking_session_status = 'VALID';",
+    "caption": "Direct and final blocker for each waiter"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output) for our setup, where both waiters are blocked by the same session:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "SID",
+      "BLOCKING_SESSION",
+      "FINAL_BLOCKING_SESSION",
+      "EVENT"
+     ],
+     [
+      "72",
+      "45",
+      "45",
+      "enq: TX - row lock contention"
+     ],
+     [
+      "88",
+      "45",
+      "45",
+      "enq: TX - row lock contention"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In a longer chain, <code class=\"inline-code\">BLOCKING_SESSION</code> and <code class=\"inline-code\">FINAL_BLOCKING_SESSION</code> differ, and the final one is the root. For a picture of the whole tree, use a hierarchical query:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT LPAD(' ', 2 * (LEVEL - 1)) || sid AS session_tree,\n       username,\n       status,\n       event\n  FROM v$session\n START WITH sid IN (SELECT blocking_session\n                      FROM v$session\n                     WHERE blocking_session IS NOT NULL)\n        AND blocking_session IS NULL\nCONNECT BY PRIOR sid = blocking_session;",
+    "caption": "Blocking tree, root blockers at the top"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "SESSION_TREE  USERNAME  STATUS    EVENT\n------------  --------  --------  -----------------------------\n45            APP_USER  INACTIVE  SQL*Net message from client\n  72          APP_USER  ACTIVE    enq: TX - row lock contention\n  88          APP_USER  ACTIVE    enq: TX - row lock contention",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">START WITH</code> clause picks sessions that block others but are not blocked themselves, which are the root blockers. <code class=\"inline-code\">CONNECT BY</code> then walks down to everyone waiting on them. Indentation shows the depth."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: confirm the lock with V$LOCK",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">V$LOCK</code> shows the locks themselves. A holder has <code class=\"inline-code\">BLOCK = 1</code> (its lock is blocking others), and a waiter has <code class=\"inline-code\">REQUEST > 0</code> (it is asking for a lock mode it has not got). Join them on the lock identity, which is <code class=\"inline-code\">TYPE</code>, <code class=\"inline-code\">ID1</code> and <code class=\"inline-code\">ID2</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT h.sid   AS holder_sid,\n       w.sid   AS waiter_sid,\n       h.type,\n       h.lmode AS held_mode,\n       w.request AS requested_mode\n  FROM v$lock h\n  JOIN v$lock w\n    ON  w.type = h.type\n   AND w.id1  = h.id1\n   AND w.id2  = h.id2\n WHERE h.block   = 1\n   AND w.request > 0;",
+    "caption": "Holder and waiter pairs from V$LOCK"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "HOLDER_SID",
+      "WAITER_SID",
+      "TYPE",
+      "HELD_MODE",
+      "REQUESTED_MODE"
+     ],
+     [
+      "45",
+      "72",
+      "TX",
+      "6",
+      "6"
+     ],
+     [
+      "45",
+      "88",
+      "TX",
+      "6",
+      "6"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Type <code class=\"inline-code\">TX</code> is a transaction (row) lock. Mode 6 is exclusive. So session 45 holds the transaction lock exclusively, and sessions 72 and 88 are asking for it in the same mode. They can only get it when session 45's transaction ends."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You will also see <code class=\"inline-code\">TM</code> rows (DML table locks) for every session doing DML. Those are normal and do not mean anything is blocked. That is why you should never treat \"V$LOCK returned rows\" as proof of blocking. Filter on <code class=\"inline-code\">BLOCK</code> and <code class=\"inline-code\">REQUEST</code> as shown."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: find the locked table and row",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A waiting session records what it is waiting for in <code class=\"inline-code\">ROW_WAIT_OBJ#</code> and related columns. Join to <code class=\"inline-code\">DBA_OBJECTS</code> to get the table name:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT s.sid,\n       o.owner,\n       o.object_name,\n       s.row_wait_file#,\n       s.row_wait_block#,\n       s.row_wait_row#\n  FROM v$session s\n  JOIN dba_objects o\n    ON o.object_id = s.row_wait_obj#\n WHERE s.blocking_session IS NOT NULL;",
+    "caption": "Which table the waiters are stuck on"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). File, block and row numbers will differ on your system."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "SID",
+      "OWNER",
+      "OBJECT_NAME",
+      "ROW_WAIT_FILE#",
+      "ROW_WAIT_BLOCK#",
+      "ROW_WAIT_ROW#"
+     ],
+     [
+      "72",
+      "APP_USER",
+      "ORDERS",
+      "12",
+      "4518",
+      "0"
+     ],
+     [
+      "88",
+      "APP_USER",
+      "ORDERS",
+      "12",
+      "4518",
+      "0"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see the exact row, rebuild its ROWID with <code class=\"inline-code\">DBMS_ROWID.ROWID_CREATE</code>. Two details trip people up here. The function wants the <b>data object number</b> (<code class=\"inline-code\">DATA_OBJECT_ID</code>), not <code class=\"inline-code\">OBJECT_ID</code>, and it wants the <b>relative</b> file number, while <code class=\"inline-code\">ROW_WAIT_FILE#</code> is the absolute file number. <code class=\"inline-code\">DBA_DATA_FILES</code> maps one to the other:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT s.sid,\n       DBMS_ROWID.ROWID_CREATE(1,\n                               o.data_object_id,\n                               f.relative_fno,\n                               s.row_wait_block#,\n                               s.row_wait_row#) AS locked_rowid\n  FROM v$session s\n  JOIN dba_objects    o ON o.object_id = s.row_wait_obj#\n  JOIN dba_data_files f ON f.file_id   = s.row_wait_file#\n WHERE s.blocking_session IS NOT NULL;",
+    "caption": "Build the ROWID of the locked row"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Then read the row with that ROWID, as the table owner:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT *\n  FROM orders\n WHERE ROWID = '&locked_rowid';",
+    "caption": "Show the locked row"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "CUSTOMER",
+      "STATUS",
+      "AMOUNT"
+     ],
+     [
+      "101",
+      "Asha",
+      "NEW",
+      "2500"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice the row still shows <code class=\"inline-code\">NEW</code>, not <code class=\"inline-code\">PAID</code>. You are reading the committed version, because Session 1's change is not committed yet. That is the same consistent-read behaviour that lets plain queries run while rows are locked."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "The ROW_WAIT columns are valid only while the session is waiting for another transaction and ROW_WAIT_OBJ# is not -1. Run this query while the block is happening. It gives nothing useful after the waiter has moved on. For an INSERT that waits on a duplicate primary key value, the row the waiter wants may not exist yet in committed form."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: resolve the block safely",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You have three options. Try them in this order."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Option 1: ask the owner to commit or roll back",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the cleanest fix. If the person in Session 1 runs <code class=\"inline-code\">COMMIT</code> or <code class=\"inline-code\">ROLLBACK</code>, the lock is released and the waiters continue immediately. Use <code class=\"inline-code\">USERNAME</code>, <code class=\"inline-code\">MACHINE</code> and <code class=\"inline-code\">PROGRAM</code> from Step 2 to find them. Nothing is lost and nothing is guessed."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Option 2: kill the blocking session",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the owner cannot be reached, a user with the <code class=\"inline-code\">ALTER SYSTEM</code> privilege can kill the session. You need both the SID and the SERIAL# from Step 2:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ALTER SYSTEM KILL SESSION '45,20511' IMMEDIATE;",
+    "caption": "Kill the blocker (SID, SERIAL#)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Killing a session rolls back its open transaction and releases its locks. <code class=\"inline-code\">IMMEDIATE</code> tells Oracle to do this and return control to you right away. Without it, if the session is busy with something that must finish first, such as a large rollback, Oracle waits up to about a minute and then returns a message saying the session is marked to be killed. The cleanup then finishes in the background."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On Oracle RAC, add the instance ID so you kill the session on the right node. Take <code class=\"inline-code\">INST_ID</code> from <code class=\"inline-code\">GV$SESSION</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ALTER SYSTEM KILL SESSION '45,20511,@2' IMMEDIATE;",
+    "caption": "Kill a session on instance 2 in RAC"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "",
+    "text": "Killing a session discards all of its uncommitted work. If the blocker had updated a million rows, all of that is rolled back, and the rollback itself can take a long time while the locks stay in place. Check STATUS, the SQL it ran and who owns it before you kill anything, and never kill Oracle background processes."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Option 3: disconnect after the transaction ends",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the blocker is doing valid work and you only want it gone afterwards, <code class=\"inline-code\">DISCONNECT SESSION ... POST_TRANSACTION</code> lets the current transaction finish before the session is disconnected:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ALTER SYSTEM DISCONNECT SESSION '45,20511' POST_TRANSACTION;",
+    "caption": "Disconnect once the transaction completes"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This does not help an idle session that never commits, because its transaction never finishes. Use it for active work you want to end cleanly."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find blocking sessions from the past",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">V$SESSION</code> only shows what is happening now. If users complain about a freeze that already cleared, use Active Session History. <code class=\"inline-code\">V$ACTIVE_SESSION_HISTORY</code> samples active sessions once a second and keeps the blocker for each wait:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT sample_time,\n       session_id,\n       blocking_session,\n       blocking_session_serial#,\n       event,\n       sql_id\n  FROM v$active_session_history\n WHERE blocking_session IS NOT NULL\n   AND sample_time > SYSTIMESTAMP - INTERVAL '30' MINUTE\n ORDER BY sample_time;",
+    "caption": "Blocking in the last 30 minutes (ASH)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Older history lives in <code class=\"inline-code\">DBA_HIST_ACTIVE_SESS_HISTORY</code>, which keeps a subset of these samples for longer."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "V$ACTIVE_SESSION_HISTORY and the DBA_HIST_ views are part of the Oracle Diagnostics Pack, a separately licensed option for Enterprise Edition. Querying them without that license is a licensing breach, even though the query works. Check with your DBA before you use them."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Killing the wrong session.</b> People see the waiting session in the first query and kill it. That only cancels the victim's work. Kill the session in <code class=\"inline-code\">BLOCKING_SESSION</code> or <code class=\"inline-code\">FINAL_BLOCKING_SESSION</code>, never the waiter.",
+      "items": []
+     },
+     {
+      "content": "<b>Using only the SID.</b> SIDs are reused. If the blocker disconnects and a new session gets the same SID, a kill command with an old serial number fails safely, but guessing the serial number can hit an innocent session. Always copy SID and SERIAL# from the same fresh query.",
+      "items": []
+     },
+     {
+      "content": "<b>Reading every V$LOCK row as a problem.</b> Every DML statement takes locks. Only <code class=\"inline-code\">BLOCK = 1</code> with a matching <code class=\"inline-code\">REQUEST > 0</code> waiter means blocking.",
+      "items": []
+     },
+     {
+      "content": "<b>Confusing blocking with deadlock.</b> Blocking lasts until the blocker ends its transaction. A deadlock is two sessions waiting on each other. Oracle detects deadlocks itself and raises ORA-00060 in one of the sessions, so you do not kill anything for a deadlock.",
+      "items": []
+     },
+     {
+      "content": "<b>Leaving autocommit off in a GUI tool and walking away.</b> An <code class=\"inline-code\">UPDATE</code> run in SQL Developer or Toad and left uncommitted holds its row locks until the session ends. This is a very common source of idle blockers.",
+      "items": []
+     },
+     {
+      "content": "<b>Querying V$SESSION on one node of a RAC database.</b> <code class=\"inline-code\">V$SESSION</code> shows only the local instance. Use <code class=\"inline-code\">GV$SESSION</code> with <code class=\"inline-code\">BLOCKING_INSTANCE</code> to see blockers on other nodes.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Best practices to prevent blocking",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Keep transactions short. Do the work, then commit. Do not hold a transaction open while waiting for user input or a slow external call.",
+      "items": []
+     },
+     {
+      "content": "Commit or roll back in every code path, including error handlers in PL/SQL and in the application.",
+      "items": []
+     },
+     {
+      "content": "Index foreign key columns. Without an index on the child table's foreign key, deleting or updating a parent key can lock the child table and block other DML on it.",
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">SELECT ... FOR UPDATE NOWAIT</code> or <code class=\"inline-code\">WAIT n</code> when an application should fail fast instead of hanging. With <code class=\"inline-code\">NOWAIT</code>, Oracle raises ORA-00054 straight away if the rows are locked.",
+      "items": []
+     },
+     {
+      "content": "For job queue style processing, <code class=\"inline-code\">SELECT ... FOR UPDATE SKIP LOCKED</code> lets each worker take rows that nobody else has locked.",
+      "items": []
+     },
+     {
+      "content": "Set <code class=\"inline-code\">MODULE</code> and <code class=\"inline-code\">ACTION</code> with <code class=\"inline-code\">DBMS_APPLICATION_INFO</code> in your code. It makes the blocker in Step 2 much easier to trace back to a program.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "Save the queries from Steps 1 to 3 as a script. When a user reports that the application has frozen, running one script tells you in seconds whether blocking is the cause and which session to look at."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I check for locks on a table in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Query <code class=\"inline-code\">V$LOCKED_OBJECT</code> joined to <code class=\"inline-code\">DBA_OBJECTS</code> on <code class=\"inline-code\">OBJECT_ID</code>. It lists every session that currently holds a lock on the object. Holding a lock is normal during DML; it only becomes a problem when another session is waiting, which Step 1 shows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does a SELECT statement block other sessions in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. A plain <code class=\"inline-code\">SELECT</code> takes no row locks and is never blocked by writers, because it reads a consistent version of the data. Only <code class=\"inline-code\">SELECT ... FOR UPDATE</code> locks rows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What does BLOCKING_SESSION_STATUS 'NO HOLDER' mean?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It means the session is waiting, but no session is blocking it. It is waiting on something other than another session's lock, so <code class=\"inline-code\">BLOCKING_SESSION</code> is empty."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I find blocking sessions in Oracle RAC?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Query <code class=\"inline-code\">GV$SESSION</code> instead of <code class=\"inline-code\">V$SESSION</code> and select <code class=\"inline-code\">INST_ID</code>, <code class=\"inline-code\">BLOCKING_INSTANCE</code> and <code class=\"inline-code\">BLOCKING_SESSION</code>. The blocker may be on a different instance from the waiter. Use the <code class=\"inline-code\">@inst_id</code> form of <code class=\"inline-code\">KILL SESSION</code> to target it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Will the blocked session get an error?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Not by default. A normal <code class=\"inline-code\">UPDATE</code> or <code class=\"inline-code\">DELETE</code> waits until the lock is released, however long that takes. When the blocker commits or rolls back, the waiter carries on. If the blocker is killed, its transaction is rolled back and the waiter continues."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Find waiters with <code class=\"inline-code\">SELECT ... FROM v$session WHERE blocking_session IS NOT NULL</code>.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Check the blocker's STATUS, EVENT, PREV_SQL_ID, MACHINE and PROGRAM. INACTIVE plus SQL*Net message from client usually means an uncommitted transaction.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use FINAL_BLOCKING_SESSION or a CONNECT BY query to find the root of a chain.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use ROW_WAIT_OBJ# and DBMS_ROWID to see the locked table and row.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Ask the owner to commit or roll back first. Kill only the blocker, with SID and SERIAL#, after checking what it is doing.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use ASH for past incidents only if you are licensed for the Diagnostics Pack.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Prevent blocking with short transactions, indexed foreign keys and NOWAIT or SKIP LOCKED where they fit.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ]
+}
