@@ -1,0 +1,1026 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL Upsert with ON CONFLICT: Examples and Pitfalls",
+ "slug": "postgresql-upsert-on-conflict",
+ "category": "postgresql",
+ "description": "Learn PostgreSQL upsert with INSERT ON CONFLICT DO UPDATE and DO NOTHING: multi-column keys, EXCLUDED, partial indexes, real errors and MERGE.",
+ "focusKeyword": "postgresql upsert on conflict",
+ "tags": [
+  "postgresql",
+  "upsert",
+  "on-conflict",
+  "insert",
+  "merge"
+ ],
+ "related": [
+  "/posts/plsql/oracle-merge-statement-example/",
+  "/posts/postgresql/postgresql-for-update-skip-locked-job-queue/",
+  "/posts/sql/sql-query-design-patterns-writing-efficient-queries/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL docs: INSERT (ON CONFLICT clause)",
+   "url": "https://www.postgresql.org/docs/current/sql-insert.html"
+  },
+  {
+   "title": "PostgreSQL docs: MERGE",
+   "url": "https://www.postgresql.org/docs/current/sql-merge.html"
+  },
+  {
+   "title": "PostgreSQL 17 release notes (MERGE RETURNING)",
+   "url": "https://www.postgresql.org/docs/release/17.0/"
+  },
+  {
+   "title": "PostgreSQL 18 release notes (RETURNING OLD/NEW)",
+   "url": "https://www.postgresql.org/docs/release/18.0/"
+  }
+ ],
+ "reviewNotes": "All examples run in order on PostgreSQL 16.15 (Ubuntu) in a scratch database; outputs and error messages are copied verbatim. Not run: RETURNING old/new (PostgreSQL 18 only) and MERGE RETURNING (17+), described from docs/release notes only. The xmax = 0 trick is undocumented internal behaviour and is labelled as such; editor may prefer to drop it. Version facts: ON CONFLICT 9.5 and MERGE 15 are from general knowledge plus release notes; please spot-check 9.5. The 'MERGE can still fail with a unique violation under concurrency' table cell is an inference from the MERGE docs' concurrency note, not a direct quote.",
+ "generatedAt": "2026-10-16T00:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To upsert in PostgreSQL, add an <code class=\"inline-code\">ON CONFLICT</code> clause to a normal <code class=\"inline-code\">INSERT</code>. <code class=\"inline-code\">ON CONFLICT (key) DO UPDATE SET ...</code> updates the row that already exists, and <code class=\"inline-code\">ON CONFLICT (key) DO NOTHING</code> quietly skips it. The whole thing runs as one atomic statement, so two sessions running the same upsert at the same time will not create duplicates."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This guide walks through every form you will use in real code: single and multi-column keys, the <code class=\"inline-code\">EXCLUDED</code> row, conditional updates, partial and expression indexes, telling inserts from updates, and when <code class=\"inline-code\">MERGE</code> is the better fit. Every example below was run on PostgreSQL 16, and the output shown is the real output."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How INSERT ON CONFLICT works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL tries to insert each row. If the row would violate a unique constraint or unique index named in the conflict target, PostgreSQL does not raise an error. It takes the alternative action instead. The documentation calls the chosen index the <b>arbiter index</b>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The general shape is:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO table_name (columns...)\nVALUES (...)\nON CONFLICT (conflict_target)\nDO UPDATE SET column = EXCLUDED.column [, ...]\n   [WHERE condition]\n-- or\nON CONFLICT (conflict_target) DO NOTHING;",
+    "caption": "Syntax outline"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Three pieces matter:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Conflict target</b>: the column list (or expression, or <code class=\"inline-code\">ON CONSTRAINT name</code>) that identifies the unique index to check. It is required for <code class=\"inline-code\">DO UPDATE</code> and optional for <code class=\"inline-code\">DO NOTHING</code>.",
+      "items": []
+     },
+     {
+      "content": "<b><code class=\"inline-code\">EXCLUDED</code></b>: a special row that holds the values you tried to insert. The existing row is referenced by the table name or its alias.",
+      "items": []
+     },
+     {
+      "content": "<b>Atomicity</b>: the docs state that <code class=\"inline-code\">DO UPDATE</code> \"guarantees an atomic INSERT or UPDATE outcome\". You do not need a separate SELECT, and you do not need to catch duplicate key errors in a retry loop.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">ON CONFLICT</code> has been available since PostgreSQL 9.5. It is a PostgreSQL extension, not standard SQL. The standard alternative is <code class=\"inline-code\">MERGE</code>, covered later."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small product catalogue to follow along. The primary key on product_id gives us a unique index to conflict on."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE products (\n    product_id  integer PRIMARY KEY,\n    name        text    NOT NULL,\n    price       numeric(10,2) NOT NULL,\n    stock       integer NOT NULL DEFAULT 0,\n    updated_at  timestamptz NOT NULL DEFAULT now()\n);\n\nINSERT INTO products (product_id, name, price, stock) VALUES\n    (101, 'USB-C Cable',      299.00, 50),\n    (102, 'Wireless Mouse',   799.00, 20),\n    (103, 'Laptop Stand',    1499.00,  8);",
+    "caption": "Sample table and data"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "First, see the problem upsert solves. A plain insert of an existing key fails:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO products (product_id, name, price, stock)\nVALUES (101, 'USB-C Cable', 279.00, 60);",
+    "caption": "Plain INSERT of a duplicate key"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  duplicate key value violates unique constraint \"products_pkey\"\nDETAIL:  Key (product_id)=(101) already exists.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Inside a transaction, that error also aborts everything else you did. ON CONFLICT avoids it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ON CONFLICT DO NOTHING: skip duplicates",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">DO NOTHING</code> when an existing row should win and new duplicates can be ignored, for example when loading events that may be delivered twice."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO products (product_id, name, price, stock)\nVALUES (101, 'USB-C Cable', 279.00, 60)\nON CONFLICT (product_id) DO NOTHING;",
+    "caption": "Ignore the row if the key exists"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INSERT 0 0",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The command tag <code class=\"inline-code\">INSERT 0 0</code> means zero rows were inserted, and no error was raised. The existing row for 101 is unchanged. With <code class=\"inline-code\">DO NOTHING</code> you may leave out the conflict target entirely; PostgreSQL then skips conflicts on any unique constraint of the table."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ON CONFLICT DO UPDATE: insert or update",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: overwrite with the new values",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the classic upsert. Row 101 exists, so it is updated. Row 104 is new, so it is inserted. Both happen in one statement."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO products (product_id, name, price, stock)\nVALUES (101, 'USB-C Cable', 279.00, 60),\n       (104, 'HDMI Adapter', 649.00, 15)\nON CONFLICT (product_id) DO UPDATE\nSET price      = EXCLUDED.price,\n    stock      = EXCLUDED.stock,\n    updated_at = now();\n\nSELECT product_id, name, price, stock FROM products ORDER BY product_id;",
+    "caption": "Upsert two rows"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INSERT 0 2",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "product_id",
+      "name",
+      "price",
+      "stock"
+     ],
+     [
+      "101",
+      "USB-C Cable",
+      "279.00",
+      "60"
+     ],
+     [
+      "102",
+      "Wireless Mouse",
+      "799.00",
+      "20"
+     ],
+     [
+      "103",
+      "Laptop Stand",
+      "1499.00",
+      "8"
+     ],
+     [
+      "104",
+      "HDMI Adapter",
+      "649.00",
+      "15"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice the command tag says <code class=\"inline-code\">INSERT 0 2</code> even though one row was updated. PostgreSQL counts both inserted and updated rows. <code class=\"inline-code\">EXCLUDED.price</code> is 279.00, the value from the VALUES list, so the old price of 299.00 was replaced."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "List only the columns you want to change in SET. Columns you leave out, like name above, keep their current values. There is no need to copy the key column; it already matches."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: combine old and new values",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can reference the existing row too. Give the table an alias with <code class=\"inline-code\">AS</code> so the expression reads clearly. Here, incoming stock is added to the current stock instead of replacing it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO products AS p (product_id, name, price, stock)\nVALUES (102, 'Wireless Mouse', 799.00, 5)\nON CONFLICT (product_id) DO UPDATE\nSET stock = p.stock + EXCLUDED.stock\nRETURNING product_id, stock;",
+    "caption": "Increment a counter with upsert"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "product_id",
+      "stock"
+     ],
+     [
+      "102",
+      "25"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The old stock was 20, the incoming value was 5, and the result is 25. This pattern is common for counters, daily totals and inventory. Because the existing row is locked before it is updated, concurrent upserts on the same key add up correctly under the default READ COMMITTED isolation level instead of losing increments. Under REPEATABLE READ or SERIALIZABLE, a concurrent change can instead raise a serialization error that your code must retry."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: update only when something changed",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">DO UPDATE</code> accepts a <code class=\"inline-code\">WHERE</code> clause. Rows that fail the condition are not updated. This avoids writing a new row version (and firing update triggers) when the data is identical."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO products AS p (product_id, name, price, stock)\nVALUES (103, 'Laptop Stand', 1499.00, 8),\n       (104, 'HDMI Adapter', 599.00, 15)\nON CONFLICT (product_id) DO UPDATE\nSET price = EXCLUDED.price, updated_at = now()\nWHERE p.price IS DISTINCT FROM EXCLUDED.price\nRETURNING product_id, price;",
+    "caption": "Skip no-op updates"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "product_id",
+      "price"
+     ],
+     [
+      "104",
+      "599.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INSERT 0 1",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Product 103 already had the price 1499.00, so it was skipped and does not appear in RETURNING. Only 104 changed. <code class=\"inline-code\">IS DISTINCT FROM</code> is used instead of <code class=\"inline-code\"><></code> because it treats NULLs as comparable values."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "Rows filtered out by the WHERE clause are still locked until your transaction ends. The docs say \"all rows will be locked when the ON CONFLICT DO UPDATE action is taken\"."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Upsert on multiple columns",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Conflict targets can have several columns, as long as a unique constraint or unique index covers exactly those columns. A daily sales summary per store is a typical case."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE daily_sales (\n    store_id   integer NOT NULL,\n    sale_date  date    NOT NULL,\n    amount     numeric(12,2) NOT NULL\n);\n\nINSERT INTO daily_sales (store_id, sale_date, amount)\nVALUES (1, '2026-10-15', 5000)\nON CONFLICT (store_id, sale_date) DO UPDATE\nSET amount = daily_sales.amount + EXCLUDED.amount;",
+    "caption": "Upsert before a unique constraint exists"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  there is no unique or exclusion constraint matching the ON CONFLICT specification",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the most common ON CONFLICT error. PostgreSQL needs a unique index to detect the conflict, and the table has none. Add one and run the upsert again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLE daily_sales\n    ADD CONSTRAINT daily_sales_store_date_uk UNIQUE (store_id, sale_date);\n\nINSERT INTO daily_sales (store_id, sale_date, amount)\nVALUES (1, '2026-10-15', 5000),\n       (2, '2026-10-15', 3200)\nON CONFLICT (store_id, sale_date) DO UPDATE\nSET amount = daily_sales.amount + EXCLUDED.amount;\n\nINSERT INTO daily_sales (store_id, sale_date, amount)\nVALUES (1, '2026-10-15', 1250)\nON CONFLICT (store_id, sale_date) DO UPDATE\nSET amount = daily_sales.amount + EXCLUDED.amount;\n\nSELECT * FROM daily_sales ORDER BY store_id;",
+    "caption": "Composite key upsert"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "store_id",
+      "sale_date",
+      "amount"
+     ],
+     [
+      "1",
+      "2026-10-15",
+      "6250.00"
+     ],
+     [
+      "2",
+      "2026-10-15",
+      "3200.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Store 1 now has 5000 + 1250 = 6250. The order of columns in the conflict target does not have to match the index. <code class=\"inline-code\">ON CONFLICT (sale_date, store_id)</code> works the same way, because PostgreSQL matches the set of columns \"without regard to order\"."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Partial and expression unique indexes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Partial index: repeat the WHERE predicate",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A soft-delete design often allows one active row per email but keeps deleted copies. That needs a partial unique index:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE customers (\n    customer_id  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    email        text NOT NULL,\n    full_name    text NOT NULL,\n    deleted_at   timestamptz\n);\n\nCREATE UNIQUE INDEX customers_email_active_uk\n    ON customers (email)\n    WHERE deleted_at IS NULL;\n\nINSERT INTO customers (email, full_name)\nVALUES ('asha@example.com', 'Asha Rao');\n\nINSERT INTO customers (email, full_name)\nVALUES ('asha@example.com', 'Asha R. Rao')\nON CONFLICT (email) DO UPDATE SET full_name = EXCLUDED.full_name;",
+    "caption": "Conflict target without the predicate"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  there is no unique or exclusion constraint matching the ON CONFLICT specification",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The index exists, but PostgreSQL will not pick a partial index unless your conflict target includes a predicate that matches it. Add the index's WHERE clause after the column list:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO customers (email, full_name)\nVALUES ('asha@example.com', 'Asha R. Rao')\nON CONFLICT (email) WHERE deleted_at IS NULL\nDO UPDATE SET full_name = EXCLUDED.full_name\nRETURNING customer_id, email, full_name;",
+    "caption": "Conflict target with the index predicate"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id",
+      "email",
+      "full_name"
+     ],
+     [
+      "1",
+      "asha@example.com",
+      "Asha R. Rao"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Expression index: wrap the expression in parentheses",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For case-insensitive uniqueness you might index <code class=\"inline-code\">lower(email)</code>. The conflict target must use the same expression, inside its own parentheses:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE subscribers (email text NOT NULL, name text);\nCREATE UNIQUE INDEX subscribers_lower_email_uk ON subscribers (lower(email));\nINSERT INTO subscribers VALUES ('Ravi@Example.com', 'Ravi');\n\nINSERT INTO subscribers (email, name)\nVALUES ('ravi@example.com', 'Ravi Kumar')\nON CONFLICT ((lower(email))) DO UPDATE SET name = EXCLUDED.name\nRETURNING *;",
+    "caption": "Upsert on an expression index"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "email",
+      "name"
+     ],
+     [
+      "Ravi@Example.com",
+      "Ravi Kumar"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The incoming email differs in case, but lower() of both is the same, so the existing row was updated. Its stored email keeps the original spelling because SET did not touch it."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "You can also name a constraint directly with <code class=\"inline-code\">ON CONFLICT ON CONSTRAINT daily_sales_store_date_uk</code>. The docs recommend column inference instead, because it keeps working if the index is later replaced by an equivalent one with a different name."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How to tell if a row was inserted or updated",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "RETURNING gives you the final row in both cases. To know which action happened on PostgreSQL 17 or earlier, a widely used trick is to check the system column <code class=\"inline-code\">xmax</code>. A freshly inserted row has <code class=\"inline-code\">xmax = 0</code>; a row updated through ON CONFLICT does not."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO products (product_id, name, price, stock)\nVALUES (104, 'HDMI Adapter', 549.00, 15),\n       (105, 'Webcam', 2499.00, 4)\nON CONFLICT (product_id) DO UPDATE\nSET price = EXCLUDED.price\nRETURNING product_id, (xmax = 0) AS inserted;",
+    "caption": "Detect insert vs update"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "product_id",
+      "inserted"
+     ],
+     [
+      "104",
+      "f"
+     ],
+     [
+      "105",
+      "t"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Treat this as a practical trick, not a documented API. It relies on internal row header behaviour. On PostgreSQL 18 and later, use the documented <code class=\"inline-code\">old</code> and <code class=\"inline-code\">new</code> aliases in RETURNING instead: <code class=\"inline-code\">old.product_id</code> is NULL when the row was inserted and non-NULL when an existing row was updated."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ON CONFLICT vs MERGE",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL 15 added the SQL standard <code class=\"inline-code\">MERGE</code> statement. It can do the same insert-or-update job and more, such as deleting matched rows:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "MERGE INTO products AS p\nUSING (VALUES (101, 'USB-C Cable', 259.00, 70),\n              (107, 'Monitor Arm', 3299.00, 3))\n      AS s(product_id, name, price, stock)\nON p.product_id = s.product_id\nWHEN MATCHED THEN\n    UPDATE SET price = s.price, stock = s.stock\nWHEN NOT MATCHED THEN\n    INSERT (product_id, name, price, stock)\n    VALUES (s.product_id, s.name, s.price, s.stock);",
+    "caption": "Same upsert written with MERGE"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "MERGE 2",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Product 101 was updated to 259.00 and product 107 was inserted. So which should you use?"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "",
+      "INSERT ... ON CONFLICT",
+      "MERGE"
+     ],
+     [
+      "Available from",
+      "PostgreSQL 9.5",
+      "PostgreSQL 15"
+     ],
+     [
+      "Needs a unique index",
+      "Yes",
+      "No (any join condition)"
+     ],
+     [
+      "Safe against concurrent inserts of the same key",
+      "Yes, atomic insert or update",
+      "No, can still fail with a unique violation"
+     ],
+     [
+      "Can delete rows",
+      "No",
+      "Yes (WHEN MATCHED THEN DELETE)"
+     ],
+     [
+      "RETURNING",
+      "Yes",
+      "PostgreSQL 17 and later"
+     ],
+     [
+      "Standard SQL",
+      "No, PostgreSQL extension",
+      "Yes"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The concurrency row is the deciding factor for most applications. The MERGE documentation itself suggests <code class=\"inline-code\">INSERT ... ON CONFLICT</code> \"as an alternative statement which offers the ability to run an UPDATE if a concurrent INSERT occurs\". Use ON CONFLICT for application upserts where many sessions write the same keys. Use MERGE for batch synchronisation from a staging table, especially when you also need deletes. If you are moving code from Oracle, MERGE will feel familiar; see the <a href=\"/posts/plsql/oracle-merge-statement-example/\">Oracle MERGE statement guide</a> for comparison."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "1. Duplicate keys inside the same statement",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the rows you insert contain the same key twice, DO UPDATE cannot decide which one should win:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO products (product_id, name, price, stock)\nVALUES (106, 'Keyboard', 999.00, 10),\n       (106, 'Keyboard', 949.00, 12)\nON CONFLICT (product_id) DO UPDATE\nSET price = EXCLUDED.price;",
+    "caption": "Same key twice in one INSERT"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  ON CONFLICT DO UPDATE command cannot affect row a second time\nHINT:  Ensure that no rows proposed for insertion within the same command have duplicate constrained values.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This happens a lot with <code class=\"inline-code\">INSERT ... SELECT</code> from a staging table. Remove duplicates in the source first, for example with <code class=\"inline-code\">SELECT DISTINCT ON (product_id) ... ORDER BY product_id, loaded_at DESC</code> to keep the latest row per key."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "2. Leaving out the conflict target with DO UPDATE",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO products (product_id, name, price, stock)\nVALUES (101, 'USB-C Cable', 279.00, 60)\nON CONFLICT DO UPDATE SET price = EXCLUDED.price;",
+    "caption": "No conflict target"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  ON CONFLICT DO UPDATE requires inference specification or constraint name\nLINE 3: ON CONFLICT DO UPDATE SET price = EXCLUDED.price;\n        ^\nHINT:  For example, ON CONFLICT (column_name).",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only <code class=\"inline-code\">DO NOTHING</code> may omit the target. Add <code class=\"inline-code\">(product_id)</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "3. Expecting a conflict on a column with no unique index",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "ON CONFLICT does not search for matching rows. It only reacts to unique index violations. If the columns are not covered by a unique constraint or unique index (including the predicate for a partial index), you get the \"no unique or exclusion constraint matching\" error shown earlier."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "4. Being surprised by gaps in identity or serial values",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Look at the customers table after one more insert:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO customers (email, full_name)\nVALUES ('vikram@example.com', 'Vikram Shah')\nRETURNING customer_id;",
+    "caption": "Next customer after an upsert"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id"
+     ],
+     [
+      "3"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The new customer got id 3, not 2. The earlier upsert for asha@example.com evaluated the identity default before discovering the conflict, so value 2 was consumed and thrown away. This is normal sequence behaviour. Never rely on identity or serial columns being gap-free."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "5. Expecting RETURNING to show skipped rows",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "RETURNING returns only rows that were inserted or updated. With <code class=\"inline-code\">DO NOTHING</code>, or with a WHERE clause that filters a row out, that row is missing from the result. If you need the id of an existing row either way, a common workaround is <code class=\"inline-code\">DO UPDATE SET email = EXCLUDED.email</code> (a no-op update), which always returns the row but writes a new row version each time."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Batch your rows.</b> One INSERT with hundreds of rows in VALUES, or an <code class=\"inline-code\">INSERT ... SELECT</code> from a staging table, is far cheaper than one round trip per row.",
+      "items": []
+     },
+     {
+      "content": "<b>Skip no-op updates</b> with <code class=\"inline-code\">WHERE ... IS DISTINCT FROM EXCLUDED...</code>. Every DO UPDATE creates a new row version, which later needs VACUUM.",
+      "items": []
+     },
+     {
+      "content": "<b>Keep the arbiter index lean.</b> Each upsert probes it, so a narrow unique index on the real business key is ideal.",
+      "items": []
+     },
+     {
+      "content": "<b>Avoid ON CONFLICT during <code class=\"inline-code\">CREATE INDEX CONCURRENTLY</code> or <code class=\"inline-code\">REINDEX CONCURRENTLY</code> on the same unique index.</b> The docs warn that upserts may unexpectedly fail with a unique violation while that runs.",
+      "items": []
+     },
+     {
+      "content": "<b>Sort large batches by key</b> when several sessions upsert overlapping keys. Taking row locks in the same order lowers the chance of deadlocks.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "ON CONFLICT DO UPDATE cannot change the partition key of a row so that it moves to another partition. Design partitioned tables so the upsert does not update the partition key column."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does PostgreSQL have an UPSERT statement?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Not as a keyword. Upsert in PostgreSQL is <code class=\"inline-code\">INSERT ... ON CONFLICT DO UPDATE</code>, available since version 9.5. From version 15 you can also use MERGE."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I upsert without a unique constraint?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Not with ON CONFLICT; it needs a unique constraint or unique index to detect conflicts. MERGE works with any join condition, but without a unique index nothing stops two concurrent sessions from inserting the same row. In practice, add the unique constraint."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I use ON CONFLICT with multiple columns?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "List them all in the target, for example <code class=\"inline-code\">ON CONFLICT (store_id, sale_date)</code>. A unique constraint or index must cover exactly those columns, in any order."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is EXCLUDED in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">EXCLUDED</code> is a special row in the DO UPDATE clause holding the values that were proposed for insertion. Use <code class=\"inline-code\">EXCLUDED.column</code> for the new value and the table name or alias for the current value."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is INSERT ON CONFLICT faster than checking with SELECT first?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes in most cases, because it is one statement and one round trip instead of two. More importantly, SELECT-then-INSERT is not safe under concurrency: two sessions can both see no row and both try to insert."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Use <code class=\"inline-code\">ON CONFLICT (key) DO UPDATE SET col = EXCLUDED.col</code> to insert or update in one atomic statement.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">ON CONFLICT DO NOTHING</code> to skip duplicates silently.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Make sure a unique constraint or unique index covers exactly the conflict target columns.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Repeat the WHERE predicate for partial indexes and wrap expressions in double parentheses.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Add a WHERE clause to DO UPDATE to skip updates when nothing changed.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Remove duplicate keys from the source rows before a multi-row upsert.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Prefer ON CONFLICT for concurrent application writes; use MERGE (PostgreSQL 15+) for batch syncs and deletes.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ]
+}
