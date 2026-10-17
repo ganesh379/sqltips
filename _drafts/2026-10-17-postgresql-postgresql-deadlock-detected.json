@@ -1,0 +1,1048 @@
+{
+  "schemaVersion": 1,
+  "title": "PostgreSQL Deadlock Detected: Causes, Examples and Fixes",
+  "slug": "postgresql-deadlock-detected",
+  "category": "postgresql",
+  "description": "Fix PostgreSQL ERROR: deadlock detected (40P01). Reproduce it, read the log, find blocking sessions and lock rows in a safe order, with real output.",
+  "focusKeyword": "postgresql deadlock detected",
+  "tags": [
+    "postgresql",
+    "deadlock",
+    "locking",
+    "transactions",
+    "performance"
+  ],
+  "related": [
+    "/posts/postgresql/postgresql-for-update-skip-locked-job-queue/",
+    "/posts/postgresql/postgresql-upsert-on-conflict/"
+  ],
+  "sources": [
+    {
+      "title": "PostgreSQL docs: Explicit Locking (Deadlocks)",
+      "url": "https://www.postgresql.org/docs/current/explicit-locking.html"
+    },
+    {
+      "title": "PostgreSQL docs: Lock Management (deadlock_timeout)",
+      "url": "https://www.postgresql.org/docs/current/runtime-config-locks.html"
+    },
+    {
+      "title": "PostgreSQL docs: Error Reporting and Logging (log_lock_waits)",
+      "url": "https://www.postgresql.org/docs/current/runtime-config-logging.html"
+    },
+    {
+      "title": "PostgreSQL docs: SELECT, The Locking Clause",
+      "url": "https://www.postgresql.org/docs/current/sql-select.html"
+    },
+    {
+      "title": "PostgreSQL docs: System Information Functions (pg_blocking_pids)",
+      "url": "https://www.postgresql.org/docs/current/functions-info.html"
+    },
+    {
+      "title": "PostgreSQL docs: Cumulative Statistics System (pg_stat_activity, pg_stat_database)",
+      "url": "https://www.postgresql.org/docs/current/monitoring-stats.html"
+    },
+    {
+      "title": "PostgreSQL docs: Error Codes",
+      "url": "https://www.postgresql.org/docs/current/errcodes-appendix.html"
+    }
+  ],
+  "reviewNotes": "All examples run on PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) in a scratch database named dl, using two concurrent psql sessions; every output and log excerpt is real (log timestamps/prefixes removed, PIDs and transaction IDs are from the test run and will differ for readers). The step-by-step section presents the deadlock as interactive steps; in the actual test Session 1 ran BEGIN, UPDATE id 1, pg_sleep(2), UPDATE id 2, COMMIT while Session 2 started one second later, so the statement order matched the steps. The blocking-sessions example used a separate transaction on account_id 3 with pg_sleep(4) and SET application_name. The balances in later tables continue from earlier steps (blocking demo on account 3 netted to zero). Editor please check: (1) the FAQ explanation of 'ShareLock on transaction' (row-lock waits are implemented as waiting on the holder's transaction ID lock), which is standard PostgreSQL behaviour but not stated on one doc page; (2) the 'deadlock_timeout' and 'log_lock_waits' defaults (1s / off) were confirmed in docs for 16 and 18.",
+  "generatedAt": "2026-10-17T13:00:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The PostgreSQL error <code class=\"inline-code\">ERROR: deadlock detected</code> means two or more transactions were each waiting for a lock the other one held, so none of them could ever finish. PostgreSQL noticed the cycle, cancelled one of the transactions with SQLSTATE <code class=\"inline-code\">40P01</code>, and let the others continue. Nothing is broken in the server. The fix is in your code: take locks in the same order everywhere, keep transactions short, and retry the whole transaction when it does happen."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This tutorial reproduces a real deadlock step by step, shows you how to read the error and the server log, how to see who is blocking whom while it happens, and how to change the code so the deadlock cannot occur again. Every output below was copied from a real PostgreSQL 16 session."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How a deadlock happens in PostgreSQL",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "When a transaction updates or deletes a row, it holds a row-level lock on that row until it commits or rolls back. Any other transaction that wants to change the same row has to wait. Usually that is fine: the first transaction finishes, the lock is released, and the waiter carries on."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A deadlock is the special case where the waiting forms a circle. Transaction A holds row 1 and wants row 2. Transaction B holds row 2 and wants row 1. Neither can move. Without help they would wait forever, so PostgreSQL runs a deadlock check and aborts one of them."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The check is not instant. A waiting session first sleeps for <code class=\"inline-code\">deadlock_timeout</code> (default <code class=\"inline-code\">1s</code>), and only then checks whether it is part of a cycle. The documentation explains why: the check is relatively expensive, so the server assumes most lock waits end on their own. This is why a deadlock usually shows up about one second after the second transaction starts waiting."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "Deadlock vs blocking",
+        "text": "A blocked session is waiting for a lock that will be released when the other transaction ends. A deadlock is a circle of waits that can never resolve on its own. Blocking slows you down; a deadlock forces PostgreSQL to cancel a transaction."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Create a small bank accounts table. Money transfers are the classic deadlock example because each transfer updates two rows."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE TABLE accounts (\n  account_id  int PRIMARY KEY,\n  owner_name  text NOT NULL,\n  balance     numeric(12,2) NOT NULL\n);\n\nINSERT INTO accounts VALUES\n  (1, 'Asha',  5000.00),\n  (2, 'Ravi',  3000.00),\n  (3, 'Meena', 1200.00);\n\nSELECT * FROM accounts ORDER BY account_id;",
+        "caption": "Create and fill the accounts table"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "account_id",
+            "owner_name",
+            "balance"
+          ],
+          [
+            "1",
+            "Asha",
+            "5000.00"
+          ],
+          [
+            "2",
+            "Ravi",
+            "3000.00"
+          ],
+          [
+            "3",
+            "Meena",
+            "1200.00"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To follow along you need two psql windows connected to the same database. We will call them Session 1 and Session 2."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Reproduce the deadlock detected error",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Session 1 moves 500 from Asha (account 1) to Ravi (account 2). At the same moment, Session 2 moves 200 from Ravi to Asha. Each session updates its own source account first, so they lock the two rows in opposite order."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: Session 1 locks account 1",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "BEGIN;\nUPDATE accounts SET balance = balance - 500 WHERE account_id = 1;",
+        "caption": "Session 1"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The update succeeds and Session 1 now holds a row lock on account 1. It has not committed yet."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: Session 2 locks account 2",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "BEGIN;\nUPDATE accounts SET balance = balance - 200 WHERE account_id = 2;",
+        "caption": "Session 2"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This also succeeds, because nobody else has touched account 2."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 3: both sessions ask for the other row",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "-- Session 1\nUPDATE accounts SET balance = balance + 500 WHERE account_id = 2;\n\n-- Session 2\nUPDATE accounts SET balance = balance + 200 WHERE account_id = 1;",
+        "caption": "Each session now wants the row the other one holds"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Session 1 starts waiting for account 2. Then Session 2 starts waiting for account 1. That is the circle. After about one second, one of the sessions gets this error:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ERROR:  deadlock detected\nDETAIL:  Process 486 waits for ShareLock on transaction 733; blocked by process 483.\nProcess 483 waits for ShareLock on transaction 734; blocked by process 486.\nHINT:  See server log for query details.\nCONTEXT:  while updating tuple (0,1) in relation \"accounts\"\n",
+        "caption": "Output (Session 2)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In our run Session 2 was the one cancelled, and the moment it failed, Session 1's waiting update went through. Session 1 could then <code class=\"inline-code\">COMMIT</code> normally. Do not count on it always being the second session; the documentation says which transaction gets aborted is difficult to predict and should not be relied upon."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 4: the failed transaction is already dead",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Session 2 is now in an aborted transaction. Typing <code class=\"inline-code\">COMMIT</code> does not save its first update. psql reports:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "COMMIT;\nROLLBACK",
+        "caption": "Output (Session 2)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Here is the table afterwards. Only Session 1's transfer exists. Session 2's 200 transfer was rolled back completely, including the update that had succeeded before the deadlock."
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "account_id",
+            "owner_name",
+            "balance"
+          ],
+          [
+            "1",
+            "Asha",
+            "4500.00"
+          ],
+          [
+            "2",
+            "Ravi",
+            "3500.00"
+          ],
+          [
+            "3",
+            "Meena",
+            "1200.00"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How to read the deadlock error message",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The error looks cryptic at first, but each line tells you something useful."
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Part",
+            "What it means"
+          ],
+          [
+            "Process 486, 483",
+            "Backend process IDs (PIDs) of the sessions in the cycle. They match pid in pg_stat_activity."
+          ],
+          [
+            "ShareLock on transaction 733",
+            "Process 486 is waiting for transaction 733 to finish. Waiting for a row locked by another transaction is done by waiting on that transaction's ID, so row-lock deadlocks show up like this."
+          ],
+          [
+            "blocked by process 483",
+            "The session that owns transaction 733."
+          ],
+          [
+            "tuple (0,1) in relation \"accounts\"",
+            "The physical row (page 0, item 1) the cancelled statement was trying to update, in table accounts."
+          ],
+          [
+            "HINT: See server log",
+            "The client message hides the SQL text of the other sessions. The server log has it."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Find the queries in the server log",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The PostgreSQL log shows the full statements of every process in the cycle. On Ubuntu/Debian packages the log is under <code class=\"inline-code\">/var/log/postgresql/</code>. Our run logged this:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ERROR:  deadlock detected\nDETAIL:  Process 486 waits for ShareLock on transaction 733; blocked by process 483.\n\tProcess 483 waits for ShareLock on transaction 734; blocked by process 486.\n\tProcess 486: UPDATE accounts SET balance = balance + 200 WHERE account_id = 1;\n\tProcess 483: UPDATE accounts SET balance = balance + 500 WHERE account_id = 2;\nCONTEXT:  while updating tuple (0,1) in relation \"accounts\"\nSTATEMENT:  UPDATE accounts SET balance = balance + 200 WHERE account_id = 1;",
+        "caption": "Output (server log, timestamp prefix removed)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "These are the statements that were waiting when the cycle was found, not the earlier statements that took the first locks. You still need to look at the whole transaction in your application code to see the order in which rows were locked."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Check the SQLSTATE code",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Your application should recognise deadlocks by code, not by message text. Set <code class=\"inline-code\">VERBOSITY verbose</code> in psql to see it:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "\\set VERBOSITY verbose",
+        "caption": "psql"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ERROR:  40P01: deadlock detected",
+        "caption": "Output (first line)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">40P01</code> is the condition <code class=\"inline-code\">deadlock_detected</code> in the PostgreSQL error code list. Drivers expose it as the SQLSTATE of the exception."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "See blocking sessions while they wait",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A deadlock is resolved in about a second, so you will rarely catch one live. What you can catch is ordinary blocking, which is how every deadlock starts. <code class=\"inline-code\">pg_blocking_pids()</code> returns the PIDs that are blocking a given session."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In this test, Session 1 updated account 3 and then slept with the transaction open, and Session 2 tried to update the same row. From a third session we ran:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT pid,\n       application_name,\n       state,\n       wait_event_type,\n       wait_event,\n       pg_blocking_pids(pid) AS blocked_by,\n       left(query, 60) AS query\n  FROM pg_stat_activity\n WHERE datname = current_database()\n   AND pid <> pg_backend_pid()\n ORDER BY pid;",
+        "caption": "Who is blocked, and by whom"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "pid",
+            "application_name",
+            "state",
+            "wait_event_type",
+            "wait_event",
+            "blocked_by",
+            "query"
+          ],
+          [
+            "503",
+            "session_1",
+            "active",
+            "Timeout",
+            "PgSleep",
+            "{}",
+            "SELECT pg_sleep(4);"
+          ],
+          [
+            "507",
+            "session_2",
+            "active",
+            "Lock",
+            "transactionid",
+            "{503}",
+            "UPDATE accounts SET balance = balance + 100 WHERE account_id"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Session 2 (pid 507) has <code class=\"inline-code\">wait_event_type</code> <code class=\"inline-code\">Lock</code> and is blocked by pid 503. The <code class=\"inline-code\">query</code> column shows the latest statement of the blocker, which is often not the one that took the lock. That is a common source of confusion when you investigate."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Log every long lock wait",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Turn on <code class=\"inline-code\">log_lock_waits</code> (default <code class=\"inline-code\">off</code>). Then any session that waits longer than <code class=\"inline-code\">deadlock_timeout</code> writes a log line, which helps you find the hot rows behind your deadlocks."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "ALTER SYSTEM SET log_lock_waits = on;\nSELECT pg_reload_conf();",
+        "caption": "Enable lock wait logging (superuser)"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "LOG:  process 507 still waiting for ShareLock on transaction 735 after 1000.153 ms\nDETAIL:  Process holding the lock: 503. Wait queue: 507.\nCONTEXT:  while updating tuple (0,3) in relation \"accounts\"\nSTATEMENT:  UPDATE accounts SET balance = balance + 100 WHERE account_id = 3;\nLOG:  process 507 acquired ShareLock on transaction 735 after 3498.352 ms",
+        "caption": "Output (server log)"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Count deadlocks per database",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT datname, deadlocks\n  FROM pg_stat_database\n WHERE datname = 'dl';",
+        "caption": "Cumulative deadlock counter"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "datname",
+            "deadlocks"
+          ],
+          [
+            "dl",
+            "1"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Our scratch database is called <code class=\"inline-code\">dl</code>. The counter only grows, so track it over time in your monitoring. A rising number tells you a code path is locking rows in inconsistent order."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Fix 1: lock rows in a consistent order",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The documentation calls this the best defence: make every transaction acquire its locks in the same order. If both transfers lock the lower <code class=\"inline-code\">account_id</code> first, the second transfer simply waits for the first one to finish. A queue, not a circle."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The easy way is to lock all rows you will touch up front with <code class=\"inline-code\">SELECT ... ORDER BY ... FOR UPDATE</code>, then do the updates in any order you like."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "BEGIN;\nSELECT account_id\n  FROM accounts\n WHERE account_id IN (1, 2)\n ORDER BY account_id\n   FOR UPDATE;\n\nUPDATE accounts SET balance = balance - 500 WHERE account_id = 1;\nUPDATE accounts SET balance = balance + 500 WHERE account_id = 2;\nCOMMIT;",
+        "caption": "Session 1: lock first, in id order"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "BEGIN;\nSELECT account_id\n  FROM accounts\n WHERE account_id IN (2, 1)\n ORDER BY account_id\n   FOR UPDATE;\n\nUPDATE accounts SET balance = balance - 200 WHERE account_id = 2;\nUPDATE accounts SET balance = balance + 200 WHERE account_id = 1;\nCOMMIT;",
+        "caption": "Session 2: opposite transfer, same lock order"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "We ran these at the same time, with Session 1 pausing for two seconds while holding its locks. Session 2's SELECT simply waited, then both sessions committed. No error:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "account_id",
+            "owner_name",
+            "balance"
+          ],
+          [
+            "1",
+            "Asha",
+            "4200.00"
+          ],
+          [
+            "2",
+            "Ravi",
+            "3800.00"
+          ],
+          [
+            "3",
+            "Meena",
+            "1200.00"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Both transfers are applied: Asha went from 4500 to 4200 (minus 500, plus 200) and Ravi from 3500 to 3800."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Why ORDER BY controls the lock order",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The plan shows that rows are sorted before they are locked:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "EXPLAIN (COSTS OFF)\nSELECT account_id\n  FROM accounts\n WHERE account_id IN (2, 1)\n ORDER BY account_id\n   FOR UPDATE;",
+        "caption": "Check the plan"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "LockRows\n  ->  Sort\n        Sort Key: account_id\n        ->  Bitmap Heap Scan on accounts\n              Recheck Cond: (account_id = ANY ('{2,1}'::integer[]))\n              ->  Bitmap Index Scan on accounts_pkey\n                    Index Cond: (account_id = ANY ('{2,1}'::integer[]))",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The <code class=\"inline-code\">LockRows</code> node sits on top of <code class=\"inline-code\">Sort</code>, so rows are locked in <code class=\"inline-code\">account_id</code> order. The SELECT documentation confirms that <code class=\"inline-code\">ORDER BY</code> is applied first and locks are taken afterwards. Without the <code class=\"inline-code\">ORDER BY</code>, the lock order would depend on the plan, and you would be back to luck."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Put the rule in one function",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Deadlock fixes break when one code path forgets the rule. Putting the transfer in a single PL/pgSQL function means every caller locks in the same order."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE OR REPLACE FUNCTION transfer(p_from int, p_to int, p_amount numeric)\nRETURNS void\nLANGUAGE plpgsql\nAS $$\nBEGIN\n  -- Lock both rows in a fixed order (lowest id first)\n  PERFORM 1\n     FROM accounts\n    WHERE account_id IN (p_from, p_to)\n    ORDER BY account_id\n      FOR UPDATE;\n\n  UPDATE accounts SET balance = balance - p_amount WHERE account_id = p_from;\n  UPDATE accounts SET balance = balance + p_amount WHERE account_id = p_to;\nEND;\n$$;\n\nSELECT transfer(3, 1, 150);\nSELECT * FROM accounts ORDER BY account_id;",
+        "caption": "A transfer function that cannot deadlock with itself"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "account_id",
+            "owner_name",
+            "balance"
+          ],
+          [
+            "1",
+            "Asha",
+            "4350.00"
+          ],
+          [
+            "2",
+            "Ravi",
+            "3800.00"
+          ],
+          [
+            "3",
+            "Meena",
+            "1050.00"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The same idea works for batch jobs. If a job updates a list of IDs, sort the list first (in the application or with <code class=\"inline-code\">ORDER BY</code>) so two jobs never walk the same rows in opposite directions."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Fix 2: keep transactions short",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A lock is held until the transaction ends. The longer a transaction stays open, the more time another transaction has to grab a row in the wrong order. The documentation warns that it is a bad idea to hold transactions open for long periods, for example while waiting for user input."
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Do not call external APIs, send emails or wait for a user inside an open transaction.",
+            "items": []
+          },
+          {
+            "content": "Read and validate data before BEGIN when you can, then lock and write in one quick burst.",
+            "items": []
+          },
+          {
+            "content": "Watch for sessions stuck in <code class=\"inline-code\">idle in transaction</code> state in <code class=\"inline-code\">pg_stat_activity</code>; they hold their locks while doing nothing.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Fix 3: retry the whole transaction",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Even with careful ordering, complex systems can still hit the occasional deadlock, and the documentation suggests retrying transactions that abort because of one. The key word is <b>transaction</b>. After <code class=\"inline-code\">40P01</code> every statement in that transaction has been rolled back, as you saw in Step 4."
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "ordered",
+        "items": [
+          {
+            "content": "Catch errors whose SQLSTATE is <code class=\"inline-code\">40P01</code>.",
+            "items": []
+          },
+          {
+            "content": "Roll back (most drivers need an explicit <code class=\"inline-code\">ROLLBACK</code> to leave the aborted state).",
+            "items": []
+          },
+          {
+            "content": "Run the whole unit of work again from BEGIN, including any reads, because the data may have changed.",
+            "items": []
+          },
+          {
+            "content": "Limit the number of retries and add a short random delay, so the same two transactions do not collide again straight away.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "Retrying the last statement is not enough",
+        "text": "If your code only re-runs the UPDATE that failed, the earlier updates in the same transaction are already gone. You can end up with half a transfer. Always retry from the start of the transaction."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Raising or lowering <code class=\"inline-code\">deadlock_timeout</code> to fix deadlocks.</b> It only changes how long PostgreSQL waits before checking. A cycle is still a cycle. A higher value just makes users wait longer before the error.",
+            "items": []
+          },
+          {
+            "content": "<b>Calling <code class=\"inline-code\">COMMIT</code> after the error.</b> The transaction is already aborted and the commit becomes a <code class=\"inline-code\">ROLLBACK</code>. Check for errors instead of assuming success.",
+            "items": []
+          },
+          {
+            "content": "<b>Looking only at the error in the application log.</b> The client message hides the other session's SQL. Read the server log, which lists the statement of every process in the cycle.",
+            "items": []
+          },
+          {
+            "content": "<b>Trusting the <code class=\"inline-code\">query</code> column of the blocker.</b> In <code class=\"inline-code\">pg_stat_activity</code> it is the latest statement, not necessarily the one that took the lock.",
+            "items": []
+          },
+          {
+            "content": "<b>Fixing one code path only.</b> Lock ordering works only when every path that touches those rows follows the same order. A single report or cron job that locks in reverse order brings the deadlocks back.",
+            "items": []
+          },
+          {
+            "content": "<b>Confusing deadlocks with slow queries.</b> A session that waits for minutes without an error is blocked, not deadlocked. Find the blocker with pg_blocking_pids() instead.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Best practices",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Decide one lock order per table (usually primary key ascending) and document it.",
+            "items": []
+          },
+          {
+            "content": "Lock all rows a transaction needs at the start with SELECT ... ORDER BY ... FOR UPDATE.",
+            "items": []
+          },
+          {
+            "content": "Keep transactions short and free of network calls and user waits.",
+            "items": []
+          },
+          {
+            "content": "Enable <code class=\"inline-code\">log_lock_waits</code> so long waits are logged with the holder's PID.",
+            "items": []
+          },
+          {
+            "content": "Track <code class=\"inline-code\">pg_stat_database.deadlocks</code> in monitoring and investigate when it grows.",
+            "items": []
+          },
+          {
+            "content": "Leave <code class=\"inline-code\">deadlock_timeout</code> at the default unless you have a reason. The docs call 1s probably about the smallest value you would want, and suggest it should ideally exceed your typical transaction time.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "Queues are a special case",
+        "text": "If many workers pick jobs from the same table, use <code class=\"inline-code\">FOR UPDATE SKIP LOCKED</code> so they skip rows another worker holds instead of waiting on them. See the related job queue tutorial on this site."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What does deadlock detected mean in PostgreSQL?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "It means two or more transactions were waiting on each other's locks in a circle. PostgreSQL broke the circle by aborting one transaction with error code <code class=\"inline-code\">40P01</code>. The other transactions continue normally."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is ShareLock on transaction in a PostgreSQL deadlock?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "When a session needs a row that another transaction has locked, it waits for that transaction to finish by requesting a ShareLock on its transaction ID. So \"waits for ShareLock on transaction 733\" means \"is waiting for transaction 733 to commit or roll back\". It is a row-lock conflict, not a table lock."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Which transaction does PostgreSQL kill in a deadlock?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "One of the transactions in the cycle is aborted. The documentation says exactly which one is difficult to predict and should not be relied upon, so make every transaction that can deadlock safe to retry."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I prevent deadlocks in PostgreSQL?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Lock rows in the same order in every transaction, lock everything you need at the start, and keep transactions short. Then retry the whole transaction on 40P01 for the rare cases that remain."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Is a deadlock the same as a lock timeout?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "No. A deadlock is a circle that PostgreSQL detects and breaks. A plain lock wait has no circle and, by default, waits until the other transaction ends. If you want a time limit on ordinary waits, set <code class=\"inline-code\">lock_timeout</code>, which raises a different error."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "<code class=\"inline-code\">deadlock detected</code> (SQLSTATE 40P01) means a circle of lock waits; PostgreSQL aborts one transaction to break it.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "The aborted transaction is fully rolled back, and COMMIT after the error returns ROLLBACK.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Read the server log to see the SQL of every process in the cycle.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use pg_stat_activity with pg_blocking_pids() to see live blocking, and log_lock_waits to log long waits.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Lock rows in one consistent order, ideally with SELECT ... ORDER BY ... FOR UPDATE at the start.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Keep transactions short and never wait for users or external services inside them.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Retry the whole transaction, with a retry limit, when 40P01 happens.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your PostgreSQL transfer job fails once a day with \"ERROR: deadlock detected\". The database is fine. The lock order is not.\n\nA deadlock is two transactions each holding a row the other one needs. PostgreSQL waits deadlock_timeout (1s by default), finds the circle and aborts one of them with SQLSTATE 40P01.\n\nWhat actually fixes it:\n→ Lock rows in the same order everywhere. SELECT ... ORDER BY account_id FOR UPDATE at the start of the transaction turns the circle into a queue.\n→ Keep transactions short. No API calls or user waits while locks are held.\n→ Retry the whole transaction on 40P01, not just the failed statement. Everything before the error is already rolled back, and COMMIT after it returns ROLLBACK.\n→ Read the server log, not just the app error. It lists the SQL of every process in the cycle.\n→ Turn on log_lock_waits and watch the deadlocks counter in pg_stat_database.\n\nChanging deadlock_timeout does not prevent deadlocks. It only changes how long PostgreSQL waits before checking.\n\nHow does your team handle 40P01: retry in the app, or redesign the lock order?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #Database #DBA",
+    "slides": [
+      {
+        "title": "PostgreSQL deadlock detected: the real fix",
+        "body": "Why 40P01 happens, how to read it, and how to stop it coming back"
+      },
+      {
+        "title": "What a deadlock is",
+        "points": [
+          "Session 1 holds row 1 and waits for row 2",
+          "Session 2 holds row 2 and waits for row 1",
+          "After deadlock_timeout (1s) PostgreSQL checks",
+          "One transaction is aborted with SQLSTATE 40P01"
+        ]
+      },
+      {
+        "title": "The classic cause",
+        "body": "Two transfers update the same two rows in opposite order.",
+        "code": "-- Session 1\nUPDATE accounts SET balance = balance - 500\n WHERE account_id = 1;\n-- Session 2\nUPDATE accounts SET balance = balance - 200\n WHERE account_id = 2;\n-- then each updates the other row",
+        "lang": "postgresql"
+      },
+      {
+        "title": "Fix: lock in a fixed order",
+        "body": "Lock every row you need first, sorted. The second transaction waits in line instead of forming a circle.",
+        "code": "BEGIN;\nSELECT account_id FROM accounts\n WHERE account_id IN (2, 1)\n ORDER BY account_id\n   FOR UPDATE;\n-- now update in any order\nCOMMIT;",
+        "lang": "postgresql"
+      },
+      {
+        "title": "Retry the whole transaction",
+        "points": [
+          "All earlier statements are already rolled back",
+          "COMMIT after the error returns ROLLBACK",
+          "Catch 40P01, roll back, rerun from BEGIN",
+          "Cap retries and add a small random delay"
+        ]
+      },
+      {
+        "title": "Find who blocks whom",
+        "code": "SELECT pid,\n  pg_blocking_pids(pid) AS blocked_by,\n  wait_event_type,\n  left(query, 40) AS query\nFROM pg_stat_activity\nWHERE wait_event_type = 'Lock';",
+        "lang": "postgresql"
+      }
+    ]
+  }
+}
