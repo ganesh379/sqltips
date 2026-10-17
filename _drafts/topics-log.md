@@ -2,3 +2,4 @@
 - 2026-10-15 [Oracle] oracle merge statement example -> _drafts/2026-10-15-oracle-oracle-merge-statement-example.json
 - 2026-10-16 [Oracle] oracle blocking sessions query -> _drafts/2026-10-16-oracle-oracle-blocking-sessions-query.json
 - 2026-10-16 [PostgreSQL] postgresql upsert on conflict -> _drafts/2026-10-16-postgresql-postgresql-upsert-on-conflict.json
+- 2026-10-17 [Oracle] oracle bulk collect limit example -> _drafts/2026-10-17-oracle-oracle-bulk-collect-limit-example.json

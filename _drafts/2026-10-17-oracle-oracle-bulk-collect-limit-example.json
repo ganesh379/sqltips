@@ -1,0 +1,833 @@
+{
+  "schemaVersion": 1,
+  "title": "Oracle BULK COLLECT LIMIT Example with FORALL (Step by Step)",
+  "slug": "oracle-bulk-collect-limit-example",
+  "category": "plsql",
+  "description": "Learn Oracle BULK COLLECT with LIMIT step by step: the safe fetch loop, the %NOTFOUND trap, FORALL inserts and SAVE EXCEPTIONS, with expected output.",
+  "focusKeyword": "oracle bulk collect limit example",
+  "tags": [
+    "oracle",
+    "plsql",
+    "bulk collect",
+    "forall",
+    "performance"
+  ],
+  "related": [
+    "/posts/interview-questions/what-is-cursor-in-sql-types-examples-benefits/",
+    "/posts/interview-questions/ace-your-pl-sql-interview-questions-for-success-part-4/",
+    "/posts/plsql/oracle-merge-statement-example/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle Database 19c PL/SQL Language Reference: Bulk SQL and Bulk Binding",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/bulk-sql-and-bulk-binding.html"
+    },
+    {
+      "title": "Oracle Database 19c PL/SQL Language Reference: PL/SQL Optimizer",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/pl-sql-optimizer.html"
+    },
+    {
+      "title": "Oracle Database 19c PL/SQL Language Reference: PL/SQL Optimization and Tuning",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/plsql-optimization-and-tuning.html"
+    },
+    {
+      "title": "Oracle Magazine (AskTom): On Cursor FOR Loops",
+      "url": "https://asktom.oracle.com/Misc/oramag/on-cursor-for-loops.html"
+    }
+  ],
+  "reviewNotes": "All examples were written from the Oracle 19c PL/SQL Language Reference and have NOT been run. Please test each block on 19c or later and check the outputs, especially the batch output in Examples 2 and 3 (the %NOTFOUND trap should print only 2 batches and a total of 21000) and the SAVE EXCEPTIONS output in Example 6 (ORA-01400 for orders 6 and 15, archive count 6). Please also check: (1) the '100 rows per fetch' figure for optimized cursor FOR loops comes from an Oracle Magazine/AskTom column, not the 19c reference manual; (2) the statement that record fields such as l_rows(i).amount can be referenced in FORALL from 11g onward is from memory (the old PLS-00436 restriction), not from a fetched doc page; (3) ORA-04030 as the typical out-of-memory error for very large collections. The LIMIT 100 starting point is presented as a convention, not an Oracle recommendation.",
+  "generatedAt": "2026-10-17T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To use BULK COLLECT with LIMIT in Oracle, open an explicit cursor, then call <code class=\"inline-code\">FETCH cursor BULK COLLECT INTO collection LIMIT n</code> inside a loop. Each fetch loads at most <i>n</i> rows into the collection, you process that batch, and you leave the loop when a fetch returns an empty collection."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This gives you the speed of bulk fetching without loading a whole table into memory. In this tutorial you will build the loop step by step on a small orders table, see the <code class=\"inline-code\">%NOTFOUND</code> mistake that silently drops rows, and pair BULK COLLECT with FORALL and SAVE EXCEPTIONS to write the rows back efficiently."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How BULK COLLECT and LIMIT work",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "PL/SQL code runs in the PL/SQL engine, and SQL statements run in the SQL engine. Every time a loop fetches one row or runs one INSERT, control passes between the two engines. Oracle calls this a context switch, and doing it thousands of times is what makes row-by-row code slow."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Bulk SQL reduces those switches. The <code class=\"inline-code\">BULK COLLECT</code> clause fetches many rows in one call and stores them in a collection. The <code class=\"inline-code\">FORALL</code> statement sends a whole collection of values to one DML statement in one call. The Oracle docs describe these two features together as <b>bulk SQL</b>."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The catch is memory. A collection lives in your session's memory (the PGA). If you run <code class=\"inline-code\">SELECT ... BULK COLLECT INTO</code> on a table with millions of rows, all of those rows sit in memory at once. The <code class=\"inline-code\">LIMIT</code> clause fixes this: it caps how many rows each <code class=\"inline-code\">FETCH</code> returns, so memory use stays flat no matter how big the table is."
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Approach",
+            "Rows per fetch",
+            "Memory use",
+            "Good for"
+          ],
+          [
+            "Cursor FOR loop",
+            "Handled by Oracle",
+            "Low",
+            "Simple read-only loops"
+          ],
+          [
+            "SELECT ... BULK COLLECT INTO",
+            "All rows at once",
+            "Grows with the result",
+            "Small, known result sets"
+          ],
+          [
+            "FETCH ... BULK COLLECT INTO ... LIMIT n",
+            "At most n",
+            "Fixed by n",
+            "Large tables, batch jobs"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "",
+        "text": "<code class=\"inline-code\">LIMIT</code> is only allowed on a <code class=\"inline-code\">FETCH ... BULK COLLECT</code> statement. To cap a <code class=\"inline-code\">SELECT ... BULK COLLECT INTO</code> statement, Oracle's docs suggest <code class=\"inline-code\">ROWNUM</code>, the <code class=\"inline-code\">SAMPLE</code> clause or <code class=\"inline-code\">FETCH FIRST</code> in the query instead."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Create a small orders table with 25 rows and an empty archive table. Every third order is marked SHIPPED. The archive table has <code class=\"inline-code\">NOT NULL</code> on amount, which you will use later to trigger errors on purpose."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE orders (\n  order_id     NUMBER PRIMARY KEY,\n  customer_id  NUMBER NOT NULL,\n  amount       NUMBER(10,2),\n  status       VARCHAR2(10) NOT NULL\n);\n\nINSERT INTO orders (order_id, customer_id, amount, status)\nSELECT LEVEL,\n       MOD(LEVEL, 5) + 1,\n       LEVEL * 100,\n       CASE WHEN MOD(LEVEL, 3) = 0 THEN 'SHIPPED' ELSE 'NEW' END\n  FROM dual\nCONNECT BY LEVEL <= 25;\n\nCOMMIT;\n\nCREATE TABLE order_archive (\n  order_id     NUMBER PRIMARY KEY,\n  customer_id  NUMBER NOT NULL,\n  amount       NUMBER(10,2) NOT NULL,\n  status       VARCHAR2(10) NOT NULL,\n  archived_on  DATE DEFAULT SYSDATE\n);",
+        "caption": "Sample tables for this tutorial"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT status, COUNT(*) AS orders, SUM(amount) AS total\n  FROM orders\n GROUP BY status\n ORDER BY status;",
+        "caption": "Check the data"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "STATUS",
+            "ORDERS",
+            "TOTAL"
+          ],
+          [
+            "NEW",
+            "17",
+            "21700"
+          ],
+          [
+            "SHIPPED",
+            "8",
+            "10800"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Order amounts run from 100 to 2,500, so the full total is 32,500. The 8 shipped orders are IDs 3, 6, 9, 12, 15, 18, 21 and 24. Run <code class=\"inline-code\">SET SERVEROUTPUT ON</code> in SQL*Plus or SQL Developer before the PL/SQL blocks below so you can see the <code class=\"inline-code\">DBMS_OUTPUT</code> lines."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 1: BULK COLLECT without LIMIT",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Start with the simplest form. One <code class=\"inline-code\">SELECT</code> fills a nested table of <code class=\"inline-code\">orders%ROWTYPE</code> records with every row."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  TYPE t_order_tab IS TABLE OF orders%ROWTYPE;\n  l_orders t_order_tab;\nBEGIN\n  SELECT *\n    BULK COLLECT INTO l_orders\n    FROM orders\n   ORDER BY order_id;\n\n  DBMS_OUTPUT.PUT_LINE('Rows fetched: ' || l_orders.COUNT);\n  DBMS_OUTPUT.PUT_LINE('Last amount: ' || l_orders(l_orders.COUNT).amount);\nEND;\n/",
+        "caption": "Fetch all rows in one call"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Rows fetched: 25\nLast amount: 2500",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "All 25 rows arrive in one round trip, and you can read any row by its index. BULK COLLECT always fills the collection densely from index 1, so <code class=\"inline-code\">l_orders(l_orders.COUNT)</code> is the last row."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What happens when no rows match",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Change the query to <code class=\"inline-code\">WHERE status = 'CANCELLED'</code>. A plain <code class=\"inline-code\">SELECT ... INTO</code> would raise ORA-01403 (no data found). BULK COLLECT does not. The Oracle docs state that PL/SQL raises no exception when a BULK COLLECT statement returns no rows, so you must check the collection yourself."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  TYPE t_order_tab IS TABLE OF orders%ROWTYPE;\n  l_orders t_order_tab;\nBEGIN\n  SELECT *\n    BULK COLLECT INTO l_orders\n    FROM orders\n   WHERE status = 'CANCELLED';\n\n  IF l_orders.COUNT = 0 THEN\n    DBMS_OUTPUT.PUT_LINE('No cancelled orders');\n  END IF;\nEND;\n/",
+        "caption": "BULK COLLECT returns an empty collection, not an error"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "No cancelled orders",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This version is fine for 25 rows. On a table with millions of rows it would try to hold every row in memory, which is exactly what LIMIT prevents."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 2: BULK COLLECT with LIMIT, step by step",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now process the same table in batches of 10. With 25 rows you should see three batches: 10, 10 and 5."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: declare a cursor and a collection based on it",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "An explicit cursor is required because LIMIT works only with <code class=\"inline-code\">FETCH</code>. Declaring the collection as <code class=\"inline-code\">TABLE OF c_orders%ROWTYPE</code> keeps the record shape in sync with the cursor's column list."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: fetch, check, process, repeat",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  CURSOR c_orders IS\n    SELECT order_id, amount\n      FROM orders\n     ORDER BY order_id;\n\n  TYPE t_order_tab IS TABLE OF c_orders%ROWTYPE;\n  l_orders t_order_tab;\n  l_batch  PLS_INTEGER := 0;\n  l_total  NUMBER := 0;\nBEGIN\n  OPEN c_orders;\n  LOOP\n    FETCH c_orders BULK COLLECT INTO l_orders LIMIT 10;\n    EXIT WHEN l_orders.COUNT = 0;\n\n    l_batch := l_batch + 1;\n    FOR i IN 1 .. l_orders.COUNT LOOP\n      l_total := l_total + l_orders(i).amount;\n    END LOOP;\n\n    DBMS_OUTPUT.PUT_LINE('Batch ' || l_batch || ': ' ||\n      l_orders.COUNT || ' rows, first id ' || l_orders(1).order_id);\n  END LOOP;\n  CLOSE c_orders;\n\n  DBMS_OUTPUT.PUT_LINE('Total amount: ' || l_total);\nEND;\n/",
+        "caption": "Oracle BULK COLLECT LIMIT example"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Batch 1: 10 rows, first id 1\nBatch 2: 10 rows, first id 11\nBatch 3: 5 rows, first id 21\nTotal amount: 32500",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 3: understand why the loop ends correctly",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Each <code class=\"inline-code\">FETCH</code> replaces the previous contents of <code class=\"inline-code\">l_orders</code>, so the collection never holds more than 10 rows. The third fetch returns the last 5 rows, and they are processed. The fourth fetch finds nothing left, returns an empty collection, and <code class=\"inline-code\">EXIT WHEN l_orders.COUNT = 0</code> ends the loop."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The total of 32,500 matches the check query, which proves no row was skipped. This exit test also works when the row count is an exact multiple of the limit: the extra fetch simply returns zero rows."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 3: the %NOTFOUND trap that loses rows",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is the most common BULK COLLECT bug. Developers used to single-row fetches put <code class=\"inline-code\">EXIT WHEN c_orders%NOTFOUND</code> directly after the fetch."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "  LOOP\n    FETCH c_orders BULK COLLECT INTO l_orders LIMIT 10;\n    EXIT WHEN c_orders%NOTFOUND;   -- wrong place\n\n    l_batch := l_batch + 1;\n    FOR i IN 1 .. l_orders.COUNT LOOP\n      l_total := l_total + l_orders(i).amount;\n    END LOOP;\n    DBMS_OUTPUT.PUT_LINE('Batch ' || l_batch || ': ' ||\n      l_orders.COUNT || ' rows, first id ' || l_orders(1).order_id);\n  END LOOP;",
+        "caption": "Same block as Example 2, with the exit test changed"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Batch 1: 10 rows, first id 1\nBatch 2: 10 rows, first id 11\nTotal amount: 21000",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The last 5 orders vanished. With BULK COLLECT, <code class=\"inline-code\">%NOTFOUND</code> becomes TRUE as soon as a fetch returns <b>fewer rows than the limit</b>, not only when it returns zero. The third fetch did load orders 21 to 25, but the loop exited before processing them. No error is raised, so this bug often reaches production."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "There are two correct patterns. Use either one consistently:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Test the collection at the top: <code class=\"inline-code\">EXIT WHEN l_orders.COUNT = 0;</code> straight after the fetch (Example 2).",
+            "items": []
+          },
+          {
+            "content": "Test the cursor at the bottom: process the batch first, then <code class=\"inline-code\">EXIT WHEN c_orders%NOTFOUND;</code> as the last statement in the loop. Oracle's own LIMIT example in the PL/SQL Language Reference uses this form.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "",
+        "text": "Never put <code class=\"inline-code\">EXIT WHEN cursor%NOTFOUND</code> between a BULK COLLECT fetch and the code that processes the batch. The final partial batch is silently skipped."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 4: BULK COLLECT with FORALL to copy rows",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Fetching in bulk only solves half the problem. If you then run one INSERT per row inside a <code class=\"inline-code\">FOR</code> loop, you are back to a context switch per row. <code class=\"inline-code\">FORALL</code> sends the whole batch to the SQL engine in one call."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  CURSOR c_shipped IS\n    SELECT order_id, customer_id, amount, status\n      FROM orders\n     WHERE status = 'SHIPPED'\n     ORDER BY order_id;\n\n  TYPE t_ship_tab IS TABLE OF c_shipped%ROWTYPE;\n  l_rows t_ship_tab;\nBEGIN\n  OPEN c_shipped;\n  LOOP\n    FETCH c_shipped BULK COLLECT INTO l_rows LIMIT 100;\n    EXIT WHEN l_rows.COUNT = 0;\n\n    FORALL i IN 1 .. l_rows.COUNT\n      INSERT INTO order_archive (order_id, customer_id, amount, status)\n      VALUES (l_rows(i).order_id, l_rows(i).customer_id,\n              l_rows(i).amount, l_rows(i).status);\n\n    DBMS_OUTPUT.PUT_LINE('Archived in this batch: ' || SQL%ROWCOUNT);\n  END LOOP;\n  CLOSE c_shipped;\n  COMMIT;\nEND;\n/",
+        "caption": "BULK COLLECT LIMIT with FORALL insert"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Archived in this batch: 8",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "There are only 8 shipped orders, so one batch of up to 100 covers them all. On a large table the same code would archive 100 rows per round trip. After a FORALL, <code class=\"inline-code\">SQL%ROWCOUNT</code> gives the total rows affected by the whole statement."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">FORALL</code> is not a loop. It takes exactly one DML statement (INSERT, UPDATE, DELETE or MERGE), and the values that change between executions must come from collections. Referencing fields of a record collection, such as <code class=\"inline-code\">l_rows(i).amount</code>, inside FORALL is supported in Oracle 11g and later."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "",
+        "text": "If you only need to copy rows with no PL/SQL logic in between, a single <code class=\"inline-code\">INSERT INTO order_archive (...) SELECT ... FROM orders WHERE status = 'SHIPPED'</code> is simpler and faster than any loop. Use BULK COLLECT and FORALL when each batch needs processing that plain SQL cannot do."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 5: rows affected per element with SQL%BULK_ROWCOUNT",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Sometimes you need to know which elements actually matched rows. <code class=\"inline-code\">SQL%BULK_ROWCOUNT(i)</code> holds the number of rows affected by the i-th execution of the most recent FORALL. This example updates three customers, one of which does not exist, then rolls back so the data is unchanged for the next example."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  TYPE t_id_tab IS TABLE OF orders.customer_id%TYPE;\n  l_customers t_id_tab := t_id_tab(1, 3, 9);\nBEGIN\n  FORALL i IN 1 .. l_customers.COUNT\n    UPDATE orders\n       SET amount = amount + 10\n     WHERE customer_id = l_customers(i);\n\n  FOR i IN 1 .. l_customers.COUNT LOOP\n    DBMS_OUTPUT.PUT_LINE('Customer ' || l_customers(i) ||\n      ': ' || SQL%BULK_ROWCOUNT(i) || ' rows');\n  END LOOP;\n  DBMS_OUTPUT.PUT_LINE('Total: ' || SQL%ROWCOUNT);\n  ROLLBACK;\nEND;\n/",
+        "caption": "Rows affected by each FORALL execution"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Customer 1: 5 rows\nCustomer 3: 5 rows\nCustomer 9: 0 rows\nTotal: 10",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Customer 9 has no orders, so its count is 0. In a batch job this is how you find keys that matched nothing, for example to log them or insert them instead."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 6: FORALL SAVE EXCEPTIONS to keep going after bad rows",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "By default, if one execution inside FORALL fails, the FORALL stops at that row. The Oracle docs explain that if the exception is unhandled, all changes made by the FORALL are rolled back. If you handle it, the earlier successful rows stay, but the rows after the bad one are never attempted."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Add <code class=\"inline-code\">SAVE EXCEPTIONS</code> and Oracle tries every element, records each failure, and raises one error at the end: ORA-24381. Details of each failure are in <code class=\"inline-code\">SQL%BULK_EXCEPTIONS</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: create some bad data",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "DELETE FROM order_archive;\nUPDATE orders SET amount = NULL WHERE order_id IN (6, 15);\nCOMMIT;",
+        "caption": "Empty the archive and break two shipped orders"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Orders 6 and 15 now have a NULL amount, but <code class=\"inline-code\">order_archive.amount</code> is NOT NULL. Inserting them will fail with ORA-01400."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: archive with SAVE EXCEPTIONS",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  CURSOR c_shipped IS\n    SELECT order_id, customer_id, amount, status\n      FROM orders\n     WHERE status = 'SHIPPED'\n     ORDER BY order_id;\n\n  TYPE t_ship_tab IS TABLE OF c_shipped%ROWTYPE;\n  l_rows t_ship_tab;\n  l_idx  PLS_INTEGER;\n\n  e_bulk_errors EXCEPTION;\n  PRAGMA EXCEPTION_INIT(e_bulk_errors, -24381);\nBEGIN\n  OPEN c_shipped;\n  LOOP\n    FETCH c_shipped BULK COLLECT INTO l_rows LIMIT 100;\n    EXIT WHEN l_rows.COUNT = 0;\n\n    BEGIN\n      FORALL i IN 1 .. l_rows.COUNT SAVE EXCEPTIONS\n        INSERT INTO order_archive (order_id, customer_id, amount, status)\n        VALUES (l_rows(i).order_id, l_rows(i).customer_id,\n                l_rows(i).amount, l_rows(i).status);\n    EXCEPTION\n      WHEN e_bulk_errors THEN\n        FOR j IN 1 .. SQL%BULK_EXCEPTIONS.COUNT LOOP\n          l_idx := SQL%BULK_EXCEPTIONS(j).ERROR_INDEX;\n          DBMS_OUTPUT.PUT_LINE('Order ' || l_rows(l_idx).order_id ||\n            ' failed: ORA-' ||\n            LPAD(SQL%BULK_EXCEPTIONS(j).ERROR_CODE, 5, '0'));\n        END LOOP;\n    END;\n  END LOOP;\n  CLOSE c_shipped;\n  COMMIT;\nEND;\n/",
+        "caption": "FORALL SAVE EXCEPTIONS inside a BULK COLLECT LIMIT loop"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Order 6 failed: ORA-01400\nOrder 15 failed: ORA-01400",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT COUNT(*) FROM order_archive;",
+        "caption": "Check what was archived"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "COUNT(*)"
+          ],
+          [
+            "6"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 3: read the result",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Six good rows were inserted and the two bad ones were reported. <code class=\"inline-code\">ERROR_INDEX</code> is the position in the collection of the failed execution, so <code class=\"inline-code\">l_rows(l_idx)</code> gives you the full failing row for logging. <code class=\"inline-code\">ERROR_CODE</code> is the Oracle error number stored as a positive value; to get the message text, call <code class=\"inline-code\">SQLERRM(-SQL%BULK_EXCEPTIONS(j).ERROR_CODE)</code>. The docs note that this text leaves out substitution values such as the column name."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Notice the inner BEGIN ... END block. Because the handler sits inside the loop, the job logs the failures for this batch and carries on with the next batch. If you put the handler at the outer level, the first batch with any error would end the whole loop."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "",
+        "text": "After running this example, put the data back with UPDATE orders SET amount = order_id * 100 WHERE order_id IN (6, 15); and COMMIT, if you want to repeat the earlier examples."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Exiting on %NOTFOUND right after the fetch.</b> The final partial batch is skipped with no error. Use <code class=\"inline-code\">EXIT WHEN collection.COUNT = 0</code> after the fetch, or test <code class=\"inline-code\">%NOTFOUND</code> at the end of the loop.",
+            "items": []
+          },
+          {
+            "content": "<b>Using SELECT ... BULK COLLECT INTO on a large table.</b> Every row is held in PGA memory at once. On big result sets this can fail with ORA-04030 (out of process memory). Switch to an explicit cursor with <code class=\"inline-code\">FETCH ... LIMIT</code>.",
+            "items": []
+          },
+          {
+            "content": "<b>Expecting NO_DATA_FOUND.</b> BULK COLLECT never raises it. Check <code class=\"inline-code\">COUNT = 0</code> if an empty result matters.",
+            "items": []
+          },
+          {
+            "content": "<b>Fetching in bulk, then doing row-by-row DML.</b> A <code class=\"inline-code\">FOR</code> loop with an INSERT inside still switches context per row. Use <code class=\"inline-code\">FORALL</code> for the DML.",
+            "items": []
+          },
+          {
+            "content": "<b>Treating FORALL like a FOR loop.</b> It accepts one DML statement only, with no IF logic or extra statements. Do any per-row logic in a normal loop first, then run FORALL on the prepared collection.",
+            "items": []
+          },
+          {
+            "content": "<b>Running FORALL over a sparse collection.</b> If you deleted elements from the collection, <code class=\"inline-code\">FORALL i IN 1 .. l_rows.COUNT</code> will hit a missing index and fail. Use <code class=\"inline-code\">FORALL i IN INDICES OF l_rows</code> instead.",
+            "items": []
+          },
+          {
+            "content": "<b>Catching ORA-24381 with WHEN OTHERS and doing nothing.</b> The failed rows disappear without a trace. Always loop through <code class=\"inline-code\">SQL%BULK_EXCEPTIONS</code> and log each one.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Performance tips and best practices",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Start with LIMIT 100 and measure.</b> Oracle does not publish one ideal value. A limit of 100 already removes most context switches. Larger limits use more memory per session for diminishing gains, so test with your own data and row width before raising it.",
+            "items": []
+          },
+          {
+            "content": "<b>Fetch only the columns you need.</b> Collection memory is rows times row width. A cursor that selects 4 columns instead of SELECT * lets you use a bigger limit for the same memory.",
+            "items": []
+          },
+          {
+            "content": "<b>Prefer plain SQL when you can.</b> INSERT ... SELECT, MERGE, or a single UPDATE does the work inside the SQL engine with no context switches at all.",
+            "items": []
+          },
+          {
+            "content": "<b>Know when a cursor FOR loop is enough.</b> With the default PLSQL_OPTIMIZE_LEVEL of 2, Oracle optimizes a cursor FOR loop to fetch rows in batches (100 rows per fetch, according to Oracle's AskTom column). If the loop only reads data and does no DML, the cursor FOR loop is usually fast enough and simpler.",
+            "items": []
+          },
+          {
+            "content": "<b>Decide your commit strategy.</b> Committing once at the end keeps the job all-or-nothing. Committing per batch keeps undo small but means a failure leaves the job half done, so the job must be safe to restart.",
+            "items": []
+          },
+          {
+            "content": "<b>Bulk SQL has limits.</b> The docs state that you cannot use bulk SQL on remote tables, and parallel DML is disabled with bulk SQL.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the default limit for BULK COLLECT in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "There is no default. Without a <code class=\"inline-code\">LIMIT</code> clause, BULK COLLECT fetches every row the query returns. You must add <code class=\"inline-code\">LIMIT n</code> to a <code class=\"inline-code\">FETCH</code> statement yourself to cap the batch size."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between BULK COLLECT and FORALL?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "BULK COLLECT moves data from SQL into PL/SQL: it fetches many rows into a collection in one call. FORALL moves data from PL/SQL into SQL: it runs one INSERT, UPDATE, DELETE or MERGE for every element of a collection in one call. Batch jobs usually use both together, as in Example 4."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Does BULK COLLECT raise NO_DATA_FOUND?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "No. When the query returns no rows, the collection is simply empty. Check <code class=\"inline-code\">collection.COUNT = 0</code> to detect it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can I use BULK COLLECT with EXECUTE IMMEDIATE?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Yes. Dynamic SQL supports it with <code class=\"inline-code\">EXECUTE IMMEDIATE sql_text BULK COLLECT INTO collection</code>. For batches with dynamic SQL, open a cursor variable with <code class=\"inline-code\">OPEN rc FOR sql_text</code> and use <code class=\"inline-code\">FETCH rc BULK COLLECT INTO collection LIMIT n</code> in the same loop pattern shown above."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Is BULK COLLECT faster than a cursor FOR loop?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "For read-only loops the gap is small, because Oracle already optimizes cursor FOR loops to fetch in batches. BULK COLLECT with FORALL makes a big difference when the loop body runs DML for each row, since FORALL batches the DML too."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "Use an explicit cursor with FETCH ... BULK COLLECT INTO ... LIMIT n for large result sets.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Exit with EXIT WHEN collection.COUNT = 0 after the fetch, or %NOTFOUND at the end of the loop.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Remember BULK COLLECT returns an empty collection instead of raising NO_DATA_FOUND.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Write rows back with FORALL, not with DML inside a FOR loop.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use SAVE EXCEPTIONS and SQL%BULK_EXCEPTIONS to log bad rows and keep going.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use SQL%BULK_ROWCOUNT to see how many rows each element affected.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Start with LIMIT 100, test, and prefer plain SQL when no PL/SQL logic is needed.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your BULK COLLECT job finishes with no error, but the last few rows were never processed. Here is why.\n\nWith FETCH ... BULK COLLECT INTO ... LIMIT, %NOTFOUND turns TRUE as soon as a fetch returns fewer rows than the limit. Exit right after that fetch and the final partial batch is skipped.\n\nWhat to remember:\n→ Use LIMIT on large tables. Without it, every row sits in session memory at once.\n→ Exit safely: EXIT WHEN l_rows.COUNT = 0 right after the fetch.\n→ BULK COLLECT never raises NO_DATA_FOUND. An empty result is just an empty collection.\n→ Write back with FORALL, not an INSERT inside a FOR loop. FORALL sends the whole batch in one call.\n→ Add SAVE EXCEPTIONS to keep going past bad rows, then read SQL%BULK_EXCEPTIONS to log them.\n\nThe tutorial builds this on a 25-row orders table, shows the exact output of the wrong and right loops, and handles ORA-24381 step by step.\n\nWhat LIMIT value do you use in your batch jobs, and how did you pick it?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #PLSQL #OracleSQL #SQLInterview",
+    "slides": [
+      {
+        "title": "BULK COLLECT with LIMIT in Oracle",
+        "body": "Batch fetching, FORALL and SAVE EXCEPTIONS with working examples"
+      },
+      {
+        "title": "Why bulk SQL is faster",
+        "points": [
+          "Row-by-row code switches between PL/SQL and SQL for every row",
+          "BULK COLLECT fetches many rows in one call",
+          "FORALL sends a whole collection to one DML statement"
+        ]
+      },
+      {
+        "title": "The safe LIMIT loop",
+        "code": "OPEN c_orders;\nLOOP\n  FETCH c_orders\n    BULK COLLECT INTO l_rows LIMIT 100;\n  EXIT WHEN l_rows.COUNT = 0;\n  -- process l_rows here\nEND LOOP;\nCLOSE c_orders;",
+        "lang": "plsql"
+      },
+      {
+        "title": "The %NOTFOUND trap",
+        "body": "%NOTFOUND is TRUE when a fetch returns fewer rows than LIMIT. If you exit right after the fetch, the last partial batch is skipped and no error is raised. Exit on COUNT = 0, or test %NOTFOUND at the end of the loop."
+      },
+      {
+        "title": "Write back with FORALL",
+        "code": "FORALL i IN 1 .. l_rows.COUNT\n  UPDATE orders\n     SET status = 'ARCHIVED'\n   WHERE order_id = l_rows(i).order_id;",
+        "lang": "plsql"
+      },
+      {
+        "title": "Keep going past bad rows",
+        "points": [
+          "Add SAVE EXCEPTIONS after the FORALL bounds",
+          "Oracle raises ORA-24381 once, after all rows are tried",
+          "Loop through SQL%BULK_EXCEPTIONS to log ERROR_INDEX and ERROR_CODE"
+        ]
+      }
+    ]
+  }
+}
