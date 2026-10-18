@@ -1,0 +1,1319 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DISTINCT ON: One Row per Group, With Examples",
+ "slug": "postgresql-distinct-on",
+ "category": "postgresql",
+ "description": "Learn PostgreSQL DISTINCT ON with real examples: latest row per group, multiple columns, NULLs, ties, row_number() comparison and indexing for speed.",
+ "focusKeyword": "postgresql distinct on",
+ "tags": [
+  "postgresql",
+  "distinct-on",
+  "sql",
+  "window-functions",
+  "performance"
+ ],
+ "related": [
+  "/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/",
+  "/posts/sql/top-10-sql-window-function-queries/",
+  "/posts/postgresql/postgresql-for-update-skip-locked-job-queue/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: SELECT (DISTINCT Clause, Compatibility)",
+   "url": "https://www.postgresql.org/docs/current/sql-select.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 7.3 Select Lists (DISTINCT)",
+   "url": "https://www.postgresql.org/docs/current/queries-select-lists.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 7.5 Sorting Rows (NULLS FIRST/LAST)",
+   "url": "https://www.postgresql.org/docs/current/queries-order.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 11.4 Indexes and ORDER BY",
+   "url": "https://www.postgresql.org/docs/current/indexes-ordering.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Window Functions",
+   "url": "https://www.postgresql.org/docs/current/functions-window.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes",
+   "url": "https://www.postgresql.org/docs/18/release-18.html"
+  }
+ ],
+ "reviewNotes": "PostgreSQL 18 could NOT be installed in the sandbox: the PGDG repository was reachable (candidate 18.6-1.pgdg24.04+2), but postgresql-18 depends on liburing2 from the Ubuntu archive, and archive.ubuntu.com is blocked by the sandbox network policy. All queries were run on PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on Ubuntu 24.04.5 LTS, following the PostgreSQL 18 documentation (/docs/current). Query results and error messages are real output from 16.15; DISTINCT ON semantics and these error messages are unchanged in 18. The three EXPLAIN plan blocks are captioned '(expected output)' because the plan shape came from 16 (the top 'Result' node in the indexed DISTINCT ON plan in particular may not appear on 18); please re-run them on 18 if possible. The timings (about 140-170 ms vs 8-10 ms on 500,000 rows / 2,000 customers) are from a single sandbox run on 16.15, are presented as relative only, and could be removed if you prefer no numbers. The 'Leaving out ORDER BY' output is real but arbitrary by nature (stated in the text). orders_big and customers were built with generate_series (not shown in the article).",
+ "generatedAt": "2026-10-18T13:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">SELECT DISTINCT ON (column)</code> returns exactly one row for each distinct value of the column you list, and the <code class=\"inline-code\">ORDER BY</code> clause decides which row that is. It is the shortest way in PostgreSQL to answer questions like \"the latest order for each customer\" or \"the most expensive product in each category\" while still getting every column of that row."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The rule that trips most people up: the <code class=\"inline-code\">DISTINCT ON</code> expressions must be the first expressions in <code class=\"inline-code\">ORDER BY</code>, and the columns after them pick the winner. This tutorial shows the syntax on a small orders table, what happens with ties and NULLs, how to get more than one row per group, and how <code class=\"inline-code\">DISTINCT ON</code> compares with <code class=\"inline-code\">row_number()</code> and a <code class=\"inline-code\">LATERAL</code> join when the table is large. Every query was run and the output is shown."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How DISTINCT ON works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Plain <code class=\"inline-code\">SELECT DISTINCT</code> removes rows that are identical in every selected column. <code class=\"inline-code\">DISTINCT ON (expression, ...)</code> is looser: two rows count as duplicates when only the listed expressions are equal, even if the other columns differ. From each set of duplicates PostgreSQL keeps the first row and throws the rest away."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "\"First\" means first in the sort order. PostgreSQL sorts the rows (or reads them in order from an index), then walks through them and keeps a row only when the <code class=\"inline-code\">DISTINCT ON</code> value changes. That is why the documentation warns that the first row of each set is unpredictable unless <code class=\"inline-code\">ORDER BY</code> puts the row you want at the top of its group."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "So a DISTINCT ON query has two parts that work together:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">DISTINCT ON (customer_id)</code>: defines the groups, one output row per customer.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">ORDER BY customer_id, order_date DESC</code>: the leading <code class=\"inline-code\">customer_id</code> must match the DISTINCT ON list; <code class=\"inline-code\">order_date DESC</code> ranks rows inside each group so the newest order comes first and wins.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">DISTINCT ON</code> is a PostgreSQL extension; it is not in the SQL standard. Oracle, SQL Server and MySQL do not have it, so if you are coming from Oracle, think of it as a short form of the <code class=\"inline-code\">ROW_NUMBER() OVER (PARTITION BY ...)</code> pattern you already know."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small <code class=\"inline-code\">orders</code> table. It has two customers with ties or NULLs on purpose, because those are the cases where DISTINCT ON surprises people: customer 103 placed two orders on the same day, and customer 104 has one order with no date."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders (\n    order_id     integer PRIMARY KEY,\n    customer_id  integer NOT NULL,\n    order_date   date,\n    amount       numeric(10,2) NOT NULL,\n    status       text NOT NULL\n);\n\nINSERT INTO orders (order_id, customer_id, order_date, amount, status) VALUES\n    (1, 101, '2026-09-02', 1200.00, 'delivered'),\n    (2, 101, '2026-09-20',  450.00, 'delivered'),\n    (3, 101, '2026-10-05',  980.00, 'shipped'),\n    (4, 102, '2026-08-14', 3100.00, 'delivered'),\n    (5, 102, '2026-10-01',  750.00, 'cancelled'),\n    (6, 103, '2026-09-11',  300.00, 'delivered'),\n    (7, 103, '2026-09-11',  820.00, 'delivered'),\n    (8, 104, NULL,          640.00, 'pending'),\n    (9, 104, '2026-07-30',  210.00, 'delivered');",
+    "caption": "Sample orders table"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "DISTINCT vs DISTINCT ON",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Start with plain <code class=\"inline-code\">DISTINCT</code> to see the difference. It can only return the columns that define uniqueness:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT DISTINCT customer_id\n  FROM orders\n ORDER BY customer_id;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id"
+     ],
+     [
+      "101"
+     ],
+     [
+      "102"
+     ],
+     [
+      "103"
+     ],
+     [
+      "104"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "As soon as you add <code class=\"inline-code\">order_id</code> or <code class=\"inline-code\">amount</code> to a plain DISTINCT, every row becomes unique again and you get all nine back. A <code class=\"inline-code\">GROUP BY</code> has the same limit: you can get the latest date per customer, but not the other columns of that row."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT customer_id, max(order_date) AS last_order_date, order_id\n  FROM orders\n GROUP BY customer_id;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  column \"orders.order_id\" must appear in the GROUP BY clause or be used in an aggregate function",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "DISTINCT ON fixes exactly this problem: one row per group, with all of its columns."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example: latest order for each customer",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: the basic query",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT DISTINCT ON (customer_id)\n       customer_id, order_id, order_date, amount\n  FROM orders\n ORDER BY customer_id, order_date DESC;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id",
+      "order_id",
+      "order_date",
+      "amount"
+     ],
+     [
+      "101",
+      "3",
+      "2026-10-05",
+      "980.00"
+     ],
+     [
+      "102",
+      "5",
+      "2026-10-01",
+      "750.00"
+     ],
+     [
+      "103",
+      "6",
+      "2026-09-11",
+      "300.00"
+     ],
+     [
+      "104",
+      "8",
+      "",
+      "640.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Customers 101 and 102 look right. Two rows are wrong, and they are the two most common DISTINCT ON bugs:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Customer 104 got order 8, the one with <b>no date</b>. In descending order NULLs come first.",
+      "items": []
+     },
+     {
+      "content": "Customer 103 got order 6, but order 7 has the same date. Which of the two you get is not guaranteed.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: put NULL dates last",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation states that NULLs sort as if larger than any non-null value, so <code class=\"inline-code\">NULLS FIRST</code> is the default for <code class=\"inline-code\">DESC</code> and <code class=\"inline-code\">NULLS LAST</code> for <code class=\"inline-code\">ASC</code>. When you sort newest first, add <code class=\"inline-code\">NULLS LAST</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT DISTINCT ON (customer_id)\n       customer_id, order_id, order_date, amount\n  FROM orders\n ORDER BY customer_id, order_date DESC NULLS LAST;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id",
+      "order_id",
+      "order_date",
+      "amount"
+     ],
+     [
+      "101",
+      "3",
+      "2026-10-05",
+      "980.00"
+     ],
+     [
+      "102",
+      "5",
+      "2026-10-01",
+      "750.00"
+     ],
+     [
+      "103",
+      "6",
+      "2026-09-11",
+      "300.00"
+     ],
+     [
+      "104",
+      "9",
+      "2026-07-30",
+      "210.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Customer 104 now gets order 9, the newest order that has a date."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: add a tie-breaker",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Orders 6 and 7 are equal on <code class=\"inline-code\">customer_id</code> and <code class=\"inline-code\">order_date</code>, so the sort can return either first. The result can change after an <code class=\"inline-code\">UPDATE</code>, a <code class=\"inline-code\">VACUUM</code>, a new index or a different plan. Add a unique column at the end of <code class=\"inline-code\">ORDER BY</code> so the order is fully defined:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT DISTINCT ON (customer_id)\n       customer_id, order_id, order_date, amount\n  FROM orders\n ORDER BY customer_id, order_date DESC NULLS LAST, order_id DESC;",
+    "caption": "Final version: deterministic latest order per customer"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id",
+      "order_id",
+      "order_date",
+      "amount"
+     ],
+     [
+      "101",
+      "3",
+      "2026-10-05",
+      "980.00"
+     ],
+     [
+      "102",
+      "5",
+      "2026-10-01",
+      "750.00"
+     ],
+     [
+      "103",
+      "7",
+      "2026-09-11",
+      "820.00"
+     ],
+     [
+      "104",
+      "9",
+      "2026-07-30",
+      "210.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now the answer is the same every time: for a same-day tie, the higher <code class=\"inline-code\">order_id</code> (the order created later) wins."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Rule of thumb",
+    "text": "Read the ORDER BY as a sentence: \"group by customer, newest date first, and if dates tie, highest order_id first\". If the last column in ORDER BY is not unique within a group, your query can return different rows on different runs."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Choosing the winner by a different column",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The DISTINCT ON column stays the same; only the columns after it change. To get each customer's largest order, sort by <code class=\"inline-code\">amount DESC</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT DISTINCT ON (customer_id)\n       customer_id, order_id, amount\n  FROM orders\n ORDER BY customer_id, amount DESC, order_id;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id",
+      "order_id",
+      "amount"
+     ],
+     [
+      "101",
+      "1",
+      "1200.00"
+     ],
+     [
+      "102",
+      "4",
+      "3100.00"
+     ],
+     [
+      "103",
+      "7",
+      "820.00"
+     ],
+     [
+      "104",
+      "8",
+      "640.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A <code class=\"inline-code\">WHERE</code> clause is applied before DISTINCT ON, so it filters the candidates. Here cancelled orders are excluded, and customer 102 falls back to order 4:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT DISTINCT ON (customer_id)\n       customer_id, order_id, order_date, status\n  FROM orders\n WHERE status <> 'cancelled'\n ORDER BY customer_id, order_date DESC NULLS LAST, order_id DESC;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id",
+      "order_id",
+      "order_date",
+      "status"
+     ],
+     [
+      "101",
+      "3",
+      "2026-10-05",
+      "shipped"
+     ],
+     [
+      "102",
+      "4",
+      "2026-08-14",
+      "delivered"
+     ],
+     [
+      "103",
+      "7",
+      "2026-09-11",
+      "delivered"
+     ],
+     [
+      "104",
+      "9",
+      "2026-07-30",
+      "delivered"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "DISTINCT ON multiple columns and expressions",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "List several expressions to get one row per combination. This returns the latest order for every customer and status pair:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT DISTINCT ON (customer_id, status)\n       customer_id, status, order_id, order_date\n  FROM orders\n ORDER BY customer_id, status, order_date DESC NULLS LAST;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id",
+      "status",
+      "order_id",
+      "order_date"
+     ],
+     [
+      "101",
+      "delivered",
+      "2",
+      "2026-09-20"
+     ],
+     [
+      "101",
+      "shipped",
+      "3",
+      "2026-10-05"
+     ],
+     [
+      "102",
+      "cancelled",
+      "5",
+      "2026-10-01"
+     ],
+     [
+      "102",
+      "delivered",
+      "4",
+      "2026-08-14"
+     ],
+     [
+      "103",
+      "delivered",
+      "6",
+      "2026-09-11"
+     ],
+     [
+      "104",
+      "delivered",
+      "9",
+      "2026-07-30"
+     ],
+     [
+      "104",
+      "pending",
+      "8",
+      ""
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The expressions do not have to be plain columns. Any expression works, as long as the same expression leads the <code class=\"inline-code\">ORDER BY</code>. This finds the biggest order in each calendar month:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT DISTINCT ON (date_trunc('month', order_date))\n       date_trunc('month', order_date)::date AS month,\n       order_id, customer_id, amount\n  FROM orders\n WHERE order_date IS NOT NULL\n ORDER BY date_trunc('month', order_date), amount DESC;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "month",
+      "order_id",
+      "customer_id",
+      "amount"
+     ],
+     [
+      "2026-07-01",
+      "9",
+      "104",
+      "210.00"
+     ],
+     [
+      "2026-08-01",
+      "4",
+      "102",
+      "3100.00"
+     ],
+     [
+      "2026-09-01",
+      "1",
+      "101",
+      "1200.00"
+     ],
+     [
+      "2026-10-01",
+      "3",
+      "101",
+      "980.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Note on NULLs: like plain DISTINCT, DISTINCT ON treats NULL values as equal to each other, so all rows with a NULL key form one group and return one row. That is why the query above filters out the undated order first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sorting the final result differently",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Because ORDER BY must start with the DISTINCT ON columns, the output always comes back sorted by customer. If you want the latest orders listed by amount, wrap the query in a subquery and sort outside it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT *\n  FROM (\n        SELECT DISTINCT ON (customer_id)\n               customer_id, order_id, order_date, amount\n          FROM orders\n         ORDER BY customer_id, order_date DESC NULLS LAST, order_id DESC\n       ) AS latest\n ORDER BY amount DESC;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id",
+      "order_id",
+      "order_date",
+      "amount"
+     ],
+     [
+      "101",
+      "3",
+      "2026-10-05",
+      "980.00"
+     ],
+     [
+      "103",
+      "7",
+      "2026-09-11",
+      "820.00"
+     ],
+     [
+      "102",
+      "5",
+      "2026-10-01",
+      "750.00"
+     ],
+     [
+      "104",
+      "9",
+      "2026-07-30",
+      "210.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Trying to do this in one level gives an error, shown in the common mistakes section below."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "DISTINCT ON vs row_number()",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The standard SQL way to get the same result is the window function <code class=\"inline-code\">row_number()</code>, which numbers rows within each partition starting from 1. Keep the rows numbered 1:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT customer_id, order_id, order_date, amount\n  FROM (\n        SELECT o.*,\n               row_number() OVER (PARTITION BY customer_id\n                                  ORDER BY order_date DESC NULLS LAST, order_id DESC) AS rn\n          FROM orders o\n       ) AS ranked\n WHERE rn = 1\n ORDER BY customer_id;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id",
+      "order_id",
+      "order_date",
+      "amount"
+     ],
+     [
+      "101",
+      "3",
+      "2026-10-05",
+      "980.00"
+     ],
+     [
+      "102",
+      "5",
+      "2026-10-01",
+      "750.00"
+     ],
+     [
+      "103",
+      "7",
+      "2026-09-11",
+      "820.00"
+     ],
+     [
+      "104",
+      "9",
+      "2026-07-30",
+      "210.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Same four rows. The advantage of <code class=\"inline-code\">row_number()</code> is flexibility: change <code class=\"inline-code\">rn = 1</code> to <code class=\"inline-code\">rn <= 2</code> and you get the two latest orders per customer, something DISTINCT ON cannot do."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT customer_id, order_id, order_date, amount\n  FROM (\n        SELECT o.*,\n               row_number() OVER (PARTITION BY customer_id\n                                  ORDER BY order_date DESC NULLS LAST, order_id DESC) AS rn\n          FROM orders o\n       ) AS ranked\n WHERE rn <= 2\n ORDER BY customer_id, rn;",
+    "caption": "Top 2 orders per customer"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id",
+      "order_id",
+      "order_date",
+      "amount"
+     ],
+     [
+      "101",
+      "3",
+      "2026-10-05",
+      "980.00"
+     ],
+     [
+      "101",
+      "2",
+      "2026-09-20",
+      "450.00"
+     ],
+     [
+      "102",
+      "5",
+      "2026-10-01",
+      "750.00"
+     ],
+     [
+      "102",
+      "4",
+      "2026-08-14",
+      "3100.00"
+     ],
+     [
+      "103",
+      "7",
+      "2026-09-11",
+      "820.00"
+     ],
+     [
+      "103",
+      "6",
+      "2026-09-11",
+      "300.00"
+     ],
+     [
+      "104",
+      "9",
+      "2026-07-30",
+      "210.00"
+     ],
+     [
+      "104",
+      "8",
+      "",
+      "640.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "",
+      "DISTINCT ON",
+      "row_number()"
+     ],
+     [
+      "Rows per group",
+      "Exactly one",
+      "Any number (rn &lt;= N)"
+     ],
+     [
+      "Standard SQL",
+      "No, PostgreSQL only",
+      "Yes, works in Oracle, SQL Server, MySQL 8"
+     ],
+     [
+      "Query length",
+      "Short, no subquery",
+      "Needs a subquery or CTE"
+     ],
+     [
+      "Keep tied rows",
+      "No",
+      "Use rank() instead, which gives ties the same number"
+     ],
+     [
+      "Final ORDER BY",
+      "Must start with the DISTINCT ON columns (wrap to change)",
+      "Free"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you need all tied rows (both of customer 103's orders on 2026-09-11, say), use <code class=\"inline-code\">rank()</code> instead of <code class=\"inline-code\">row_number()</code>: the documentation defines it as the row_number of the first row in its peer group, so tied rows get the same rank."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance: making DISTINCT ON fast",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To test speed, the same queries were run on a table with 500,000 orders spread over 2,000 customers. Without a suitable index, PostgreSQL has to read the whole table and sort it before the <code class=\"inline-code\">Unique</code> step can drop the duplicates:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (COSTS OFF)\nSELECT DISTINCT ON (customer_id) customer_id, order_id, order_date, amount\n  FROM orders_big\n ORDER BY customer_id, order_date DESC, order_id DESC;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Unique\n   ->  Sort\n         Sort Key: customer_id, order_date DESC, order_id DESC\n         ->  Seq Scan on orders_big",
+    "caption": "Output (expected output: plan shape on PostgreSQL 18)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: an index that matches the ORDER BY",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A B-tree index can return rows already sorted, which removes the Sort step. The index columns and directions must match the <code class=\"inline-code\">ORDER BY</code> exactly:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_big_cust_latest_idx\n    ON orders_big (customer_id, order_date DESC, order_id DESC);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Result\n   ->  Unique\n         ->  Index Scan using orders_big_cust_latest_idx on orders_big",
+    "caption": "Output (expected output: plan shape on PostgreSQL 18)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The Sort is gone, but the index scan still reads all 500,000 index entries and keeps 2,000 of them. On the test machine this query and the <code class=\"inline-code\">row_number()</code> version both took around 140 to 170 ms. If your query uses <code class=\"inline-code\">NULLS LAST</code>, add it to the index column too (<code class=\"inline-code\">order_date DESC NULLS LAST</code>); otherwise the index order no longer matches, and the plan gets an extra sort step again (in our test an Incremental Sort on top of the index scan)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: many rows per group? Use a LATERAL join",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When each group has hundreds of rows, it is cheaper to jump straight to the top row of each group than to read every row. If you have a table with one row per customer, a <code class=\"inline-code\">LATERAL</code> subquery with <code class=\"inline-code\">LIMIT 1</code> does exactly that: one short index lookup per customer."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT c.customer_id, latest.order_id, latest.order_date, latest.amount\n  FROM customers c\n CROSS JOIN LATERAL (\n        SELECT b.order_id, b.order_date, b.amount\n          FROM orders_big b\n         WHERE b.customer_id = c.customer_id\n         ORDER BY b.order_date DESC, b.order_id DESC\n         LIMIT 1\n       ) AS latest;",
+    "caption": "Latest order per customer with LATERAL"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Nested Loop\n   ->  Seq Scan on customers c\n   ->  Limit\n         ->  Index Scan using orders_big_cust_latest_idx on orders_big b\n               Index Cond: (customer_id = c.customer_id)",
+    "caption": "Output (expected output: plan shape on PostgreSQL 18)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the same data this returned the same 2,000 rows in about 8 to 10 ms on the test machine, because it reads 2,000 index entries instead of 500,000. Your timings will differ, but the pattern holds: the fewer groups compared with rows, the bigger the gain. With a <code class=\"inline-code\">CROSS JOIN</code>, customers without orders are left out; use <code class=\"inline-code\">LEFT JOIN LATERAL (...) ON true</code> to keep them with NULLs."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Which one to pick",
+    "text": "Use DISTINCT ON for readable one-row-per-group queries and for small or mostly unique groups. Use a LATERAL join with a matching index when groups are large and you need speed. Use row_number() when you need top N per group or portable SQL."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ORDER BY does not start with the DISTINCT ON columns",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT DISTINCT ON (customer_id) customer_id, order_id, order_date, amount\n  FROM orders\n ORDER BY order_date DESC;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  SELECT DISTINCT ON expressions must match initial ORDER BY expressions\nLINE 1: SELECT DISTINCT ON (customer_id) customer_id, order_id, orde...",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix: make the DISTINCT ON columns the leading ORDER BY columns (<code class=\"inline-code\">ORDER BY customer_id, order_date DESC</code>). If you want the result ordered by date, wrap the query in a subquery and sort outside, as shown earlier."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Leaving out ORDER BY",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Without ORDER BY the query runs without error but returns whichever row PostgreSQL meets first in each group:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT DISTINCT ON (customer_id) customer_id, order_id, order_date, amount\n  FROM orders;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "customer_id",
+      "order_id",
+      "order_date",
+      "amount"
+     ],
+     [
+      "101",
+      "1",
+      "2026-09-02",
+      "1200.00"
+     ],
+     [
+      "102",
+      "4",
+      "2026-08-14",
+      "3100.00"
+     ],
+     [
+      "103",
+      "6",
+      "2026-09-11",
+      "300.00"
+     ],
+     [
+      "104",
+      "8",
+      "",
+      "640.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This happened to return the oldest orders here, but nothing guarantees it. Always write the ORDER BY that names the winner."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Forgetting NULLS LAST and the tie-breaker",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Shown in the steps above: <code class=\"inline-code\">DESC</code> puts NULLs first, and a non-unique last sort column makes the result unpredictable. End the ORDER BY with the primary key."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Using FOR UPDATE with DISTINCT ON",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT DISTINCT ON (customer_id) customer_id, order_id\n  FROM orders\n ORDER BY customer_id, order_date DESC\n   FOR UPDATE;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  FOR UPDATE is not allowed with DISTINCT clause",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation lists this restriction: row locking clauses cannot be used with DISTINCT. Select the order ids first, then lock them with <code class=\"inline-code\">SELECT ... FROM orders WHERE order_id IN (...) FOR UPDATE</code>. For queue-style locking see <a href=\"/posts/postgresql/postgresql-for-update-skip-locked-job-queue/\">PostgreSQL FOR UPDATE SKIP LOCKED</a>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is DISTINCT ON faster than GROUP BY?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "They answer different questions. <code class=\"inline-code\">GROUP BY</code> with <code class=\"inline-code\">max()</code> gives you aggregates only; DISTINCT ON gives you the whole row. When you need the full row, DISTINCT ON is usually simpler and at least as fast as joining a GROUP BY result back to the table. Check your own case with EXPLAIN ANALYZE."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I use DISTINCT ON with multiple columns?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes. <code class=\"inline-code\">DISTINCT ON (customer_id, status)</code> returns one row per combination. The ORDER BY must start with the same columns, in the same order."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I count rows with DISTINCT ON?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "DISTINCT ON does not aggregate. To count groups, use <code class=\"inline-code\">count(DISTINCT customer_id)</code> (it returns 4 on the sample table), or wrap the DISTINCT ON query in a subquery and run <code class=\"inline-code\">count(*)</code> over it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does DISTINCT ON work in Oracle or MySQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. It is a PostgreSQL extension to the SQL standard. In Oracle, SQL Server and MySQL 8, use <code class=\"inline-code\">row_number() OVER (PARTITION BY ...)</code> as shown above; see also <a href=\"/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/\">SQL window functions with examples</a>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">DISTINCT ON (cols)</code> keeps one row per distinct value of <code class=\"inline-code\">cols</code>, with all its columns.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "ORDER BY must start with the DISTINCT ON expressions; the columns after them choose the winning row.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Add <code class=\"inline-code\">NULLS LAST</code> when sorting <code class=\"inline-code\">DESC</code> on a nullable column.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "End ORDER BY with a unique column (usually the primary key) so the result is deterministic.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Wrap the query in a subquery to sort the final result by something else.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">row_number()</code> for top N per group or portable SQL, <code class=\"inline-code\">rank()</code> to keep ties.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Create an index that matches the ORDER BY, and try a <code class=\"inline-code\">LATERAL ... LIMIT 1</code> join when groups are large.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your \"latest order per customer\" query might be returning the wrong row, and PostgreSQL won't warn you.\n\nDISTINCT ON keeps one row per group, and ORDER BY decides which one. Three details decide whether that row is the right one:\n\n→ The DISTINCT ON columns must lead the ORDER BY: DISTINCT ON (customer_id) ... ORDER BY customer_id, order_date DESC\n→ DESC puts NULLs first, so an order with no date can \"win\". Add NULLS LAST.\n→ If two orders share a date, the winner is not guaranteed. End ORDER BY with the primary key as a tie-breaker.\n→ Need the top 2 per customer? DISTINCT ON can't do it. Use row_number() and keep rn <= 2.\n→ On big tables, an index matching the ORDER BY removes the sort, and a LATERAL join with LIMIT 1 can skip most of the rows.\n\nWhat do you use for one-row-per-group queries: DISTINCT ON, row_number() or GROUP BY with a join?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #Database #DataEngineering",
+  "slides": [
+   {
+    "title": "PostgreSQL DISTINCT ON, done right",
+    "body": "One row per group, without picking the wrong row"
+   },
+   {
+    "title": "What DISTINCT ON does",
+    "body": "It keeps the first row for each distinct value of the listed columns. ORDER BY decides which row is first, so it must start with the same columns."
+   },
+   {
+    "title": "Latest order per customer",
+    "code": "SELECT DISTINCT ON (customer_id)\n  customer_id, order_id, order_date\nFROM orders\nORDER BY customer_id,\n  order_date DESC NULLS LAST,\n  order_id DESC;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Two silent bugs",
+    "points": [
+     "DESC sorts NULLs first: add NULLS LAST",
+     "Tied dates give a random winner: end with the primary key",
+     "No ORDER BY at all: any row can come back"
+    ]
+   },
+   {
+    "title": "Need top 2 per group?",
+    "code": "SELECT * FROM (\n  SELECT customer_id, order_id,\n    row_number() OVER (\n      PARTITION BY customer_id\n      ORDER BY order_date DESC) AS rn\n  FROM orders) AS ranked\nWHERE rn <= 2;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Make it fast",
+    "points": [
+     "Create an index that matches the ORDER BY exactly",
+     "Large groups: LATERAL join with LIMIT 1 per customer",
+     "Check the plan: Unique over Index Scan, no Sort"
+    ]
+   }
+  ]
+ }
+}
