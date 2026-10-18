@@ -4,3 +4,4 @@
 - 2026-10-16 [PostgreSQL] postgresql upsert on conflict -> _drafts/2026-10-16-postgresql-postgresql-upsert-on-conflict.json
 - 2026-10-17 [Oracle] oracle bulk collect limit example -> _drafts/2026-10-17-oracle-oracle-bulk-collect-limit-example.json
 - 2026-10-17 [PostgreSQL] postgresql deadlock detected -> _drafts/2026-10-17-postgresql-postgresql-deadlock-detected.json
+- 2026-10-18 [Oracle] oracle listagg distinct -> _drafts/2026-10-18-oracle-oracle-listagg-distinct.json
