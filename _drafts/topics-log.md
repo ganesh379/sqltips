@@ -7,3 +7,4 @@
 - 2026-10-18 [Oracle] oracle listagg distinct -> _drafts/2026-10-18-oracle-oracle-listagg-distinct.json
 - 2026-10-18 [PostgreSQL] postgresql distinct on -> _drafts/2026-10-18-postgresql-postgresql-distinct-on.json
 - 2026-10-19 [Oracle] oracle pagination query -> _drafts/2026-10-19-oracle-oracle-pagination-query.json
+- 2026-10-19 [PostgreSQL] postgresql architecture explained -> _drafts/2026-10-19-postgresql-postgresql-dba-part-1-dba-role-and-architecture.json

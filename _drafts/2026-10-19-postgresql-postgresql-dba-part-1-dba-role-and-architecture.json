@@ -1,0 +1,1344 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 1: What a DBA Does and How PostgreSQL Works",
+ "slug": "postgresql-dba-part-1-dba-role-and-architecture",
+ "category": "postgresql",
+ "description": "Start the PostgreSQL DBA series: what a DBA does, and PostgreSQL architecture explained with real processes, memory settings and files on Ubuntu.",
+ "focusKeyword": "postgresql architecture explained",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "architecture",
+  "dba"
+ ],
+ "related": [
+  "/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/",
+  "/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: Architectural Fundamentals",
+   "url": "https://www.postgresql.org/docs/current/tutorial-arch.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Standard Unix Tools (process titles)",
+   "url": "https://www.postgresql.org/docs/current/monitoring-ps.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: The Cumulative Statistics System (pg_stat_activity)",
+   "url": "https://www.postgresql.org/docs/current/monitoring-stats.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Starting the Database Server",
+   "url": "https://www.postgresql.org/docs/current/server-start.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Resource Consumption",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-resource.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Write Ahead Log settings",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-wal.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Write-Ahead Logging (WAL)",
+   "url": "https://www.postgresql.org/docs/current/wal-intro.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Database File Layout",
+   "url": "https://www.postgresql.org/docs/current/storage-file-layout.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Routine Vacuuming (autovacuum daemon)",
+   "url": "https://www.postgresql.org/docs/current/routine-vacuuming.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Automatic Vacuuming settings",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-vacuum.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes",
+   "url": "https://www.postgresql.org/docs/current/release-18.html"
+  }
+ ],
+ "reviewNotes": "Series part 1. Followed the PostgreSQL 18 documentation (docs/current). IMPORTANT: PostgreSQL 18 could NOT be installed in the sandbox. The PGDG repository was reachable (postgresql-18 18.6-1.pgdg24.04+2 was the candidate), but its dependency liburing2 comes from the Ubuntu archive, which the sandbox network blocks, so per the run instructions all commands were run on the distribution package PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on Ubuntu 24.04.5 LTS. Outputs captioned plain 'Output' are identical in form on 16 and 18 (pg_settings, pg_database OIDs, pg_relation_filepath, PGDATA listing, pg_backend_pid). Outputs captioned '(expected output)' were captured on 16 and adapted to 18: version 16 changed to 18 in paths and process titles, and PostgreSQL 18 additions inserted. Please verify on a real PG 18 box: (1) the ps and pg_stat_activity outputs in Steps 2-3, where I added three 'io worker' processes (io_method=worker and io_workers=3 are the documented defaults; the title 'postgres: 18/main: io worker N' and backend_type 'io worker' are from the 18 behaviour but the docs' backend_type list omits 'io worker', a known doc gap fixed on HEAD in July 2026); their position before the checkpointer is my assumption, as are the PIDs; (2) the 'summaries' folder in pg_wal (exists from PG 17 for WAL summarization). The 'role \"ubuntu\" does not exist' and 'No such file or directory' errors were reproduced on the sandbox. systemd is not available in the sandbox, so systemctl commands were not run. No previous part exists.",
+ "generatedAt": "2026-10-19T13:10:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 1 of the PostgreSQL DBA series on SQL Tips. PostgreSQL architecture, explained simply, is three things: a set of <b>processes</b> (one main server process, a few helper processes, and one process per client connection), an area of <b>shared memory</b> they all use, and a set of <b>files</b> on disk where the data and the write-ahead log live. A PostgreSQL DBA is the person who keeps those three parts healthy, safe and fast."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By the end of this part you will know what a PostgreSQL DBA does day to day, and you will be able to point at every running PostgreSQL process on an Ubuntu server, read the main memory settings, and find the exact file on disk that holds a table. Everything is shown on Ubuntu Server with PostgreSQL 18 from the official PostgreSQL apt repository, the same setup the whole series uses."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "What a PostgreSQL DBA is responsible for, and which later parts cover each job",
+      "items": []
+     },
+     {
+      "content": "How PostgreSQL works: the postmaster, background processes and one backend process per connection",
+      "items": []
+     },
+     {
+      "content": "What shared memory and per-session memory are, and which settings control them",
+      "items": []
+     },
+     {
+      "content": "Where PostgreSQL 18 keeps its configuration, data, write-ahead log and log files on Ubuntu",
+      "items": []
+     },
+     {
+      "content": "How to find the processes, memory settings and data files yourself with <code class=\"inline-code\">ps</code>, <code class=\"inline-code\">pg_stat_activity</code> and <code class=\"inline-code\">pg_settings</code>",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the first part, so you only need a few things:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "One Ubuntu Server (current LTS) machine or virtual machine where you can run <b>sudo</b>.",
+      "items": []
+     },
+     {
+      "content": "PostgreSQL 18 installed from the official PostgreSQL apt repository (PGDG). Part 2 walks through the installation step by step. If you want to follow along today, the short version is: <code class=\"inline-code\">sudo apt install -y postgresql-common</code>, then <code class=\"inline-code\">sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh</code>, then <code class=\"inline-code\">sudo apt install -y postgresql-18</code>.",
+      "items": []
+     },
+     {
+      "content": "Basic Linux comfort: opening a terminal, running a command, reading its output.",
+      "items": []
+     },
+     {
+      "content": "Basic SQL: you know what a table, a row and a SELECT are.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What a PostgreSQL DBA does",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A DBA (database administrator) owns the database server, not the application. Developers decide what tables and queries the application needs. The DBA makes sure the server that runs those queries stays up, keeps every committed change, can be restored after a disaster, and answers quickly."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In practice the work falls into a handful of areas. Each one has its own block of parts later in this series:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Area",
+      "What the DBA does",
+      "Covered in"
+     ],
+     [
+      "Installation and configuration",
+      "Installs PostgreSQL, sets memory and connection limits, edits postgresql.conf and pg_hba.conf",
+      "Parts 2 to 10"
+     ],
+     [
+      "Security and access",
+      "Creates roles, grants privileges, controls who can connect and from where",
+      "Parts 6, 7, 40 to 43"
+     ],
+     [
+      "Maintenance",
+      "Makes sure VACUUM and ANALYZE keep up, removes bloat, prevents transaction ID wraparound",
+      "Parts 11 to 16, 46"
+     ],
+     [
+      "Backup and recovery",
+      "Takes backups, archives WAL, tests restores, performs point-in-time recovery",
+      "Parts 17 to 22"
+     ],
+     [
+      "Monitoring and performance",
+      "Watches logs and statistics, finds slow queries, tunes indexes and memory, clears blocking locks",
+      "Parts 23 to 32"
+     ],
+     [
+      "Replication and high availability",
+      "Builds standbys, monitors lag, performs failover and switchover",
+      "Parts 33 to 39"
+     ],
+     [
+      "Upgrades and emergencies",
+      "Applies minor releases, runs major upgrades, handles full disks and runaway queries",
+      "Parts 44 to 48"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice how much of that list depends on understanding the server itself. You cannot tune memory you cannot name, or fix a full disk if you do not know which folder is growing. That is why Part 1 is about how PostgreSQL works."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of a PostgreSQL server as a small office. There is a receptionist at the front door, a few staff who work in the back, a shared whiteboard everyone writes on, and filing cabinets where the real records are kept."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The client/server model",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL uses a client/server model. The <b>server</b> is a program called <code class=\"inline-code\">postgres</code>. It manages the database files, accepts connections and runs SQL for clients. A <b>client</b> is any program that sends SQL to the server: <code class=\"inline-code\">psql</code>, a Java or Python application, a web server or a backup tool. The client and server can be on different machines and talk over TCP/IP, or on the same machine through a Unix-domain socket (a special file used for local connections, on Ubuntu in <code class=\"inline-code\">/var/run/postgresql</code>)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Processes: the postmaster, backends and helpers",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When PostgreSQL starts, one main process starts first. It is often called the <b>postmaster</b>. This is the receptionist: it listens on port 5432, and each time a client connects it starts a new process just for that client. After that the client talks directly to its own process, and the postmaster goes back to waiting for the next connection."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "That per-client process is called a <b>backend</b> (in the statistics views its type is <code class=\"inline-code\">client backend</code>). One connection means one backend process. This is why connection counts matter so much in PostgreSQL: 300 connections means 300 operating system processes. Part 10 and Part 30 (connection pooling) build on this."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The postmaster also starts <b>background processes</b> that do housekeeping no single client owns:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Process",
+      "What it does in plain words"
+     ],
+     [
+      "checkpointer",
+      "At regular points (checkpoints) makes sure every changed page in memory is written to the data files, so crash recovery only has to replay WAL from that point"
+     ],
+     [
+      "background writer",
+      "Writes some changed pages from memory to disk ahead of time, so backends rarely have to do it themselves"
+     ],
+     [
+      "walwriter",
+      "Flushes write-ahead log records from memory to the WAL files on disk"
+     ],
+     [
+      "autovacuum launcher",
+      "Starts autovacuum worker processes that clean up dead rows and update planner statistics"
+     ],
+     [
+      "logical replication launcher",
+      "Starts workers for logical replication subscriptions (Part 37); it runs even if you never use the feature"
+     ],
+     [
+      "io worker (new in PostgreSQL 18)",
+      "Performs reads for the new asynchronous I/O system when io_method is worker, the default; there are 3 by default (io_workers)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Other processes appear only when a feature is on: an <b>archiver</b> when WAL archiving is enabled (Part 19), <b>walsender</b> and <b>walreceiver</b> for streaming replication (Part 33), and <b>parallel worker</b> processes while a query runs in parallel."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Memory: shared and per-session",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Shared memory</b> is the shared whiteboard. It is set up once when the server starts and every process can read and write it. The biggest part is <b>shared buffers</b> (<code class=\"inline-code\">shared_buffers</code>, default 128MB), a cache of 8kB data pages. When a query needs a row, PostgreSQL first looks for its page in shared buffers and only reads the data file if the page is not there. A smaller area, the <b>WAL buffers</b> (<code class=\"inline-code\">wal_buffers</code>), holds new WAL records until they are flushed to disk."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Per-session memory</b> belongs to one backend. The most important setting is <code class=\"inline-code\">work_mem</code> (default 4MB): the memory a single sort or hash operation may use before it spills to temporary files on disk. One complex query can run several such operations at once, so the real use can be a multiple of work_mem. <code class=\"inline-code\">maintenance_work_mem</code> (default 64MB) is the same idea for maintenance commands such as VACUUM and CREATE INDEX. Part 28 covers memory tuning in depth."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Files: data files and the write-ahead log",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The filing cabinets are the <b>data directory</b>, often called <b>PGDATA</b>. On Ubuntu with PostgreSQL 18 it is /var/lib/postgresql/18/main. Every table and index is stored there as one or more files, split into 1GB pieces when it grows larger than that."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before PostgreSQL changes a data file, it first writes a description of the change to the <b>write-ahead log</b> (WAL), stored in the pg_wal folder. WAL is the notebook PostgreSQL writes in before it touches the real records. A transaction counts as committed once its WAL is safely on disk; the changed data pages can be written later. If the server crashes, PostgreSQL replays the notebook from the last checkpoint and nothing committed is lost. The same WAL files are what backups, point-in-time recovery and replication are built on."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The whole picture",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  client (psql / app)            client (psql / app)\n          |                               |\n          | connect to port 5432          |\n          v                               v\n  +------------------------------------------------------+\n  | postmaster (main postgres process, listens on 5432)  |\n  |   starts -> backend for client 1                     |\n  |   starts -> backend for client 2                     |\n  |   starts -> checkpointer, background writer,         |\n  |             walwriter, autovacuum launcher,          |\n  |             io workers, logical repl. launcher       |\n  +------------------------------------------------------+\n                      | all processes share\n                      v\n  +------------------------------------------------------+\n  | shared memory: shared_buffers (page cache),          |\n  |                wal_buffers, lock tables, ...         |\n  +------------------------------------------------------+\n            |                                  |\n            v                                  v\n  data files (base/, global/)          WAL files (pg_wal/)\n  /var/lib/postgresql/18/main          written first, on commit",
+    "caption": "PostgreSQL architecture diagram: processes, memory and files"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A simple UPDATE follows that picture from top to bottom. The backend finds the page in shared buffers (or reads it from the data file), changes the row in memory, and writes a WAL record. At COMMIT the WAL is flushed to pg_wal. Later, the background writer or the checkpointer writes the changed page back to the data file. For a longer, more conceptual tour of the architecture, see <a href=\"/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/\">our PostgreSQL architecture overview</a>; if you come from Oracle, <a href=\"/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/\">our Oracle architecture article</a> is a useful comparison."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Hands-on: see the PostgreSQL processes",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now look at each part on a real server. All commands in this part only read information, except the small lab database you create later and drop at the end."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Check that the cluster is running",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On Ubuntu, one installed PostgreSQL server with its own data directory is called a <b>cluster</b>, named by version and name: \"18 main\". The <code class=\"inline-code\">pg_lsclusters</code> command from the postgresql-common package lists every cluster on the machine."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your normal sudo user (no sudo needed for this command)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "pg_lsclusters",
+    "caption": "List PostgreSQL clusters on this machine"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The columns tell you the version (18), cluster name (main), port (5432), whether it is running (<code class=\"inline-code\">online</code>), the operating system user that owns it (<code class=\"inline-code\">postgres</code>), the data directory and the log file. Write these down: you will use them throughout the series."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> Status must say <code class=\"inline-code\">online</code>. If it says <code class=\"inline-code\">down</code>, start it with <code class=\"inline-code\">sudo systemctl start postgresql@18-main</code> and run pg_lsclusters again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: List the server processes from Linux",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your normal user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "ps -u postgres -o pid,ppid,cmd",
+    "caption": "Show every process owned by the postgres user"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-u postgres",
+      "Select only processes whose user is postgres"
+     ],
+     [
+      "-o pid,ppid,cmd",
+      "Print only these columns: process ID, parent process ID, and the command with its title"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  PID  PPID CMD\n 1906     1 /usr/lib/postgresql/18/bin/postgres -D /var/lib/postgresql/18/main -c config_file=/etc/postgresql/18/main/postgresql.conf\n 1907  1906 postgres: 18/main: io worker 0\n 1908  1906 postgres: 18/main: io worker 1\n 1909  1906 postgres: 18/main: io worker 2\n 1910  1906 postgres: 18/main: checkpointer\n 1911  1906 postgres: 18/main: background writer\n 1913  1906 postgres: 18/main: walwriter\n 1914  1906 postgres: 18/main: autovacuum launcher\n 1915  1906 postgres: 18/main: logical replication launcher",
+    "caption": "Output (expected output; your PIDs will differ)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The first line is the postmaster. It runs the binary from /usr/lib/postgresql/18/bin/, with <code class=\"inline-code\">-D</code> pointing at the data directory and <code class=\"inline-code\">config_file</code> pointing at the Ubuntu configuration folder /etc/postgresql/18/main/. Every other line has the postmaster's PID in the PPID column: they are its children. PostgreSQL renames each child so you can see its job, and Ubuntu adds the cluster name <code class=\"inline-code\">18/main</code> to the title (this comes from the <code class=\"inline-code\">cluster_name</code> setting)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> you should see exactly one line without a <code class=\"inline-code\">postgres:</code> title (the postmaster), and the helper processes from the table in \"How it works\". The three io worker lines appear only on PostgreSQL 18 and later; on PostgreSQL 17 and earlier they are absent."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: See the same processes from inside PostgreSQL",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL keeps a live list of its processes in the system view <code class=\"inline-code\">pg_stat_activity</code>. The column <code class=\"inline-code\">backend_type</code> tells you what each process is, and <code class=\"inline-code\">state</code> tells you what a client backend is doing right now."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server. Open psql as the postgres operating system user, then run the SQL."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql",
+    "caption": "Connect to PostgreSQL as the postgres superuser"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "sudo -u postgres",
+      "Run the command as the postgres operating system user"
+     ],
+     [
+      "psql",
+      "Start the interactive PostgreSQL terminal; with no options it connects through the local socket to the database named after the user (postgres)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, backend_type, state\n  FROM pg_stat_activity\n ORDER BY pid;",
+    "caption": "List server processes and their types"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  |         backend_type         | state\n------+------------------------------+--------\n 1907 | io worker                    |\n 1908 | io worker                    |\n 1909 | io worker                    |\n 1910 | checkpointer                 |\n 1911 | background writer            |\n 1913 | walwriter                    |\n 1914 | autovacuum launcher          |\n 1915 | logical replication launcher |\n 1966 | client backend               | active\n(9 rows)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The PIDs match the ps output from Step 2. The last row is a new process: the backend that was started for <i>your</i> psql session. Its state is <code class=\"inline-code\">active</code> because it is running this very query. Background processes have no state, because they do not run client queries. The postmaster itself is not listed."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Prove that one connection is one process",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> still in the same psql session."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_backend_pid();",
+    "caption": "Show the PID of the backend serving this session"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_backend_pid\n----------------\n           1966\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now open a second terminal and look at that PID from Linux (use the number you got):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "ps -o pid,ppid,cmd -p 1966",
+    "caption": "Look at one process by PID"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-o pid,ppid,cmd",
+      "Print process ID, parent process ID and command"
+     ],
+     [
+      "-p 1966",
+      "Select only the process with this PID"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  PID  PPID CMD\n 1966  1906 postgres: 18/main: postgres postgres [local] idle",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The title follows the pattern user, database, client host, activity: user <code class=\"inline-code\">postgres</code>, database <code class=\"inline-code\">postgres</code>, connected through the local socket (<code class=\"inline-code\">[local]</code>), currently <code class=\"inline-code\">idle</code> (waiting for your next command). Its parent is the postmaster, PID 1906. Quit psql with <code class=\"inline-code\">\\q</code> and run the same ps command again: the process is gone, because the backend exits when its client disconnects."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the PPID of your backend equals the postmaster PID from Step 2, and the process disappears after you quit psql."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Hands-on: look at the memory settings",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Read the main memory parameters",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every setting the server is using is visible in the <code class=\"inline-code\">pg_settings</code> view. The <code class=\"inline-code\">context</code> column is very useful for a DBA: <code class=\"inline-code\">postmaster</code> means the setting can only change with a full server restart, while <code class=\"inline-code\">user</code> means any session can change it for itself."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, in psql as the postgres user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, unit, context\n  FROM pg_settings\n WHERE name IN ('shared_buffers', 'wal_buffers', 'work_mem',\n                'maintenance_work_mem', 'max_connections')\n ORDER BY name;",
+    "caption": "Main memory and connection settings"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "         name         | setting | unit |  context\n----------------------+---------+------+------------\n maintenance_work_mem | 65536   | kB   | user\n max_connections      | 100     |      | postmaster\n shared_buffers       | 16384   | 8kB  | postmaster\n wal_buffers          | 512     | 8kB  | postmaster\n work_mem             | 4096    | kB   | user\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read <code class=\"inline-code\">setting</code> together with <code class=\"inline-code\">unit</code>. shared_buffers is 16384 units of 8kB, which is 128MB, the documented default. wal_buffers is 512 x 8kB = 4MB: its default value of -1 means \"size it automatically\" as 1/32 of shared_buffers. work_mem is 4096kB (4MB) and maintenance_work_mem is 65536kB (64MB), both defaults. The three shared settings and max_connections have context <code class=\"inline-code\">postmaster</code>, because shared memory is created once at server start; you will see in Part 5 how to change them and restart."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> run <code class=\"inline-code\">SHOW shared_buffers;</code> and you should get the human-readable value <code class=\"inline-code\">128MB</code> on a fresh installation."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Defaults are a starting point, not a recommendation",
+    "text": "128MB of shared buffers is deliberately small so PostgreSQL starts on almost any machine. Production servers usually need more. Do not change it yet: Part 28 explains how to size memory, and Part 5 explains reload versus restart."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Hands-on: find PostgreSQL's files on disk",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Ask the server where its files are",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On Ubuntu the configuration files are kept outside the data directory, under /etc/postgresql/18/main/. Do not guess paths: ask the running server."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> in psql as the postgres user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SHOW data_directory;\nSHOW config_file;\nSHOW hba_file;",
+    "caption": "Locations of the data directory and main configuration files"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "       data_directory\n-----------------------------\n /var/lib/postgresql/18/main\n(1 row)\n\n               config_file\n-----------------------------------------\n /etc/postgresql/18/main/postgresql.conf\n(1 row)\n\n              hba_file\n-------------------------------------\n /etc/postgresql/18/main/pg_hba.conf\n(1 row)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "postgresql.conf holds the server settings (Part 5) and pg_hba.conf controls who may connect (Part 6). The server log on Ubuntu goes to /var/log/postgresql/postgresql-18-main.log, the file shown by pg_lsclusters in Step 1. When anything goes wrong, that log is the first place a DBA looks."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: List the data directory",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The data directory is readable only by the postgres user, so use sudo."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your sudo user in a normal shell (not inside psql)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo ls /var/lib/postgresql/18/main",
+    "caption": "List the top level of PGDATA"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "PG_VERSION\nbase\nglobal\npg_commit_ts\npg_dynshmem\npg_logical\npg_multixact\npg_notify\npg_replslot\npg_serial\npg_snapshots\npg_stat\npg_stat_tmp\npg_subtrans\npg_tblspc\npg_twophase\npg_wal\npg_xact\npostgresql.auto.conf\npostmaster.opts\npostmaster.pid",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You only need a few of these today. Part 3 explains every item."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Item",
+      "What it holds"
+     ],
+     [
+      "PG_VERSION",
+      "A file containing the major version number (18)"
+     ],
+     [
+      "base",
+      "One subfolder per database, holding its tables and indexes"
+     ],
+     [
+      "global",
+      "Cluster-wide tables, such as pg_database (the list of databases)"
+     ],
+     [
+      "pg_wal",
+      "The write-ahead log files"
+     ],
+     [
+      "pg_xact",
+      "Commit status of transactions"
+     ],
+     [
+      "postgresql.auto.conf",
+      "Settings written by ALTER SYSTEM"
+     ],
+     [
+      "postmaster.pid",
+      "Lock file with the postmaster PID, data directory, port and socket directory; only present while the server runs"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Never edit or delete files in PGDATA by hand",
+    "text": "Removing files from pg_wal or base to \"free space\" can destroy the cluster beyond repair. Even deleting postmaster.pid while the server runs is dangerous. Look, but change things only through SQL and the PostgreSQL tools. Part 47 covers what to do when the disk is really full."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">sudo cat /var/lib/postgresql/18/main/PG_VERSION</code> prints <code class=\"inline-code\">18</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Find the file behind a table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small lab database and an orders table, then ask PostgreSQL which file stores it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> in psql as the postgres user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE dba_lab;\n\\c dba_lab\nCREATE TABLE orders (\n    order_id  int PRIMARY KEY,\n    customer  text NOT NULL,\n    amount    numeric(10,2) NOT NULL\n);\nINSERT INTO orders VALUES\n    (1, 'Asha', 2500.00),\n    (2, 'Ravi', 1200.50),\n    (3, 'Meena', 899.99);",
+    "caption": "Create a lab database and a sample table"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">\\c dba_lab</code> is a psql meta-command that connects to the new database. Now look up the database's OID (object identifier, an internal number PostgreSQL gives every object) and the table's file path:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT oid, datname FROM pg_database ORDER BY oid;\nSELECT pg_relation_filepath('orders');",
+    "caption": "Database OIDs and the path of the orders table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  oid  |  datname\n-------+-----------\n     1 | template1\n     4 | template0\n     5 | postgres\n 16384 | dba_lab\n(4 rows)\n\n pg_relation_filepath\n----------------------\n base/16384/16385\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The path is relative to the data directory. <code class=\"inline-code\">base/16384</code> is the folder for database dba_lab (its OID is 16384), and <code class=\"inline-code\">16385</code> is the file for the orders table. That number is the table's <b>filenode</b> (<code class=\"inline-code\">pg_class.relfilenode</code>). It often equals the table's OID, but commands such as TRUNCATE, VACUUM FULL and REINDEX give the table a new file, so always use pg_relation_filepath() instead of assuming. Your numbers may differ."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Look at the file from Linux. A CHECKPOINT first makes sure the new rows are written from shared buffers to the file."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d dba_lab -c \"CHECKPOINT;\"\nsudo ls -l /var/lib/postgresql/18/main/base/16384/16385*",
+    "caption": "Force a checkpoint and list the table's files"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-d dba_lab",
+      "Connect to the database dba_lab"
+     ],
+     [
+      "-c \"CHECKPOINT;\"",
+      "Run this one SQL command and exit"
+     ],
+     [
+      "ls -l",
+      "Long listing: permissions, owner, size in bytes, date"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CHECKPOINT\n-rw------- 1 postgres postgres 8192 Oct 19 12:48 /var/lib/postgresql/18/main/base/16384/16385",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The table is one 8192-byte file: a single 8kB page is enough for three rows. Data files always grow in whole 8kB pages, the same page size used in shared buffers. Later, as the table is vacuumed, a free space map file (16385_fsm) and a visibility map file (16385_vm) appear next to it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the size is a multiple of 8192 and the owner is postgres."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: See the write-ahead log",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every change you just made was written to WAL first. The function pg_current_wal_lsn() returns the current position in the WAL (an LSN, log sequence number), and pg_walfile_name() turns a position into the WAL file name."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> in psql as the postgres user, connected to dba_lab."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_current_wal_lsn(), pg_walfile_name(pg_current_wal_lsn());",
+    "caption": "Current WAL position and file"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_current_wal_lsn |     pg_walfile_name\n--------------------+--------------------------\n 0/191DCE0          | 000000010000000000000001\n(1 row)",
+    "caption": "Output (your values will differ)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now list the pg_wal folder from Linux:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo ls -l /var/lib/postgresql/18/main/pg_wal",
+    "caption": "List WAL files"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "total 16388\n-rw------- 1 postgres postgres 16777216 Oct 19 12:48 000000010000000000000001\ndrwx------ 2 postgres postgres     4096 Oct 19 12:40 archive_status\ndrwx------ 2 postgres postgres     4096 Oct 19 12:40 summaries",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The WAL file named by pg_walfile_name() is there, and it is exactly 16777216 bytes (16MB), the default WAL segment size. PostgreSQL fills one segment, then moves on to the next and recycles old ones after checkpoints. The archive_status folder is used by WAL archiving (Part 19), and the summaries folder (PostgreSQL 17 and later) by incremental backups. Run an INSERT and check pg_current_wal_lsn() again: the number grows with every change. Part 15 explains WAL in depth."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the file name returned by <code class=\"inline-code\">pg_walfile_name()</code> appears in the listing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Clean up the lab database",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Drop only the lab database",
+    "text": "DROP DATABASE deletes the database and all its files permanently, and there is no undo. Run it only for dba_lab, the database you created in Step 8, and never on a production server without a verified backup."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> in psql as the postgres user, connected to a different database (you cannot drop the database you are connected to)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\c postgres\nDROP DATABASE dba_lab;",
+    "caption": "Remove the lab database"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "You are now connected to database \"postgres\" as user \"postgres\".\nDROP DATABASE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">SELECT datname FROM pg_database;</code> no longer lists dba_lab, and the folder base/16384 is gone."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Connecting as the wrong operating system user",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Running <code class=\"inline-code\">psql</code> as your own Linux user on a fresh Ubuntu install fails, because no PostgreSQL role with your name exists yet:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: FATAL:  role \"ubuntu\" does not exist",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> connect as the postgres user with <code class=\"inline-code\">sudo -u postgres psql</code>. Part 7 shows how to create your own roles."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The server is not running",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: No such file or directory\n\tIs the server running locally and accepting connections on that socket?",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This means no server is listening on that socket, not that you were refused. <b>Fix:</b> run <code class=\"inline-code\">pg_lsclusters</code>; if the cluster is <code class=\"inline-code\">down</code>, start it with <code class=\"inline-code\">sudo systemctl start postgresql@18-main</code> and read /var/log/postgresql/postgresql-18-main.log if it does not come up."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Starting postgres by hand as root",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL refuses to run as root, by design, and the documentation says the server must be run by the PostgreSQL user account. On Ubuntu you should not start the <code class=\"inline-code\">postgres</code> binary yourself at all. <b>Fix:</b> manage the cluster with <code class=\"inline-code\">sudo systemctl start|stop|restart postgresql@18-main</code> or <code class=\"inline-code\">sudo pg_ctlcluster 18 main start</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Assuming the file name equals the table OID",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Scripts that build paths from <code class=\"inline-code\">pg_class.oid</code> break after a TRUNCATE or VACUUM FULL, because those commands create a new file with a new filenode. <b>Fix:</b> always use <code class=\"inline-code\">pg_relation_filepath()</code> or <code class=\"inline-code\">pg_relation_filenode()</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Looking for postgresql.conf in the data directory",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Many tutorials written for other Linux distributions edit postgresql.conf inside PGDATA. On Ubuntu that file is in /etc/postgresql/18/main/, and edits elsewhere are ignored. <b>Fix:</b> run <code class=\"inline-code\">SHOW config_file;</code> and edit the file it names."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Open two psql sessions as the postgres user. From a third terminal, find both backend processes with ps and match them to rows in pg_stat_activity.",
+      "items": []
+     },
+     {
+      "content": "Create a table called payments in a test database, insert a few rows, and find the full absolute path of its data file on disk.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "1) In each session run <code class=\"inline-code\">SELECT pg_backend_pid();</code>, then run <code class=\"inline-code\">ps -u postgres -o pid,ppid,cmd</code>: two lines titled <code class=\"inline-code\">postgres: 18/main: postgres postgres [local] ...</code> show those PIDs, and <code class=\"inline-code\">SELECT pid, state FROM pg_stat_activity WHERE backend_type = 'client backend';</code> lists the same two. 2) Run <code class=\"inline-code\">SELECT current_setting('data_directory') || '/' || pg_relation_filepath('payments');</code>, which gives a path like /var/lib/postgresql/18/main/base/&lt;database OID&gt;/&lt;filenode&gt;. Confirm with sudo ls -l on that path, after a CHECKPOINT."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# List clusters, their status, data directory and log file\npg_lsclusters\n\n# Start the cluster if it is down\nsudo systemctl start postgresql@18-main\n\n# Show all PostgreSQL processes with their parent PID\nps -u postgres -o pid,ppid,cmd\n\n# Connect as the postgres superuser\nsudo -u postgres psql\n\n# (in psql) processes as PostgreSQL sees them\n#   SELECT pid, backend_type, state FROM pg_stat_activity ORDER BY pid;\n# (in psql) PID of your own backend\n#   SELECT pg_backend_pid();\n# (in psql) memory settings and whether they need a restart\n#   SELECT name, setting, unit, context FROM pg_settings\n#    WHERE name IN ('shared_buffers','wal_buffers','work_mem','maintenance_work_mem','max_connections');\n# (in psql) file locations\n#   SHOW data_directory; SHOW config_file; SHOW hba_file;\n# (in psql) file of a table, current WAL position and file\n#   SELECT pg_relation_filepath('orders');\n#   SELECT pg_current_wal_lsn(), pg_walfile_name(pg_current_wal_lsn());\n\n# Look at one process by PID\nps -o pid,ppid,cmd -p <pid>\n\n# List the data directory and the WAL folder\nsudo ls /var/lib/postgresql/18/main\nsudo ls -l /var/lib/postgresql/18/main/pg_wal\n\n# Read the server log\nsudo tail -n 20 /var/log/postgresql/postgresql-18-main.log",
+    "caption": "All commands from this part"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "A PostgreSQL DBA keeps the server available, secure, backed up, maintained and fast",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "The postmaster listens on port 5432 and starts one backend process per client connection",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Background processes (checkpointer, background writer, walwriter, autovacuum launcher, io workers in PostgreSQL 18) do the housekeeping",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Shared memory (shared_buffers, wal_buffers) is created at server start; work_mem and maintenance_work_mem are per operation",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Data lives in /var/lib/postgresql/18/main, configuration in /etc/postgresql/18/main, the log in /var/log/postgresql",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Every change is written to WAL in pg_wal before the data files, which is what makes crash recovery, backups and replication possible",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "pg_lsclusters, ps, pg_stat_activity, pg_settings and pg_relation_filepath() let you see all of this yourself",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 2 you will install PostgreSQL 18 on Ubuntu from the official PGDG repository and learn how to start, stop and manage the service."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "PostgreSQL starts a whole new OS process for every connection. 300 connections means 300 processes.\n\nThat one fact explains a lot of PostgreSQL DBA work. Part 1 of my PostgreSQL DBA series covers how the server is built:\n\n→ The postmaster listens on port 5432 and starts one backend process per client. Check yours with SELECT pg_backend_pid();\n→ Background processes do the housekeeping: checkpointer, background writer, walwriter, autovacuum launcher, and new io workers in PostgreSQL 18\n→ shared_buffers (128MB by default) is a page cache shared by all processes, and changing it needs a restart\n→ work_mem is per sort or hash operation, not per server, so one query can use several times that amount\n→ Every change goes to the WAL in pg_wal before the data files. That is what makes crash recovery, backups and replication work\n→ SELECT pg_relation_filepath('orders'); shows the exact file on disk behind a table\n\nAll commands are for Ubuntu with PostgreSQL 18 from the official apt repository.\n\nWhich part of PostgreSQL internals confused you most when you started: processes, memory or WAL?\n\nFollow along: a new part of the series every weekday.\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "PostgreSQL DBA Part 1: How PostgreSQL Works",
+    "body": "Processes, memory and files, seen on a real Ubuntu server"
+   },
+   {
+    "title": "One connection = one process",
+    "points": [
+     "The postmaster listens on port 5432",
+     "Each client gets its own backend process",
+     "300 connections means 300 OS processes"
+    ],
+    "code": "SELECT pg_backend_pid();",
+    "lang": "postgresql"
+   },
+   {
+    "title": "The background processes",
+    "points": [
+     "checkpointer and background writer",
+     "walwriter flushes WAL to disk",
+     "autovacuum launcher starts cleanup workers",
+     "io workers: new in PostgreSQL 18"
+    ],
+    "code": "SELECT pid, backend_type\n  FROM pg_stat_activity\n ORDER BY pid;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Shared vs per-session memory",
+    "points": [
+     "shared_buffers: page cache, 128MB default",
+     "Shared settings need a restart",
+     "work_mem: per sort or hash, 4MB default"
+    ],
+    "code": "SELECT name, setting, unit, context\n  FROM pg_settings\n WHERE name IN ('shared_buffers',\n               'work_mem');",
+    "lang": "postgresql"
+   },
+   {
+    "title": "WAL first, data files later",
+    "body": "Every change is written to the write-ahead log in pg_wal before the data files. After a crash PostgreSQL replays it, so committed work is never lost. Backups and replication use the same WAL."
+   },
+   {
+    "title": "Find the file behind a table",
+    "points": [
+     "Data lives in /var/lib/postgresql/18/main",
+     "Config lives in /etc/postgresql/18/main",
+     "Files grow in 8kB pages"
+    ],
+    "code": "SELECT pg_relation_filepath('orders');\n-- base/16384/16385",
+    "lang": "postgresql"
+   }
+  ]
+ }
+}
