@@ -1,0 +1,986 @@
+{
+ "schemaVersion": 1,
+ "title": "Oracle Pagination Query: OFFSET FETCH vs ROWNUM (Examples)",
+ "slug": "oracle-pagination-query",
+ "category": "plsql",
+ "description": "Write an Oracle pagination query with OFFSET FETCH (12c+) or ROWNUM (11g), see each page's output, and learn keyset paging for fast deep pages.",
+ "focusKeyword": "oracle pagination query",
+ "tags": [
+  "oracle",
+  "pagination",
+  "oracle-sql",
+  "performance",
+  "row-limiting"
+ ],
+ "related": [
+  "/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/",
+  "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/",
+  "/posts/sql/sql-query-design-patterns-writing-efficient-queries/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle Database 19c SQL Language Reference: SELECT (row_limiting_clause and Row Limiting examples)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/SELECT.html"
+  },
+  {
+   "title": "Oracle Database 19c SQL Language Reference: ROWNUM Pseudocolumn",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/ROWNUM-Pseudocolumn.html"
+  },
+  {
+   "title": "Oracle Database 19c SQL Language Reference: ROW_NUMBER",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/ROW_NUMBER.html"
+  },
+  {
+   "title": "Oracle Database 12c Release 1 New Features: Native SQL Support for Query Row Limits and Row Offsets",
+   "url": "https://docs.oracle.com/database/121/NEWFT/chapter12101.htm"
+  }
+ ],
+ "reviewNotes": "Examples written from the Oracle 19c SQL Language Reference; none were run, so every output table needs a test run on the sample data. Please check: (1) the claim that Oracle 19c rejects a two-column row value comparison with < (e.g. (order_date, order_id) < (:d, :id)); test it and remove the sentence if wrong. (2) COUNT(*) OVER () with OFFSET FETCH returning the full total (12) is from my understanding that the row limit is applied after analytic functions; verify. (3) The 19c doc text for negative OFFSET reads 'treated as' with the value missing in the HTML; the article says 0, matching the rowcount wording. (4) 'No LIMIT keyword' is stated for 19c only; check whether 23ai changed this before adding a newer claim. (5) The ROWNUM-in-same-block explanation says ROWNUM is assigned before ORDER BY, per the ROWNUM doc.",
+ "generatedAt": "2026-10-19T00:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To write a pagination query in Oracle 12c or later, sort the rows with <code class=\"inline-code\">ORDER BY</code> and add <code class=\"inline-code\">OFFSET n ROWS FETCH NEXT m ROWS ONLY</code>. For page 3 with 10 rows per page, that is <code class=\"inline-code\">OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY</code>. On Oracle 11g and older, you get the same result by wrapping an ordered subquery and filtering on <code class=\"inline-code\">ROWNUM</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial shows both methods on a small orders table, with the expected output for every page. You will also see keyset pagination, which stays fast on deep pages, and the mistakes that make pages skip or repeat rows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How pagination works in Oracle",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Pagination means returning a result set one slice at a time: rows 1 to 10, then 11 to 20, and so on. Oracle has no LIMIT keyword in 19c. Instead it gives you three tools."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Method",
+      "Available from",
+      "Best for"
+     ],
+     [
+      "OFFSET ... FETCH (row limiting clause)",
+      "Oracle 12c Release 1",
+      "Most new code. Short and readable."
+     ],
+     [
+      "ROWNUM in nested subqueries",
+      "All versions",
+      "Oracle 11g and older, legacy code"
+     ],
+     [
+      "ROW_NUMBER() analytic function",
+      "All supported versions",
+      "Paging per group, or when you need the row number as a column"
+     ],
+     [
+      "Keyset (seek) pagination",
+      "All versions",
+      "Large tables and deep pages, infinite scroll"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All of them depend on one thing: a <b>deterministic sort order</b>. A table has no built-in order. If two queries sort the same rows differently, page 2 can show a row you already saw on page 1. The Oracle documentation says this directly for both the row limiting clause and ROW_NUMBER: specify an ORDER BY that gives a deterministic order."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create this table and insert 12 orders. Two pairs of orders share the same date on purpose, so you can see why the sort needs a tiebreaker."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE orders (\n  order_id      NUMBER        PRIMARY KEY,\n  customer_name VARCHAR2(50)  NOT NULL,\n  order_date    DATE          NOT NULL,\n  amount        NUMBER(10,2)  NOT NULL\n);\n\nINSERT INTO orders VALUES (101, 'Asha', DATE '2026-01-05', 1200);\nINSERT INTO orders VALUES (102, 'Ravi', DATE '2026-01-06', 450);\nINSERT INTO orders VALUES (103, 'Meena', DATE '2026-01-06', 980);\nINSERT INTO orders VALUES (104, 'John', DATE '2026-01-08', 300);\nINSERT INTO orders VALUES (105, 'Priya', DATE '2026-01-09', 2200);\nINSERT INTO orders VALUES (106, 'Arjun', DATE '2026-01-10', 750);\nINSERT INTO orders VALUES (107, 'Sara', DATE '2026-01-10', 1500);\nINSERT INTO orders VALUES (108, 'Kiran', DATE '2026-01-12', 640);\nINSERT INTO orders VALUES (109, 'Deepa', DATE '2026-01-13', 1800);\nINSERT INTO orders VALUES (110, 'Vikram', DATE '2026-01-14', 520);\nINSERT INTO orders VALUES (111, 'Neha', DATE '2026-01-15', 990);\nINSERT INTO orders VALUES (112, 'Rahul', DATE '2026-01-15', 410);\n\nCOMMIT;",
+    "caption": "Sample orders table"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every example below shows the newest orders first, sorted by <code class=\"inline-code\">order_date DESC, order_id DESC</code>. The page size is 5, so there are three pages: 5 rows, 5 rows and 2 rows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Method 1: OFFSET and FETCH NEXT (Oracle 12c and later)",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The row limiting clause goes at the very end of the query, after <code class=\"inline-code\">ORDER BY</code>. <code class=\"inline-code\">OFFSET</code> is how many rows to skip. <code class=\"inline-code\">FETCH NEXT</code> is how many rows to return after that."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Page 1: the first 5 rows",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_name, order_date, amount\n  FROM orders\n ORDER BY order_date DESC, order_id DESC\n FETCH FIRST 5 ROWS ONLY;",
+    "caption": "Page 1"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "CUSTOMER_NAME",
+      "ORDER_DATE",
+      "AMOUNT"
+     ],
+     [
+      "112",
+      "Rahul",
+      "2026-01-15",
+      "410"
+     ],
+     [
+      "111",
+      "Neha",
+      "2026-01-15",
+      "990"
+     ],
+     [
+      "110",
+      "Vikram",
+      "2026-01-14",
+      "520"
+     ],
+     [
+      "109",
+      "Deepa",
+      "2026-01-13",
+      "1800"
+     ],
+     [
+      "108",
+      "Kiran",
+      "2026-01-12",
+      "640"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can leave out <code class=\"inline-code\">OFFSET</code> on the first page because it defaults to 0. <code class=\"inline-code\">FIRST</code> and <code class=\"inline-code\">NEXT</code> mean the same thing, as do <code class=\"inline-code\">ROW</code> and <code class=\"inline-code\">ROWS</code>. Use whichever reads better."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Page 2 and page 3",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_name, order_date, amount\n  FROM orders\n ORDER BY order_date DESC, order_id DESC\nOFFSET 5 ROWS FETCH NEXT 5 ROWS ONLY;",
+    "caption": "Page 2: skip 5, return 5"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "CUSTOMER_NAME",
+      "ORDER_DATE",
+      "AMOUNT"
+     ],
+     [
+      "107",
+      "Sara",
+      "2026-01-10",
+      "1500"
+     ],
+     [
+      "106",
+      "Arjun",
+      "2026-01-10",
+      "750"
+     ],
+     [
+      "105",
+      "Priya",
+      "2026-01-09",
+      "2200"
+     ],
+     [
+      "104",
+      "John",
+      "2026-01-08",
+      "300"
+     ],
+     [
+      "103",
+      "Meena",
+      "2026-01-06",
+      "980"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_name, order_date, amount\n  FROM orders\n ORDER BY order_date DESC, order_id DESC\nOFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY;",
+    "caption": "Page 3: skip 10, return 5"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "CUSTOMER_NAME",
+      "ORDER_DATE",
+      "AMOUNT"
+     ],
+     [
+      "102",
+      "Ravi",
+      "2026-01-06",
+      "450"
+     ],
+     [
+      "101",
+      "Asha",
+      "2026-01-05",
+      "1200"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Page 3 asks for 5 rows but only 2 are left, so Oracle returns 2. That is documented behaviour: if the row count is larger than the rows available after the offset, all available rows are returned. If the offset is equal to or larger than the total row count, the query returns no rows, which is how your application knows it has gone past the last page."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Use bind variables for the page number",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The offset and row count can be expressions, so you can calculate them from a page number. The formula is <code class=\"inline-code\">offset = (page_number - 1) * page_size</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_name, order_date, amount\n  FROM orders\n ORDER BY order_date DESC, order_id DESC\nOFFSET (:page_no - 1) * :page_size ROWS\n FETCH NEXT :page_size ROWS ONLY;",
+    "caption": "Generic page query with binds"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With binds, Oracle can reuse one cursor for every page instead of hard parsing a new statement for each literal. The documentation also lists how odd inputs behave: a negative offset or row count is treated as 0, a NULL row count returns no rows, and fractions are truncated."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Top-N with ties",
+    "text": "For a top-N report instead of a page, <code class=\"inline-code\">FETCH FIRST 1 ROWS WITH TIES</code> returns the last row plus every row with the same sort key. With <code class=\"inline-code\">ORDER BY order_date DESC</code>, it returns both orders from 2026-01-15 (112 and 111). WITH TIES needs an ORDER BY. Do not use it for paging, because page sizes become uneven."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Method 2: ROWNUM pagination (Oracle 11g and older)",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before 12c, the standard pattern used three query levels. You still see it in older applications, so it is worth understanding even if you never write it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_name, order_date, amount\n  FROM (SELECT a.*, ROWNUM AS rnum\n          FROM (SELECT order_id, customer_name, order_date, amount\n                  FROM orders\n                 ORDER BY order_date DESC, order_id DESC) a\n         WHERE ROWNUM <= 10)          -- last row of the page\n WHERE rnum > 5;                      -- last row of the previous page",
+    "caption": "Page 2 with ROWNUM"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "CUSTOMER_NAME",
+      "ORDER_DATE",
+      "AMOUNT"
+     ],
+     [
+      "107",
+      "Sara",
+      "2026-01-10",
+      "1500"
+     ],
+     [
+      "106",
+      "Arjun",
+      "2026-01-10",
+      "750"
+     ],
+     [
+      "105",
+      "Priya",
+      "2026-01-09",
+      "2200"
+     ],
+     [
+      "104",
+      "John",
+      "2026-01-08",
+      "300"
+     ],
+     [
+      "103",
+      "Meena",
+      "2026-01-06",
+      "980"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why it needs three levels",
+    "level": 3
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "The <b>inner query</b> sorts the rows. <code class=\"inline-code\">ROWNUM</code> is assigned as rows are selected, before ORDER BY in the same query block, so the sort must happen in a subquery first.",
+      "items": []
+     },
+     {
+      "content": "The <b>middle query</b> numbers the sorted rows and stops at the last row of the page with <code class=\"inline-code\">ROWNUM <= 10</code>. This is the Oracle top-N pattern from the documentation.",
+      "items": []
+     },
+     {
+      "content": "The <b>outer query</b> filters on the alias <code class=\"inline-code\">rnum</code>, which is now a normal column, to drop rows 1 to 5.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You cannot simply write <code class=\"inline-code\">WHERE ROWNUM > 5</code>. The documentation explains why: the first row fetched gets ROWNUM 1 and fails the test, so the next row also becomes ROWNUM 1 and fails too. The query returns no rows at all."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Method 3: ROW_NUMBER() pagination",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">ROW_NUMBER()</code> numbers rows in the order you give in its <code class=\"inline-code\">OVER</code> clause. Filter on that number in an outer query."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_name, order_date, amount, rn\n  FROM (SELECT o.order_id, o.customer_name, o.order_date, o.amount,\n               ROW_NUMBER() OVER (ORDER BY o.order_date DESC,\n                                           o.order_id DESC) AS rn\n          FROM orders o)\n WHERE rn BETWEEN 6 AND 10\n ORDER BY rn;",
+    "caption": "Page 2 with ROW_NUMBER"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "CUSTOMER_NAME",
+      "ORDER_DATE",
+      "AMOUNT",
+      "RN"
+     ],
+     [
+      "107",
+      "Sara",
+      "2026-01-10",
+      "1500",
+      "6"
+     ],
+     [
+      "106",
+      "Arjun",
+      "2026-01-10",
+      "750",
+      "7"
+     ],
+     [
+      "105",
+      "Priya",
+      "2026-01-09",
+      "2200",
+      "8"
+     ],
+     [
+      "104",
+      "John",
+      "2026-01-08",
+      "300",
+      "9"
+     ],
+     [
+      "103",
+      "Meena",
+      "2026-01-06",
+      "980",
+      "10"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is longer than OFFSET FETCH, but it is useful when you want paging inside groups. Add <code class=\"inline-code\">PARTITION BY customer_name</code> to the OVER clause and <code class=\"inline-code\">rn <= 3</code> gives the first three orders for each customer. The outer <code class=\"inline-code\">ORDER BY rn</code> matters: without it, Oracle does not promise the final rows come back in rn order."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Method 4: keyset pagination for large tables",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "OFFSET has a hidden cost. To return rows 100,001 to 100,010, Oracle still has to find and throw away the first 100,000 rows in sort order. The deeper the page, the more work each request does."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Keyset pagination (also called seek pagination) avoids this. Instead of a page number, the application remembers the sort key of the last row it showed and asks for rows that come after it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_name, order_date, amount\n  FROM orders\n WHERE order_date < :last_date\n    OR (order_date = :last_date AND order_id < :last_id)\n ORDER BY order_date DESC, order_id DESC\n FETCH FIRST 5 ROWS ONLY;",
+    "caption": "Next page after the last row seen"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Page 1 ended with order 108 dated 2026-01-12. Bind <code class=\"inline-code\">:last_date</code> to DATE '2026-01-12' and <code class=\"inline-code\">:last_id</code> to 108."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "CUSTOMER_NAME",
+      "ORDER_DATE",
+      "AMOUNT"
+     ],
+     [
+      "107",
+      "Sara",
+      "2026-01-10",
+      "1500"
+     ],
+     [
+      "106",
+      "Arjun",
+      "2026-01-10",
+      "750"
+     ],
+     [
+      "105",
+      "Priya",
+      "2026-01-09",
+      "2200"
+     ],
+     [
+      "104",
+      "John",
+      "2026-01-08",
+      "300"
+     ],
+     [
+      "103",
+      "Meena",
+      "2026-01-06",
+      "980"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It is the same page 2 as before, but no rows were skipped. With an index on <code class=\"inline-code\">(order_date, order_id)</code>, Oracle can start reading at the last position and stop after 5 rows, so page 1,000 costs about the same as page 2."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The trade-off: you cannot jump straight to page 37, only to the next (or, with the comparisons reversed, the previous) page. That fits infinite scroll, \"Load more\" buttons and batch jobs that walk through a whole table. Write the condition with OR as shown. Unlike PostgreSQL, Oracle does not let you compare two-column row values with <code class=\"inline-code\"><</code>, so the shorter <code class=\"inline-code\">(order_date, order_id) < (:d, :id)</code> form from PostgreSQL tutorials will not work here."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How to return the total row count",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Pagination screens often show \"Page 2 of 3\". You can get the total in the same query with the analytic <code class=\"inline-code\">COUNT(*) OVER ()</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_name, order_date, amount,\n       COUNT(*) OVER () AS total_rows\n  FROM orders\n ORDER BY order_date DESC, order_id DESC\nOFFSET 5 ROWS FETCH NEXT 5 ROWS ONLY;",
+    "caption": "Page 2 plus the total count"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every row of page 2 comes back with <code class=\"inline-code\">TOTAL_ROWS</code> = 12, because the analytic function is calculated over the whole result before the rows are limited. Be aware that this forces Oracle to read every matching row, which removes the early-stop benefit. On a large table, a separate cached count, or showing only \"Next\" without a total, is often cheaper."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "1. Putting ROWNUM and ORDER BY in the same query block",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Wrong: picks 5 rows first, then sorts only those 5\nSELECT order_id, order_date\n  FROM orders\n WHERE ROWNUM <= 5\n ORDER BY order_date DESC;",
+    "caption": "Returns 5 arbitrary orders, sorted"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation warns that this may return different rows depending on how Oracle accesses the table. Sort in a subquery first, or use FETCH FIRST, where the ORDER BY is always applied before the row limit."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "2. Sorting on a column that is not unique",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you sort only by <code class=\"inline-code\">order_date</code>, orders 106 and 107 (both 2026-01-10) can come back in either order. If they sit on a page boundary, one query may put 107 on page 2 and the next may put it on page 3, so the user sees one order twice and never sees the other. Always end the ORDER BY with a unique column such as the primary key."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "3. Passing the page number as the offset",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">OFFSET :page_no ROWS</code> skips 2 rows for page 2, not 5. Calculate <code class=\"inline-code\">(page_no - 1) * page_size</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "4. ORA-00918 on joins",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation states that if the select list contains columns with identical names and you use the row limiting clause, Oracle raises ORA-00918 (column ambiguously defined), even when the columns come from different tables. A <code class=\"inline-code\">SELECT *</code> over a join of orders and customers that both have <code class=\"inline-code\">customer_id</code> hits this. Give the duplicate columns unique aliases."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Restrictions on OFFSET FETCH",
+    "text": "You cannot combine the row limiting clause with <code class=\"inline-code\">FOR UPDATE</code>, and the select list cannot contain <code class=\"inline-code\">CURRVAL</code> or <code class=\"inline-code\">NEXTVAL</code>. A materialized view whose query uses it cannot be refreshed incrementally (fast refresh)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "5. Expecting stable pages while data changes",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each page is a separate query. If new orders arrive between page 1 and page 2, OFFSET-based pages shift and a row can appear twice. Keyset pagination is much less affected, because it continues from a fixed key instead of a position."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Create an index that matches the ORDER BY, for example <code class=\"inline-code\">CREATE INDEX orders_date_id_ix ON orders (order_date, order_id);</code>. Oracle can then read rows in order and stop early instead of sorting the whole table for every page.",
+      "items": []
+     },
+     {
+      "content": "Put filters in the WHERE clause, not in application code. Paging 20 rows out of a filtered set of 500 is far cheaper than paging out of 5 million.",
+      "items": []
+     },
+     {
+      "content": "Use bind variables for the offset and page size so every page shares one cursor.",
+      "items": []
+     },
+     {
+      "content": "For deep pages or full-table walks, switch from OFFSET to keyset pagination.",
+      "items": []
+     },
+     {
+      "content": "Check the plan with <code class=\"inline-code\">DBMS_XPLAN.DISPLAY_CURSOR</code> after running the query. A plan with a full scan and a large sort on every page request is the sign that the index is missing or not usable.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "FETCH FIRST is not a magic speed-up",
+    "text": "OFFSET FETCH is simpler syntax, not a different engine. Oracle still has to produce the rows in sorted order. Without a suitable index, page 1 and page 500 both pay for sorting the full result."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does Oracle support LIMIT like MySQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle 19c has no <code class=\"inline-code\">LIMIT</code> keyword. Use <code class=\"inline-code\">FETCH FIRST n ROWS ONLY</code> on 12c and later, or <code class=\"inline-code\">ROWNUM</code> in a subquery on older versions."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Which Oracle version supports OFFSET FETCH?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The row limiting clause (OFFSET and FETCH FIRST) was added in Oracle Database 12c Release 1 (12.1). It works in 12.2, 18c, 19c and later."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between ROWNUM and ROW_NUMBER in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "ROWNUM is a pseudocolumn assigned as rows are selected, before the ORDER BY of the same query block. ROW_NUMBER() is an analytic function that numbers rows in the order given in its OVER clause, and it can restart per group with PARTITION BY."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why does WHERE ROWNUM > 10 return no rows?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every row is tested as ROWNUM 1. Row 1 fails the condition, so the next row becomes ROWNUM 1 and fails as well. Filter on an alias of ROWNUM in an outer query instead, or use OFFSET."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I get page N of a query in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">ORDER BY unique_columns OFFSET (N - 1) * size ROWS FETCH NEXT size ROWS ONLY</code>. For example, page 4 with 25 rows per page is <code class=\"inline-code\">OFFSET 75 ROWS FETCH NEXT 25 ROWS ONLY</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "On 12c and later, page with <code class=\"inline-code\">ORDER BY ... OFFSET n ROWS FETCH NEXT m ROWS ONLY</code>.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "On 11g, sort in a subquery, cap with ROWNUM in the middle, filter the ROWNUM alias outside.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "End every ORDER BY with a unique column so pages never overlap or skip rows.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Offset = (page number - 1) x page size, passed as bind variables.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Index the ORDER BY columns so Oracle can stop early.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use keyset pagination for deep pages, large tables and infinite scroll.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Remember the restrictions: no FOR UPDATE, no CURRVAL or NEXTVAL, unique column names.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your Oracle pagination query shows the same order on page 1 and page 2. The SQL is fine. The sort is not.\n\nHere is how paging in Oracle works, and where it goes wrong:\n\n→ On 12c and later, use OFFSET and FETCH: ORDER BY order_date DESC, order_id DESC OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY\n→ Offset is (page_no - 1) * page_size, not the page number itself\n→ Always end ORDER BY with a unique column. Ties on a date can move a row between pages\n→ WHERE ROWNUM > 5 returns no rows. On 11g, sort in a subquery and filter a ROWNUM alias outside\n→ Deep pages are slow because Oracle still reads and discards the skipped rows. Keyset pagination (WHERE order_date < :last_date ...) continues from the last row instead\n\nOne more: OFFSET FETCH cannot be used with FOR UPDATE.\n\nWhich method does your application use today: ROWNUM, ROW_NUMBER or OFFSET FETCH?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #SQLInterview",
+  "slides": [
+   {
+    "title": "Oracle Pagination Queries That Don't Skip Rows",
+    "body": "OFFSET FETCH, ROWNUM and keyset paging, with examples"
+   },
+   {
+    "title": "12c and later: OFFSET and FETCH",
+    "points": [
+     "OFFSET = rows to skip",
+     "FETCH NEXT = rows to return",
+     "Page 3 of 5 rows: skip 10"
+    ],
+    "code": "SELECT order_id, order_date\n  FROM orders\n ORDER BY order_date DESC,\n          order_id DESC\nOFFSET 10 ROWS\n FETCH NEXT 5 ROWS ONLY;",
+    "lang": "sql"
+   },
+   {
+    "title": "Always add a unique tiebreaker",
+    "body": "Two orders on the same date can swap places between queries. On a page boundary, one shows twice and one never shows. End ORDER BY with the primary key."
+   },
+   {
+    "title": "11g and older: ROWNUM",
+    "points": [
+     "Sort in the inner query",
+     "Cap with ROWNUM in the middle",
+     "Filter the alias outside"
+    ],
+    "code": "SELECT * FROM (\n  SELECT a.*, ROWNUM rnum\n    FROM (SELECT * FROM orders\n           ORDER BY order_id) a\n   WHERE ROWNUM <= 10)\n WHERE rnum > 5;",
+    "lang": "sql"
+   },
+   {
+    "title": "Why WHERE ROWNUM > 5 fails",
+    "body": "Each row is tested as ROWNUM 1, fails, and the next row becomes ROWNUM 1 again. The query returns no rows. Filter on a ROWNUM alias in an outer query."
+   },
+   {
+    "title": "Deep pages: use keyset paging",
+    "points": [
+     "OFFSET still reads skipped rows",
+     "Remember the last row's sort key",
+     "Index the ORDER BY columns"
+    ],
+    "code": "SELECT order_id, order_date\n  FROM orders\n WHERE order_date < :last_date\n    OR (order_date = :last_date\n        AND order_id < :last_id)\n ORDER BY order_date DESC,\n          order_id DESC\n FETCH FIRST 5 ROWS ONLY;",
+    "lang": "sql"
+   }
+  ]
+ }
+}

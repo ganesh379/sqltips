@@ -6,3 +6,4 @@
 - 2026-10-17 [PostgreSQL] postgresql deadlock detected -> _drafts/2026-10-17-postgresql-postgresql-deadlock-detected.json
 - 2026-10-18 [Oracle] oracle listagg distinct -> _drafts/2026-10-18-oracle-oracle-listagg-distinct.json
 - 2026-10-18 [PostgreSQL] postgresql distinct on -> _drafts/2026-10-18-postgresql-postgresql-distinct-on.json
+- 2026-10-19 [Oracle] oracle pagination query -> _drafts/2026-10-19-oracle-oracle-pagination-query.json
