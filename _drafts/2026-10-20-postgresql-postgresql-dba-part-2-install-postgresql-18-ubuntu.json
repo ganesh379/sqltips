@@ -1,0 +1,1381 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 2: Install PostgreSQL 18 on Ubuntu",
+ "slug": "postgresql-dba-part-2-install-postgresql-18-ubuntu",
+ "category": "postgresql",
+ "description": "Install PostgreSQL 18 on Ubuntu from the official PGDG repository, then find its files and start, stop and reload it with systemctl and pg_ctlcluster.",
+ "focusKeyword": "install postgresql 18 on ubuntu",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "installation",
+  "ubuntu",
+  "dba"
+ ],
+ "related": [
+  "/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL downloads: Linux (Ubuntu), PGDG apt repository",
+   "url": "https://www.postgresql.org/download/linux/ubuntu/"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 18.1 The PostgreSQL User Account",
+   "url": "https://www.postgresql.org/docs/current/postgres-user.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 18.2 Creating a Database Cluster",
+   "url": "https://www.postgresql.org/docs/current/creating-cluster.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 18.3 Starting the Database Server",
+   "url": "https://www.postgresql.org/docs/current/server-start.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 18.5 Shutting Down the Server",
+   "url": "https://www.postgresql.org/docs/current/server-shutdown.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_ctl",
+   "url": "https://www.postgresql.org/docs/current/app-pg-ctl.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: initdb",
+   "url": "https://www.postgresql.org/docs/current/app-initdb.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes",
+   "url": "https://www.postgresql.org/docs/current/release-18.html"
+  },
+  {
+   "title": "PostgreSQL wiki: Apt (PGDG repository; pg_ctlcluster, pg_createcluster, pg_dropcluster man pages and the postgresql@.service unit were read from the installed postgresql-common 293.pgdg24.04+1)",
+   "url": "https://wiki.postgresql.org/wiki/Apt"
+  }
+ ],
+ "reviewNotes": "Series part 2. Tested on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) from the PGDG repository on Ubuntu 24.04.5 LTS (noble); followed the PostgreSQL 18 documentation (docs/current, 18.x) and the PGDG Ubuntu download page. Publish Part 1 first (postgresql-dba-part-1-dba-role-and-architecture is not live yet, so it is named without a link). SANDBOX NOTES: (1) archive.ubuntu.com is blocked by the sandbox network policy, so liburing2 (a postgresql-18 dependency from the Ubuntu archive) was built from upstream liburing 2.5 source and installed as a local package; everything else came from PGDG, and apt/initdb/pg_lsclusters/psql/log outputs are real. (2) The sandbox had a preinstalled Ubuntu PostgreSQL 16 cluster, which was dropped first so 18 main got port 5432 as on a fresh server. (3) The sandbox has no systemd: the systemctl status output in Step 8 is captioned '(expected output)' and should be checked on a real 24.04/26.04 server (especially the Loaded line 'enabled-runtime'). Package postinst also could not auto-start the cluster here (policy-rc.d); the article says it starts automatically on a normal systemd server. (4) The Step 2 script output is from re-running the script after postgresql-common had been upgraded to 293 (the version on the box after installing postgresql-18); on a fresh noble box the first run uses Ubuntu's postgresql-common 257, whose output is nearly identical (it omits the Architectures line in pgdg.sources). Ubuntu mirror lines were trimmed. (5) Locale shows C.UTF-8 because the sandbox has no LANG set; the article says readers may see en_US/en_IN. Editor checks: the article targets 'current LTS'; tested on 24.04, and 26.04 (resolute) is mentioned only for the codename. Data checksums default and the tabular \\conninfo are confirmed as PostgreSQL 18 changes in release-18.html.",
+ "generatedAt": "2026-10-20T12:53:18Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 2 of the PostgreSQL DBA series on SQL Tips. To install PostgreSQL 18 on Ubuntu, you add the official PostgreSQL apt repository (called <b>PGDG</b>), run <code class=\"inline-code\">sudo apt install postgresql-18</code>, and Ubuntu does the rest: it creates the <code class=\"inline-code\">postgres</code> operating system user, builds a database cluster called <b>18 main</b>, and starts it as a systemd service. By the end of this part you will have a running PostgreSQL 18 server, you will know where every file was put, and you will be able to start, stop, restart, reload and check the server like a DBA."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 1 we covered what a PostgreSQL DBA does and how PostgreSQL works: the processes, the memory and the files. Now you build the server those ideas run on. Every command in this part was run on a real Ubuntu 24.04 LTS machine with PostgreSQL 18.6 from the PGDG repository, and the outputs are the real ones."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Why DBAs install PostgreSQL from the PGDG repository instead of Ubuntu's built-in package",
+      "items": []
+     },
+     {
+      "content": "How to add the repository and install PostgreSQL 18 step by step",
+      "items": []
+     },
+     {
+      "content": "What the installer created: the postgres user, the cluster, the config and data directories",
+      "items": []
+     },
+     {
+      "content": "How to start, stop, restart, reload and check the server with systemctl, pg_ctlcluster and pg_lsclusters",
+      "items": []
+     },
+     {
+      "content": "Where the server log is and how to read it after a start or stop",
+      "items": []
+     },
+     {
+      "content": "How to fix the errors beginners hit most often right after installing",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Part 1 of this series (processes, memory and files). You do not need anything else from earlier parts.",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu Server LTS machine (26.04, 24.04 or 22.04, all supported by PGDG) on amd64 or arm64. A small virtual machine with 2 GB of RAM is enough for learning.",
+      "items": []
+     },
+     {
+      "content": "A user account that can run <code class=\"inline-code\">sudo</code>.",
+      "items": []
+     },
+     {
+      "content": "Internet access to both Ubuntu's own package mirrors and apt.postgresql.org. PostgreSQL 18 needs a few libraries from Ubuntu's mirrors, so both must be reachable.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Two places to get PostgreSQL",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Ubuntu ships its own PostgreSQL package. The catch is that each Ubuntu release takes one PostgreSQL major version and keeps it for the whole life of that release. If you want a specific version, such as 18, on any supported Ubuntu, you use the <b>PostgreSQL Apt Repository</b>, usually called <b>PGDG</b> (PostgreSQL Global Development Group). It is run by the PostgreSQL project, it carries every supported major version for every supported Ubuntu LTS, and it delivers minor-release bug fixes through the normal <code class=\"inline-code\">apt upgrade</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of it like getting a phone app from the developer's own store instead of a store that only updates once every two years. Same app, but you choose the version and you get fixes sooner."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What the Ubuntu packages give you",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL itself is one program, <code class=\"inline-code\">postgres</code>, plus client tools such as <code class=\"inline-code\">psql</code>. Ubuntu wraps it in a helper package called <b>postgresql-common</b>. That package adds tools to run several clusters side by side, even of different major versions, on one machine. A <b>cluster</b> is one running PostgreSQL server with its own data directory and port (the documentation defines it as a collection of databases managed by a single instance of a running database server). On Ubuntu every cluster has a name made of two parts, the major version and a cluster name, so the first one is <b>18 main</b>."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Thing",
+      "Where it lives on Ubuntu"
+     ],
+     [
+      "Configuration files (postgresql.conf, pg_hba.conf)",
+      "/etc/postgresql/18/main/"
+     ],
+     [
+      "Data directory (PGDATA)",
+      "/var/lib/postgresql/18/main"
+     ],
+     [
+      "Server and tool binaries",
+      "/usr/lib/postgresql/18/bin/"
+     ],
+     [
+      "Server log",
+      "/var/log/postgresql/postgresql-18-main.log"
+     ],
+     [
+      "Unix socket for local connections",
+      "/var/run/postgresql/.s.PGSQL.5432"
+     ],
+     [
+      "systemd unit for this cluster",
+      "postgresql@18-main"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice that the configuration files are under <code class=\"inline-code\">/etc</code>, not inside the data directory. That is an Ubuntu choice. The plain PostgreSQL documentation keeps them inside the data directory, so remember this difference when you read it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Three ways to control the server",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You will meet three tools that start and stop the same server. They are layers, each one calling the one below it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "systemctl (systemd)  ->  pg_ctlcluster (postgresql-common)  ->  pg_ctl (PostgreSQL)  ->  postgres",
+    "caption": "How the control tools fit together"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>systemctl</b> is the normal way on a production Ubuntu server. systemd watches the server and starts it at boot.",
+      "items": []
+     },
+     {
+      "content": "<b>pg_ctlcluster</b> is Ubuntu's wrapper. It knows where each cluster's files are, so you only give it a version and a name. When you run it with sudo as root on a systemd machine, it hands the action to systemctl for you.",
+      "items": []
+     },
+     {
+      "content": "<b>pg_ctl</b> is PostgreSQL's own tool. On Ubuntu you rarely call it directly, because you would have to pass every path yourself.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Add the official PostgreSQL repository",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Install the helper packages",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server (db1), as your normal user with sudo."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "First refresh the package list and install <code class=\"inline-code\">postgresql-common</code> (it contains the script that adds the repository), plus <code class=\"inline-code\">curl</code> and <code class=\"inline-code\">ca-certificates</code> so apt can download over HTTPS."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo apt update\nsudo apt install -y postgresql-common curl ca-certificates",
+    "caption": "Install the helper packages"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-y",
+      "Answers yes to apt's confirmation question, so the install runs without stopping."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the script from the next step must now exist."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "ls /usr/share/postgresql-common/pgdg/",
+    "caption": "Verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "apt.postgresql.org.asc  apt.postgresql.org.gpg  apt.postgresql.org.sh",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">.sh</code> file is the setup script. The <code class=\"inline-code\">.asc</code> and <code class=\"inline-code\">.gpg</code> files are the repository's signing key, which apt uses to prove the packages really come from the PostgreSQL project."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Run the repository setup script",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, with sudo."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y",
+    "caption": "Add the PGDG repository"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-y",
+      "Do not ask for confirmation (the script otherwise waits for you to press Enter)."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "This script will enable the PostgreSQL APT repository on apt.postgresql.org on\nyour system. The distribution codename used will be noble-pgdg.\n\nUsing keyring /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg\nWriting /etc/apt/sources.list.d/pgdg.sources ...\n\nRunning apt-get update ...\nHit:6 https://apt.postgresql.org/pub/repos/apt noble-pgdg InRelease\nReading package lists...\n\nYou can now start installing packages from apt.postgresql.org.",
+    "caption": "Output (trimmed; Ubuntu mirror lines removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The script found the Ubuntu codename (<code class=\"inline-code\">noble</code> is 24.04; on 26.04 you will see <code class=\"inline-code\">resolute-pgdg</code>), wrote a new apt source file and refreshed the package lists."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> look at the source file and ask apt which version it would install."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "cat /etc/apt/sources.list.d/pgdg.sources\napt-cache policy postgresql-18 | head -3",
+    "caption": "Verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Types: deb\nURIs: https://apt.postgresql.org/pub/repos/apt\nSuites: noble-pgdg\nComponents: main\nArchitectures: amd64\nSigned-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg\npostgresql-18:\n  Installed: (none)\n  Candidate: 18.6-1.pgdg24.04+2",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A <code class=\"inline-code\">Candidate</code> ending in <code class=\"inline-code\">pgdg24.04</code> proves the package will come from PGDG. Your minor version may be newer than 18.6."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Prefer to do it by hand?",
+    "text": "The PGDG download page also gives a manual method: download the key to /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc with curl, then create /etc/apt/sources.list.d/pgdg.sources yourself with the same fields shown above (Suites set to your codename followed by -pgdg). Both methods end with the same result. The script is less typing and less error-prone."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> to remove the repository, delete the source file and refresh: <code class=\"inline-code\">sudo rm /etc/apt/sources.list.d/pgdg.sources && sudo apt update</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Install PostgreSQL 18",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Install the server package",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, with sudo."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo apt install -y postgresql-18",
+    "caption": "Install PostgreSQL 18"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Always name the version (<code class=\"inline-code\">postgresql-18</code>). That way you get exactly the major version you planned for. apt pulls in the client tools (<code class=\"inline-code\">postgresql-client-18</code>) automatically."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "The following NEW packages will be installed:\n  postgresql-18 postgresql-client-18\n...\nSetting up postgresql-18 (18.6-1.pgdg24.04+2) ...\nCreating new PostgreSQL cluster 18/main ...\n/usr/lib/postgresql/18/bin/initdb -D /var/lib/postgresql/18/main --auth-local peer --auth-host scram-sha-256 --no-instructions\nThe files belonging to this database system will be owned by user \"postgres\".\nThis user must also own the server process.\n\nThe database cluster will be initialized with locale \"C.UTF-8\".\nThe default database encoding has accordingly been set to \"UTF8\".\nThe default text search configuration will be set to \"english\".\n\nData page checksums are enabled.\n\nfixing permissions on existing directory /var/lib/postgresql/18/main ... ok\ncreating subdirectories ... ok\nselecting dynamic shared memory implementation ... posix\nselecting default \"max_connections\" ... 100\nselecting default \"shared_buffers\" ... 128MB\nselecting default time zone ... Etc/UTC\ncreating configuration files ... ok\nrunning bootstrap script ... ok\nperforming post-bootstrap initialization ... ok\nsyncing data to disk ... ok",
+    "caption": "Output (trimmed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This output is worth reading line by line, because it tells you what the installer did for you:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Creating new PostgreSQL cluster 18/main</b>: the package ran <code class=\"inline-code\">initdb</code>, the PostgreSQL program that builds an empty data directory, at <code class=\"inline-code\">/var/lib/postgresql/18/main</code>.",
+      "items": []
+     },
+     {
+      "content": "<b>--auth-local peer</b>: local socket connections use <i>peer</i> authentication, meaning PostgreSQL trusts the Linux user name. That is why <code class=\"inline-code\">sudo -u postgres psql</code> works without a password. Part 6 covers this in detail.",
+      "items": []
+     },
+     {
+      "content": "<b>--auth-host scram-sha-256</b>: network connections need a password, checked with the SCRAM-SHA-256 method.",
+      "items": []
+     },
+     {
+      "content": "<b>locale \"C.UTF-8\"</b>: the locale (sorting and character rules) comes from the server's language setting. Your machine may show <code class=\"inline-code\">en_US.UTF-8</code> or <code class=\"inline-code\">en_IN.UTF-8</code> instead. Locale and encoding are hard to change later, so set the server's locale before you install.",
+      "items": []
+     },
+     {
+      "content": "<b>Data page checksums are enabled</b>: new in PostgreSQL 18, initdb turns on checksums by default. PostgreSQL stores a small check value on each data page and can then detect pages silently damaged by the disk. Before 18 you had to ask for this with <code class=\"inline-code\">--data-checksums</code>.",
+      "items": []
+     },
+     {
+      "content": "<b>max_connections 100, shared_buffers 128MB</b>: safe starting defaults, not production values. Part 5 and Part 28 show how to change them.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On a normal Ubuntu server with systemd, the package then starts the new cluster straight away."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Read the full apt output",
+    "text": "If apt prints \"The following packages have unmet dependencies\", stop and fix that first (see Common mistakes below). Do not force the install with dpkg options; you would end up with a server that cannot start."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Confirm the server is running",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1. <code class=\"inline-code\">pg_lsclusters</code> can run as any user; the <code class=\"inline-code\">psql</code> command runs as the postgres user through sudo."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "pg_lsclusters\nsudo -u postgres psql -c \"SELECT version();\"",
+    "caption": "Check the cluster and the server version"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log\n                                                               version\n-------------------------------------------------------------------------------------------------------------------------------------\n PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_lsclusters</code> is the first command a DBA runs on an unfamiliar Ubuntu database server. One line per cluster tells you its version, name, port, whether it is <code class=\"inline-code\">online</code> or <code class=\"inline-code\">down</code>, who owns it and where its data and log are."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "sudo -u postgres",
+      "Runs the command as the postgres Linux user, so peer authentication logs you in as the postgres database superuser."
+     ],
+     [
+      "-c \"...\"",
+      "psql option: run this one command and exit."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What the installer created",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Meet the postgres operating system user",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, any user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "id postgres\ngetent passwd postgres",
+    "caption": "Look at the postgres user"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "uid=102(postgres) gid=104(postgres) groups=104(postgres),101(ssl-cert)\npostgres:x:102:104:PostgreSQL administrator,,,:/var/lib/postgresql:/bin/bash",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The package created a Linux user called <code class=\"inline-code\">postgres</code> (your uid and gid numbers may differ). The server always runs as this user, never as root. The documentation advises a separate account that owns only the data, so that a compromised server process cannot change the PostgreSQL programs. That is exactly what you have: the binaries in <code class=\"inline-code\">/usr/lib/postgresql/18/bin/</code> belong to root, while the data belongs to postgres."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">ssl-cert</code> group membership lets the server read Ubuntu's default self-signed certificate. Part 40 replaces it with a real one."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To work as postgres in a shell, use <code class=\"inline-code\">sudo -i -u postgres</code>. The <code class=\"inline-code\">-i</code> option starts a login shell, so you land in the postgres home directory, <code class=\"inline-code\">/var/lib/postgresql</code>. Type <code class=\"inline-code\">exit</code> to go back to your own user."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Look at the configuration and program files",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, any user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "ls -l /etc/postgresql/18/main/\nls /usr/lib/postgresql/18/bin/",
+    "caption": "List the configuration directory and the binaries"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "total 64\ndrwxr-xr-x 2 postgres postgres  4096 Oct 20 12:48 conf.d\n-rw-r--r-- 1 postgres postgres   315 Oct 20 12:48 environment\n-rw-r--r-- 1 postgres postgres   143 Oct 20 12:48 pg_ctl.conf\n-rw-r----- 1 postgres postgres  5934 Oct 20 12:48 pg_hba.conf\n-rw-r----- 1 postgres postgres  2681 Oct 20 12:48 pg_ident.conf\n-rw-r--r-- 1 postgres postgres 32830 Oct 20 12:48 postgresql.conf\n-rw-r--r-- 1 postgres postgres   317 Oct 20 12:48 start.conf\nclusterdb  createdb  createuser  dropdb  dropuser  initdb  oid2name  pg_amcheck\npg_archivecleanup  pg_basebackup  pg_checksums  pg_combinebackup  pg_config\npg_controldata  pg_createsubscriber  pg_ctl  pg_dump  pg_dumpall  pg_isready\npg_receivewal  pg_recvlogical  pg_resetwal  pg_restore  pg_rewind  pg_test_fsync\npg_test_timing  pg_upgrade  pg_verifybackup  pg_waldump  pg_walsummary  pgbench\npostgres  psql  reindexdb  vacuumdb  vacuumlo",
+    "caption": "Output (binary list wrapped to fit)"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "File",
+      "What it is for"
+     ],
+     [
+      "postgresql.conf",
+      "The main server settings (memory, connections, logging). Part 5."
+     ],
+     [
+      "pg_hba.conf",
+      "Who may connect, from where, and how they prove who they are. Part 6."
+     ],
+     [
+      "pg_ident.conf",
+      "Maps Linux user names to database user names for peer and ident authentication."
+     ],
+     [
+      "conf.d/",
+      "Extra .conf files read by postgresql.conf, handy for keeping your own changes separate."
+     ],
+     [
+      "start.conf",
+      "Ubuntu only: whether the cluster starts at boot (auto, manual or disabled)."
+     ],
+     [
+      "pg_ctl.conf",
+      "Ubuntu only: extra options passed to pg_ctl for this cluster."
+     ],
+     [
+      "environment",
+      "Ubuntu only: environment variables set for the server process."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Most of those binaries are not on your PATH. Ubuntu puts small wrappers for the client tools (<code class=\"inline-code\">psql</code>, <code class=\"inline-code\">pg_dump</code> and others) in <code class=\"inline-code\">/usr/bin</code>, and they pick the right version for the cluster you connect to. Server-side tools such as <code class=\"inline-code\">initdb</code> or <code class=\"inline-code\">pg_controldata</code> must be called with their full path."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Ask the server where everything is",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, as the postgres user through sudo. Asking the running server is better than guessing paths, because these values are what the server is really using."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SELECT name, setting FROM pg_settings WHERE name IN ('data_directory','config_file','hba_file','port','listen_addresses','unix_socket_directories','data_checksums','server_version') ORDER BY name;\"",
+    "caption": "Show the key locations and settings"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "          name           |                 setting\n-------------------------+-----------------------------------------\n config_file             | /etc/postgresql/18/main/postgresql.conf\n data_checksums          | on\n data_directory          | /var/lib/postgresql/18/main\n hba_file                | /etc/postgresql/18/main/pg_hba.conf\n listen_addresses        | localhost\n port                    | 5432\n server_version          | 18.6 (Ubuntu 18.6-1.pgdg24.04+2)\n unix_socket_directories | /var/run/postgresql\n(8 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two lines matter for security. <code class=\"inline-code\">listen_addresses = localhost</code> means the server only accepts network connections from this machine; nobody on your network can reach it yet. That is a safe default, and Parts 5 and 6 show how to open it carefully. <code class=\"inline-code\">data_checksums = on</code> confirms the PostgreSQL 18 default from Step 3."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can also check the connection itself with psql's <code class=\"inline-code\">\\conninfo</code>. In PostgreSQL 18 it prints a table instead of the single sentence older versions printed:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c '\\conninfo'",
+    "caption": "Show connection details"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "           Connection Information\n      Parameter       |        Value\n----------------------+---------------------\n Database             | postgres\n Client User          | postgres\n Socket Directory     | /var/run/postgresql\n Server Port          | 5432\n Options              |\n Protocol Version     | 3.0\n Password Used        | false\n GSSAPI Authenticated | false\n Backend PID          | 3686\n SSL Connection       | false\n Superuser            | on\n Hot Standby          | off\n(12 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">Password Used: false</code> and <code class=\"inline-code\">Socket Directory</code> show peer authentication over the local socket at work."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Manage the PostgreSQL service",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Check, stop and start with systemctl",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, with sudo. This is the method to use on a production server, because systemd then supervises the server and starts it again at boot."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Ubuntu uses two systemd units. <code class=\"inline-code\">postgresql@18-main</code> controls this one cluster. <code class=\"inline-code\">postgresql</code> (no @) is an umbrella unit that starts, stops or reloads every cluster whose <code class=\"inline-code\">start.conf</code> says <code class=\"inline-code\">auto</code>. When you have one cluster they behave the same, but get used to naming the cluster: on a server with several clusters it stops you restarting the wrong one."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl status postgresql@18-main --no-pager",
+    "caption": "Check the service"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "● postgresql@18-main.service - PostgreSQL Cluster 18-main\n     Loaded: loaded (/usr/lib/systemd/system/postgresql@.service; enabled-runtime; preset: enabled)\n     Active: active (running) since Tue 2026-10-20 12:48:06 UTC; 2min ago\n   Main PID: 3506 (postgres)",
+    "caption": "Output (expected output, trimmed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">active (running)</code> is what you want to see. The main PID is the postmaster process you met in Part 1."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Command",
+      "What it does"
+     ],
+     [
+      "sudo systemctl stop postgresql@18-main",
+      "Stops the cluster in fast mode: active transactions are rolled back and clients are disconnected."
+     ],
+     [
+      "sudo systemctl start postgresql@18-main",
+      "Starts the cluster."
+     ],
+     [
+      "sudo systemctl restart postgresql@18-main",
+      "Stop then start. Needed for settings that \"can only be set at server start\", such as shared_buffers."
+     ],
+     [
+      "sudo systemctl reload postgresql@18-main",
+      "Tells the server to re-read postgresql.conf and pg_hba.conf without disconnecting anyone."
+     ],
+     [
+      "sudo systemctl enable postgresql",
+      "Makes the umbrella unit start at boot. The package already does this for you."
+     ],
+     [
+      "--no-pager",
+      "Prints status straight to the screen instead of opening it in a pager."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Restart means downtime",
+    "text": "A stop or restart disconnects every client and rolls back their open transactions. On a production server, plan a restart like any other outage. Use reload whenever the setting allows it; Part 5 shows how to tell which settings need which."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Do the same with pg_ctlcluster",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, as the postgres user through sudo. <code class=\"inline-code\">pg_ctlcluster</code> takes its options first, then the version, the cluster name and an action. Its documented actions are start, stop, restart, reload, status, promote and logrotate."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pg_ctlcluster 18 main status",
+    "caption": "Check status"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_ctl: server is running (PID: 3506)\n/usr/lib/postgresql/18/bin/postgres \"-D\" \"/var/lib/postgresql/18/main\" \"-c\" \"config_file=/etc/postgresql/18/main/postgresql.conf\"",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Status shows the PID and the exact command line the server was started with. You can see the data directory (<code class=\"inline-code\">-D</code>) and the Ubuntu config path passed in with <code class=\"inline-code\">-c config_file=</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now stop it, check, and start it again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pg_ctlcluster 18 main stop\npg_lsclusters\nsudo -u postgres pg_ctlcluster 18 main status; echo \"exit code: $?\"",
+    "caption": "Stop the cluster and check"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 down   postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log\npg_ctl: no server running\nexit code: 3",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The status is now <code class=\"inline-code\">down</code>. Exit code 3 is pg_ctl's documented code for \"server not running\", which is useful in monitoring scripts."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pg_ctlcluster 18 main start\npg_isready",
+    "caption": "Start it again"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "/var/run/postgresql:5432 - accepting connections",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_isready</code> is a tiny tool that only asks \"are you accepting connections?\". It exits with 0 when the answer is yes, so it is ideal for scripts that must wait for the server."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-m smart|fast|immediate",
+      "Shutdown mode for stop and restart. The default is fast."
+     ],
+     [
+      "-f, --force",
+      "For stop and restart: try fast mode, then immediate mode, then kill the process. Only for when the machine is about to shut down."
+     ],
+     [
+      "--foreground",
+      "Start postgres in the foreground instead of in the background."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The three shutdown modes come from PostgreSQL itself:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Mode",
+      "What happens"
+     ],
+     [
+      "smart",
+      "No new connections; waits until every existing session disconnects on its own. Can wait forever if an application keeps a connection open."
+     ],
+     [
+      "fast (default)",
+      "No new connections; open transactions are rolled back and clients disconnected, then a clean shutdown."
+     ],
+     [
+      "immediate",
+      "All server processes are stopped at once with no clean shutdown. The next start runs crash recovery by replaying the WAL. The documentation recommends it only in emergencies."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "pg_ctlcluster and systemd",
+    "text": "When you run pg_ctlcluster with sudo as root on a systemd machine, it passes the action on to systemctl, so systemd stays in charge. Running it as the postgres user (as above) calls pg_ctl directly. That works, but a cluster started this way is not supervised by systemd. On production servers, stick to systemctl for start, stop and restart."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Read the server log",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, with sudo (the log is readable by postgres and root only). After any start, stop or problem, the log is the first place to look."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo tail -n 12 /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Show the last lines of the log"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-10-20 12:49:04.995 UTC [3506] LOG:  received fast shutdown request\n2026-10-20 12:49:04.997 UTC [3506] LOG:  aborting any active transactions\n2026-10-20 12:49:04.999 UTC [3506] LOG:  background worker \"logical replication launcher\" (PID 3515) exited with exit code 1\n2026-10-20 12:49:05.000 UTC [3510] LOG:  shutting down\n2026-10-20 12:49:05.000 UTC [3510] LOG:  checkpoint starting: shutdown immediate\n2026-10-20 12:49:05.014 UTC [3506] LOG:  database system is shut down\n2026-10-20 12:49:05.328 UTC [3725] LOG:  starting PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit\n2026-10-20 12:49:05.328 UTC [3725] LOG:  listening on IPv4 address \"127.0.0.1\", port 5432\n2026-10-20 12:49:05.329 UTC [3725] LOG:  listening on Unix socket \"/var/run/postgresql/.s.PGSQL.5432\"\n2026-10-20 12:49:05.333 UTC [3731] LOG:  database system was shut down at 2026-10-20 12:49:04 UTC\n2026-10-20 12:49:05.338 UTC [3725] LOG:  database system is ready to accept connections",
+    "caption": "Output (one checkpoint detail line removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can follow the whole stop and start. <code class=\"inline-code\">received fast shutdown request</code> confirms the default mode. <code class=\"inline-code\">checkpoint starting: shutdown immediate</code> is the final checkpoint of a clean shutdown; here \"immediate\" means the checkpoint runs at full speed, not that it was an immediate-mode shutdown. On start, <code class=\"inline-code\">database system was shut down at ...</code> tells you the previous shutdown was clean, so no crash recovery was needed. The line you wait for is <code class=\"inline-code\">database system is ready to accept connections</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Also note <code class=\"inline-code\">listening on IPv4 address \"127.0.0.1\"</code>: that is the <code class=\"inline-code\">listen_addresses = localhost</code> setting from Step 7 in action."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Check that the cluster starts at boot",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, any user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "grep -v '^#' /etc/postgresql/18/main/start.conf",
+    "caption": "Show the start-up mode"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "auto",
+    "caption": "Output (blank lines removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">auto</code> means the cluster starts and stops with the <code class=\"inline-code\">postgresql</code> umbrella unit, which is enabled at boot. The other values are <code class=\"inline-code\">manual</code> (systemd does not start it at boot, but you can start it by hand) and <code class=\"inline-code\">disabled</code> (the tools refuse to start or stop it, a guard against accidents during maintenance). If you edit this file, run <code class=\"inline-code\">sudo systemctl daemon-reload</code> afterwards so systemd notices."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "\"unmet dependencies\" during apt install",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "The following packages have unmet dependencies:\n postgresql-18 : Depends: liburing2 (>= 2.5) but it is not installable\nE: Unable to correct problems, you have held broken packages.",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL 18 from PGDG needs some libraries, such as <code class=\"inline-code\">liburing2</code>, from Ubuntu's own mirrors. This error means apt can reach apt.postgresql.org but not the Ubuntu archive, usually because of a proxy, firewall or a broken <code class=\"inline-code\">/etc/apt/sources.list.d/ubuntu.sources</code>. Run <code class=\"inline-code\">sudo apt update</code> and fix every <code class=\"inline-code\">Err:</code> or <code class=\"inline-code\">W: Failed to fetch</code> line for the Ubuntu mirrors, then install again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: role \"root\" does not exist",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: FATAL:  role \"root\" does not exist",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You ran <code class=\"inline-code\">psql</code> or <code class=\"inline-code\">sudo psql</code> as root. With peer authentication psql logs in as a database role with the same name as your Linux user, and there is no role called root. Use <code class=\"inline-code\">sudo -u postgres psql</code>. Part 7 shows how to create a role for your own Linux user."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "connection to server on socket ... failed: No such file or directory",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: No such file or directory\n\tIs the server running locally and accepting connections on that socket?",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The server is not running, so the socket file does not exist. Run <code class=\"inline-code\">pg_lsclusters</code>; if the status is <code class=\"inline-code\">down</code>, start it with <code class=\"inline-code\">sudo systemctl start postgresql@18-main</code> and read the log from Step 10 if it fails to start."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The new cluster is on port 5433, not 5432",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the machine already had a cluster, for example Ubuntu's own PostgreSQL 16, the PostgreSQL 18 cluster gets the next free port, 5433. Your <code class=\"inline-code\">psql</code> then connects to the old server on 5432 without any error. Always check <code class=\"inline-code\">pg_lsclusters</code> after installing and connect with <code class=\"inline-code\">psql -p 5433</code> or <code class=\"inline-code\">psql --cluster 18/main</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Address already in use at start-up",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  could not bind IPv4 address \"127.0.0.1\": Address already in use\nHINT:  Is another postmaster already running on port 5432? If not, wait a few seconds and retry.\nFATAL:  could not create any TCP/IP sockets",
+    "caption": "Error (as shown in the PostgreSQL documentation)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Something else already listens on the port, often another PostgreSQL cluster or a container. Find it with <code class=\"inline-code\">sudo ss -ltnp | grep 5432</code>, then stop it or change the <code class=\"inline-code\">port</code> setting of one cluster (a restart is needed)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Killing the server with kill -9",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Never stop PostgreSQL with <code class=\"inline-code\">kill -9</code> (SIGKILL). The documentation warns that it stops the server from releasing shared memory and semaphores, and it does not pass the signal to the child processes, which you may then have to kill by hand. Use <code class=\"inline-code\">systemctl stop</code>, or <code class=\"inline-code\">sudo pg_ctlcluster -m immediate 18 main stop</code> in a real emergency."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Ubuntu lets you run a second cluster on the same machine, which is how later parts of this series build a standby or a restore target on one server. Try it:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Create a second PostgreSQL 18 cluster called <code class=\"inline-code\">lab</code> and check which port it was given.",
+      "items": []
+     },
+     {
+      "content": "Start it, connect to it and prove you are on the lab cluster by showing its data directory.",
+      "items": []
+     },
+     {
+      "content": "Delete it completely, and confirm only <code class=\"inline-code\">18 main</code> is left.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "Run: sudo pg_createcluster 18 lab, then pg_lsclusters. It shows \"18 lab 5433 down postgres /var/lib/postgresql/18/lab\", because 5432 is taken. Start it with sudo systemctl start postgresql@18-lab (or sudo -u postgres pg_ctlcluster 18 lab start), then run sudo -u postgres psql -p 5433 -c 'SHOW data_directory', which returns /var/lib/postgresql/18/lab. Finally run sudo pg_dropcluster --stop 18 lab. The --stop option shuts the server down before deleting it. pg_lsclusters then lists only 18 main."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "pg_dropcluster deletes data",
+    "text": "pg_dropcluster removes the cluster's data directory, WAL, log file and configuration files. There is no undo. Double-check the version and cluster name, and never point it at 18 main on a server that holds real data."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# 1. Install the helper packages\nsudo apt update\nsudo apt install -y postgresql-common curl ca-certificates\n\n# 2. Add the PGDG repository\nsudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y\napt-cache policy postgresql-18 | head -3\n\n# 3. Install PostgreSQL 18 (creates and starts cluster 18 main)\nsudo apt install -y postgresql-18\n\n# 4. Confirm the cluster and version\npg_lsclusters\nsudo -u postgres psql -c \"SELECT version();\"\n\n# 5. The postgres operating system user\nid postgres\n\n# 6. Configuration files and binaries\nls -l /etc/postgresql/18/main/\nls /usr/lib/postgresql/18/bin/\n\n# 7. Ask the server where its files are\nsudo -u postgres psql -c \"SHOW data_directory;\"\nsudo -u postgres psql -c '\\conninfo'\n\n# 8. Manage the service with systemd\nsudo systemctl status postgresql@18-main --no-pager\nsudo systemctl stop postgresql@18-main\nsudo systemctl start postgresql@18-main\nsudo systemctl restart postgresql@18-main\nsudo systemctl reload postgresql@18-main\n\n# 9. The same with pg_ctlcluster\nsudo -u postgres pg_ctlcluster 18 main status\nsudo -u postgres pg_ctlcluster -m fast 18 main stop\nsudo -u postgres pg_ctlcluster 18 main start\npg_isready\n\n# 10. Read the server log\nsudo tail -n 20 /var/log/postgresql/postgresql-18-main.log\n\n# 11. Start-up mode at boot\ngrep -v '^#' /etc/postgresql/18/main/start.conf",
+    "caption": "All commands from this part, in order"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "You added the official PGDG repository and know why DBAs prefer it to Ubuntu's built-in package.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "You installed PostgreSQL 18 and read what initdb did, including data checksums being on by default in 18.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "You know where the config files (/etc/postgresql/18/main), data (/var/lib/postgresql/18/main), binaries and log live.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "You can check, stop, start, restart and reload the cluster with systemctl and pg_ctlcluster, and you know the three shutdown modes.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "You can read the server log after a start or stop and fix the most common first-day errors.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 3 you will open the data directory (PGDATA) and learn what each of its files and folders is for."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Installed PostgreSQL on Ubuntu and got version 16 when you wanted 18? Here is the clean way.\n\nThis is Part 2 of my PostgreSQL DBA series. The steps:\n\n1. Add the official PGDG repository with the setup script that ships in the postgresql-common package\n2. Install the exact version: sudo apt install -y postgresql-18\n3. Check it: pg_lsclusters shows \"18 main 5432 online\"\n\nWhat the installer does for you:\n→ Creates the postgres Linux user (the server never runs as root)\n→ Builds cluster 18/main: config in /etc/postgresql/18/main, data in /var/lib/postgresql/18/main\n→ Turns on data page checksums (new default in PostgreSQL 18)\n→ Listens on localhost only, so nobody on the network can reach it yet\n\nManaging it:\n→ sudo systemctl restart postgresql@18-main for a full restart\n→ reload instead of restart whenever the setting allows it, no one gets disconnected\n→ \"role root does not exist\"? Use sudo -u postgres psql\n\nWhich do you use on your servers: Ubuntu's own PostgreSQL package or PGDG?\n\nFollow the series, Part 3 covers the data directory.\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Ubuntu #Database",
+  "slides": [
+   {
+    "title": "Install PostgreSQL 18 on Ubuntu",
+    "body": "PostgreSQL DBA series, Part 2: install, locate and manage your server"
+   },
+   {
+    "title": "Why the PGDG repository",
+    "points": [
+     "Ubuntu ships one PostgreSQL version per release",
+     "PGDG has every supported version for every LTS",
+     "Minor-release fixes arrive with apt upgrade"
+    ]
+   },
+   {
+    "title": "The install steps",
+    "points": [
+     "sudo apt install -y postgresql-common",
+     "Run pgdg/apt.postgresql.org.sh -y from /usr/share/postgresql-common",
+     "sudo apt install -y postgresql-18",
+     "pg_lsclusters shows: 18 main 5432 online"
+    ]
+   },
+   {
+    "title": "Check what you installed",
+    "code": "SELECT version();\n-- PostgreSQL 18.6 (Ubuntu ...)\n\nSHOW data_checksums;\n-- on (new default in 18)",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Ask the server where its files are",
+    "code": "SELECT name, setting\n  FROM pg_settings\n WHERE name IN ('data_directory',\n               'config_file',\n               'hba_file',\n               'listen_addresses');",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Manage the service",
+    "points": [
+     "systemctl status / stop / start postgresql@18-main",
+     "restart: only for settings needed at server start",
+     "reload: re-reads config, nobody is disconnected",
+     "Default shutdown mode is fast: open transactions roll back"
+    ]
+   },
+   {
+    "title": "First-day errors",
+    "points": [
+     "role \"root\" does not exist: use sudo -u postgres psql",
+     "socket ... No such file or directory: the server is down",
+     "Cluster on 5433: another cluster already has 5432"
+    ]
+   }
+  ]
+ }
+}
