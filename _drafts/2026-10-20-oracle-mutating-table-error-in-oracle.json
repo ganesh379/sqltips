@@ -1,0 +1,769 @@
+{
+  "schemaVersion": 1,
+  "title": "Mutating Table Error in Oracle (ORA-04091): How to Fix It",
+  "slug": "mutating-table-error-in-oracle-ora-04091",
+  "category": "plsql",
+  "description": "Fix the mutating table error in Oracle (ORA-04091): see why row-level triggers fail, then solve it with a statement-level or compound trigger.",
+  "focusKeyword": "mutating table error in oracle",
+  "tags": [
+    "oracle",
+    "plsql",
+    "triggers",
+    "ora-errors"
+  ],
+  "related": [
+    "/posts/plsql/understanding-oracle-triggers-a-comprehensive-guide-with-examples/",
+    "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/",
+    "/posts/interview-questions/master-oracle-interview-questions-key-concepts-examples-for-2024/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: Trigger Restrictions (Mutating-Table Restriction)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/trigger-restrictions.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: DML Triggers (Compound DML Triggers)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/dml-triggers.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: Autonomous Transactions",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/autonomous-transactions.html"
+    },
+    {
+      "title": "Jeff Kemp: INSERT-VALUES vs. INSERT-SELECT-FROM-DUAL",
+      "url": "https://jeffkemponoracle.com/2010/09/insert-values-vs-insert-select-from-dual/"
+    }
+  ],
+  "reviewNotes": "Examples written from the Oracle 19c PL/SQL Language Reference; none were run, so every output needs a test run. Please check: (1) the ORA-04091 error stack, including the caret position and 'line 4' in ORA-06512 (counted from DECLARE, following the doc's Example 9-26); 23ai may add a 'Help:' URL line. Line numbers in the ORA-20001 stacks were left out on purpose. (2) The autonomous-transaction example: I expect it compiles and runs without ORA-06519 because it only queries; confirm, and confirm that moving emp 107 into dept 20 succeeds and leaves 4 rows there. (3) The FAQ on INSERT ... VALUES vs INSERT ... SELECT is not in the official docs (source: Jeff Kemp's blog and community write-ups); keep the hedge or cut it. (4) The 'compound triggers from 11g' claim is general knowledge (11g Release 1), not quoted from the 19c pages. (5) The claim that the mutating error can come from a function called in a DML statement is based on the error text 'trigger/function'; no example is given. (6) I used DROP TRIGGER before creating the compound trigger, to avoid relying on CREATE OR REPLACE switching a simple trigger to a compound one.",
+  "generatedAt": "2026-10-20T00:00:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The mutating table error in Oracle, <code class=\"inline-code\">ORA-04091: table ... is mutating, trigger/function might not see it</code>, happens when a row-level trigger reads or changes the same table that fired it. Oracle blocks this because, while the statement is still running, the table is half changed. You fix it by moving the query out of the row-level code, usually into a statement-level trigger or the <code class=\"inline-code\">AFTER STATEMENT</code> section of a compound trigger."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This tutorial reproduces the error on a small table, explains why Oracle raises it, and shows two fixes that work. It also covers the fix you should avoid, which is adding <b>PRAGMA AUTONOMOUS_TRANSACTION</b> to the trigger."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is a mutating table in Oracle?",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The Oracle documentation defines a mutating table as a table that is being modified by a DML statement (<code class=\"inline-code\">INSERT</code>, <code class=\"inline-code\">UPDATE</code>, <code class=\"inline-code\">DELETE</code>), possibly through the effects of a <code class=\"inline-code\">DELETE CASCADE</code> constraint. The <b>mutating-table restriction</b> stops a row-level trigger from querying or modifying that table while the statement is running."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The restriction applies only to row-level triggers, the ones with <b>FOR EACH ROW</b>. A statement-level trigger fires once, before or after the whole statement, so it never sees the table in a half-finished state. That difference is the basis of every fix in this article."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Why does Oracle care? Think about an UPDATE that changes 100 rows. A row trigger fires 100 times, once per row. If the trigger ran a COUNT(*) on the same table, the answer would depend on how many rows Oracle had already processed, and Oracle does not promise any processing order. The same statement could give different results on different days. Oracle refuses to run the trigger rather than give you an answer that depends on timing."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "When the error happens, the trigger's changes and the triggering statement are both rolled back, and the error goes back to the application. Other work in your transaction is not affected."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "",
+        "text": "The message says \"trigger/function\" because a PL/SQL function called from a DML statement can hit the same restriction. For example, a function used in an <code class=\"inline-code\">UPDATE ... SET</code> clause that queries the table being updated."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Create a small employees table and fill it with seven rows across three departments. The business rule for this tutorial: <b>a department may have at most 3 employees</b>. Checking that rule means counting rows in the same table that is being changed, which is exactly what triggers the error."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE employees (\n  emp_id    NUMBER        PRIMARY KEY,\n  emp_name  VARCHAR2(50)  NOT NULL,\n  dept_id   NUMBER        NOT NULL,\n  salary    NUMBER(10,2)\n);\n\nINSERT INTO employees VALUES (101, 'Asha',  10, 65000);\nINSERT INTO employees VALUES (102, 'Ravi',  10, 58000);\nINSERT INTO employees VALUES (103, 'Meena', 20, 72000);\nINSERT INTO employees VALUES (104, 'Karan', 20, 49000);\nINSERT INTO employees VALUES (105, 'Priya', 20, 81000);\nINSERT INTO employees VALUES (106, 'Imran', 30, 54000);\nINSERT INTO employees VALUES (107, 'Sneha', 30, 60000);\nCOMMIT;",
+        "caption": "Sample table and data"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT dept_id, COUNT(*) AS headcount\n  FROM employees\n GROUP BY dept_id\n ORDER BY dept_id;",
+        "caption": "Headcount per department"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "DEPT_ID",
+            "HEADCOUNT"
+          ],
+          [
+            "10",
+            "2"
+          ],
+          [
+            "20",
+            "3"
+          ],
+          [
+            "30",
+            "2"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Department 20 is full. Departments 10 and 30 each have room for one more person."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Reproduce ORA-04091 with a row-level trigger",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Here is the trigger most people write first. It fires after each inserted or updated row, counts the employees in the new department and raises an error if the count goes above 3."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE TRIGGER trg_dept_limit\n  AFTER INSERT OR UPDATE OF dept_id ON employees\n  FOR EACH ROW\nDECLARE\n  v_count NUMBER;\nBEGIN\n  SELECT COUNT(*)\n    INTO v_count\n    FROM employees\n   WHERE dept_id = :NEW.dept_id;\n\n  IF v_count > 3 THEN\n    RAISE_APPLICATION_ERROR(-20001,\n      'Department ' || :NEW.dept_id || ' would have ' || v_count || ' employees (max 3)');\n  END IF;\nEND;\n/",
+        "caption": "Row-level trigger that causes the error"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The trigger compiles without any warning. The problem only shows up at run time. Move Imran (106) into department 10, which is a perfectly valid change because department 10 has room:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "UPDATE employees SET dept_id = 10 WHERE emp_id = 106;",
+        "caption": "A valid one-row update"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "UPDATE employees SET dept_id = 10 WHERE emp_id = 106\n       *\nERROR at line 1:\nORA-04091: table SQLTIPS.EMPLOYEES is mutating, trigger/function might not see it\nORA-06512: at \"SQLTIPS.TRG_DEPT_LIMIT\", line 4\nORA-04088: error during execution of trigger 'SQLTIPS.TRG_DEPT_LIMIT'",
+        "caption": "Output (expected output; the schema name will be yours)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Read the error stack from the top. <code class=\"inline-code\">ORA-04091</code> names the mutating table. <code class=\"inline-code\">ORA-06512</code> gives the line inside the trigger body (line 4 is the <code class=\"inline-code\">SELECT COUNT(*)</code>; trigger line numbers start at <code class=\"inline-code\">DECLARE</code>). <code class=\"inline-code\">ORA-04088</code> tells you which trigger failed. Even a one-row UPDATE fails, because the row trigger queries its own table."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Imran is still in department 30, because the whole UPDATE was rolled back."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Fix 1: use a statement-level trigger",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If your check does not need the values of individual rows, drop <code class=\"inline-code\">FOR EACH ROW</code>. A statement-level trigger fires once after the whole statement has finished, and it is allowed to query the table freely."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE TRIGGER trg_dept_limit\n  AFTER INSERT OR UPDATE OF dept_id ON employees\nBEGIN\n  FOR r IN (SELECT dept_id, COUNT(*) AS cnt\n              FROM employees\n             GROUP BY dept_id\n            HAVING COUNT(*) > 3)\n  LOOP\n    RAISE_APPLICATION_ERROR(-20001,\n      'Department ' || r.dept_id || ' would have ' || r.cnt || ' employees (max 3)');\n  END LOOP;\nEND;\n/",
+        "caption": "Statement-level trigger: no FOR EACH ROW"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Test a valid change",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "UPDATE employees SET dept_id = 10 WHERE emp_id = 106;\nCOMMIT;",
+        "caption": "Move Imran to department 10"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "1 row updated.\n\nCommit complete.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The same statement that failed before now works. When the trigger runs, the update is complete, so the count is stable and correct. Department 10 now has 3 employees."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Test a change that breaks the rule",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "UPDATE employees SET dept_id = 20 WHERE emp_id = 107;",
+        "caption": "Try to move Sneha into the full department 20"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-20001: Department 20 would have 4 employees (max 3)\nORA-06512: at \"SQLTIPS.TRG_DEPT_LIMIT\", ...\nORA-04088: error during execution of trigger 'SQLTIPS.TRG_DEPT_LIMIT'",
+        "caption": "Output (expected output; line number omitted)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This time you get your own business error instead of ORA-04091. Raising an error in an AFTER statement trigger rolls back the triggering statement, so Sneha stays in department 30."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The trade-off: this trigger counts every department on every insert or update. On a table with a few thousand rows that does not matter. On a large table, you want to check only the departments the statement touched, and for that you need the row values. That is what a compound trigger is for."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Fix 2: use a compound trigger (Oracle 11g and later)",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A compound trigger is a single trigger with up to four timing-point sections: <code class=\"inline-code\">BEFORE STATEMENT</code>, <code class=\"inline-code\">BEFORE EACH ROW</code>, <code class=\"inline-code\">AFTER EACH ROW</code> and <code class=\"inline-code\">AFTER STATEMENT</code>. Variables declared at the top are shared by all sections and live for the duration of the triggering statement. Oracle's documentation lists the compound trigger as the main way to avoid the mutating-table error."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The pattern is simple:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "In <code class=\"inline-code\">AFTER EACH ROW</code>, do not query the table. Just remember which department each row moved into.",
+            "items": []
+          },
+          {
+            "content": "In <code class=\"inline-code\">AFTER STATEMENT</code>, when the table is no longer mutating, count only those departments.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DROP TRIGGER trg_dept_limit;\n\nCREATE OR REPLACE TRIGGER trg_dept_limit\n  FOR INSERT OR UPDATE OF dept_id ON employees\n  COMPOUND TRIGGER\n\n  -- Set of department ids touched by this statement\n  TYPE t_dept_set IS TABLE OF BOOLEAN INDEX BY PLS_INTEGER;\n  g_depts   t_dept_set;\n  v_dept    PLS_INTEGER;\n  v_count   PLS_INTEGER;\n\n  AFTER EACH ROW IS\n  BEGIN\n    g_depts(:NEW.dept_id) := TRUE;   -- no query here\n  END AFTER EACH ROW;\n\n  AFTER STATEMENT IS\n  BEGIN\n    v_dept := g_depts.FIRST;\n    WHILE v_dept IS NOT NULL LOOP\n      SELECT COUNT(*)\n        INTO v_count\n        FROM employees\n       WHERE dept_id = v_dept;\n\n      IF v_count > 3 THEN\n        RAISE_APPLICATION_ERROR(-20001,\n          'Department ' || v_dept || ' would have ' || v_count || ' employees (max 3)');\n      END IF;\n\n      v_dept := g_depts.NEXT(v_dept);\n    END LOOP;\n  END AFTER STATEMENT;\n\nEND trg_dept_limit;\n/",
+        "caption": "Compound trigger that avoids ORA-04091"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Using the department id as the collection index gives you a set for free. If a statement moves 500 employees into department 30, the collection still holds one entry, and the trigger runs one COUNT(*) instead of 500. Department ids here are whole numbers, which is why <code class=\"inline-code\">PLS_INTEGER</code> works as the index type."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You do not need to clear the collection yourself. The documentation states that the state variables of a compound trigger are initialized each time the trigger fires, even when the triggering statement is interrupted and restarted."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Test a single-row insert",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "INSERT INTO employees VALUES (108, 'Farah', 30, 52000);\nCOMMIT;",
+        "caption": "Department 30 has room"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "1 row created.\n\nCommit complete.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Test a multi-row update",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now try to move all of department 10 (Asha, Ravi and Imran) into department 30, which already has Sneha and Farah:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "UPDATE employees SET dept_id = 30 WHERE dept_id = 10;",
+        "caption": "Three rows at once"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-20001: Department 30 would have 5 employees (max 3)\nORA-06512: at \"SQLTIPS.TRG_DEPT_LIMIT\", ...\nORA-04088: error during execution of trigger 'SQLTIPS.TRG_DEPT_LIMIT'",
+        "caption": "Output (expected output; line number omitted)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The row section ran three times and stored department 30 once. The statement section counted department 30 after all three rows had moved, found 5 and rejected the whole statement. Run the headcount query again and you will see the data unchanged:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "DEPT_ID",
+            "HEADCOUNT"
+          ],
+          [
+            "10",
+            "3"
+          ],
+          [
+            "20",
+            "3"
+          ],
+          [
+            "30",
+            "2"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "",
+        "text": "Inside a compound trigger, <code class=\"inline-code\">:NEW</code> and <code class=\"inline-code\">:OLD</code> are not allowed in the declarative part or in the <code class=\"inline-code\">BEFORE STATEMENT</code> and <code class=\"inline-code\">AFTER STATEMENT</code> sections. Copy the values you need into a collection in a row section, as the example does. Also, only <code class=\"inline-code\">BEFORE EACH ROW</code> can change <code class=\"inline-code\">:NEW</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Which fix should you use?",
+        "level": 2
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Approach",
+            "Works from",
+            "Use it when"
+          ],
+          [
+            "Statement-level trigger",
+            "All versions",
+            "The check can look at the whole table and the table is small"
+          ],
+          [
+            "Compound trigger",
+            "Oracle 11g",
+            "You need row values and want to check only the rows the statement touched"
+          ],
+          [
+            "Row trigger + temporary table + statement trigger",
+            "All versions",
+            "You maintain old code; Oracle docs describe this as the other workaround"
+          ],
+          [
+            "Move the logic into a procedure",
+            "All versions",
+            "All writes go through one PL/SQL API, so a trigger is not needed"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "For new code on any supported Oracle release, the compound trigger is the standard answer. Before 11g, people used a package with a collection, a row trigger to fill it and a statement trigger to process it. The compound trigger does the same job in one object, without package state that can survive a failed statement."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Why PRAGMA AUTONOMOUS_TRANSACTION is the wrong fix",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Search forums for this error and you will find advice to add <b>PRAGMA AUTONOMOUS_TRANSACTION</b> to the row trigger. The error disappears, but the trigger now gives wrong answers."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE TRIGGER trg_dept_limit\n  AFTER INSERT OR UPDATE OF dept_id ON employees\n  FOR EACH ROW\nDECLARE\n  PRAGMA AUTONOMOUS_TRANSACTION;   -- do not do this\n  v_count NUMBER;\nBEGIN\n  SELECT COUNT(*) INTO v_count\n    FROM employees\n   WHERE dept_id = :NEW.dept_id;\n\n  IF v_count > 3 THEN\n    RAISE_APPLICATION_ERROR(-20001, 'Department full');\n  END IF;\nEND;\n/",
+        "caption": "The autonomous transaction workaround (avoid)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "An autonomous transaction is a separate transaction. It shares no locks or resources with your main transaction, and it cannot see changes your session has not committed yet. So when you move Sneha (107) into department 20, the trigger counts the <b>committed</b> rows in department 20: 3, without Sneha. 3 is not greater than 3, so the update is allowed and department 20 ends up with 4 employees."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The rule you wrote the trigger to enforce is silently broken. The Oracle documentation also warns that if an autonomous transaction tries to access a resource held by the main transaction, a deadlock can occur. Autonomous triggers are meant for things like audit logging that must survive a rollback, not for reading the table that is changing."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Adding FOR EACH ROW by habit.</b> Many triggers do not use <code class=\"inline-code\">:NEW</code> or <code class=\"inline-code\">:OLD</code> at all. If yours does not, make it a statement-level trigger and the error cannot happen.",
+            "items": []
+          },
+          {
+            "content": "<b>Assuming a one-row statement is safe.</b> The UPDATE in this tutorial changed one row and still failed. The restriction is about the trigger querying its own table, not about row counts.",
+            "items": []
+          },
+          {
+            "content": "<b>Testing only with INSERT ... VALUES.</b> A trigger can pass a single-row INSERT test and then fail in production on an INSERT ... SELECT, an UPDATE or a DELETE. Test every statement type the trigger fires on, including multi-row ones.",
+            "items": []
+          },
+          {
+            "content": "<b>Querying the table in BEFORE STATEMENT and trusting it later.</b> Values read in <code class=\"inline-code\">BEFORE STATEMENT</code> are from before the change. They are fine for a starting point, like the department averages in Oracle's own example, but not for counting the final result.",
+            "items": []
+          },
+          {
+            "content": "<b>Forgetting cascades.</b> A <code class=\"inline-code\">DELETE</code> on a parent table with <code class=\"inline-code\">ON DELETE CASCADE</code> makes the child table mutating too. A row trigger on the child that queries the child table can fail even though nobody ran a DELETE on it directly.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "",
+        "text": "Trigger checks like this one read committed data from other sessions only. If two sessions each add a fourth employee to department 20 at the same moment, neither sees the other's uncommitted row and both checks pass. If the rule must hold under concurrency, serialize the writes, for example by locking the parent department row with SELECT ... FOR UPDATE inside the procedure that changes employees."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Performance tips and best practices",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Keep row sections tiny. Store keys in a collection in <code class=\"inline-code\">AFTER EACH ROW</code> and do the SQL work once in <code class=\"inline-code\">AFTER STATEMENT</code>. The documentation notes that compound triggers have a performance benefit when the statement affects many rows.",
+            "items": []
+          },
+          {
+            "content": "Index the column you count by. The AFTER STATEMENT query in Fix 2 filters on dept_id, so an index on employees(dept_id) keeps it fast as the table grows.",
+            "items": []
+          },
+          {
+            "content": "Deduplicate keys, as the INDEX BY trick does, so a 10,000-row update does not run 10,000 counts.",
+            "items": []
+          },
+          {
+            "content": "Prefer declarative constraints (CHECK, UNIQUE, FOREIGN KEY) whenever the rule fits one. They are faster than triggers and are enforced correctly under concurrency.",
+            "items": []
+          },
+          {
+            "content": "Consider whether the trigger should exist at all. If all changes go through a PL/SQL package, the rule can live in that package where it is easier to read and test.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the mutating table error in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "It is ORA-04091. A row-level trigger, or a function called from a DML statement, tried to query or modify the table that the current statement is changing. Oracle rolls back the statement and returns the error."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do you avoid the mutating table error in an Oracle trigger?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Do not query the table from <code class=\"inline-code\">FOR EACH ROW</code> code. Use a statement-level trigger if you do not need row values, or a compound trigger that collects keys per row and runs the query in its <code class=\"inline-code\">AFTER STATEMENT</code> section. Oracle's documentation also mentions a temporary table with a row trigger and a statement trigger."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Does a statement-level trigger raise ORA-04091?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "No. The documentation says the mutating-table restriction applies only to row-level simple DML triggers. A statement-level trigger, or the statement sections of a compound trigger, can query the table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Why does my trigger work for INSERT ... VALUES but fail for INSERT ... SELECT?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "For a single-row INSERT ... VALUES, Oracle does not treat the table as mutating in a BEFORE row trigger, so a query on the same table runs. An INSERT ... SELECT can insert many rows, so the restriction applies, even when the SELECT returns only one row. This behaviour is widely observed but is not described in the Trigger Restrictions page, so do not design around it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can I use PRAGMA AUTONOMOUS_TRANSACTION to fix ORA-04091?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "It removes the error but the trigger cannot see the uncommitted changes of the statement that fired it, so any count or total it reads is wrong. Use a compound trigger instead."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "ORA-04091 means a row-level trigger touched the table its own statement is changing.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Oracle rolls back the statement and the trigger's changes when it happens.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "If you do not need :NEW or :OLD, remove FOR EACH ROW and use a statement-level trigger.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "If you do, use a compound trigger: collect keys in AFTER EACH ROW, query in AFTER STATEMENT.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Do not use PRAGMA AUTONOMOUS_TRANSACTION to silence the error; it reads stale data.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Test triggers with multi-row UPDATE, DELETE and INSERT ... SELECT, not just single-row inserts.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "A one-row UPDATE fails with ORA-04091 and the code looks fine. The problem is FOR EACH ROW.\n\nORA-04091 \"table is mutating\" means a row-level trigger queried or changed the same table its own statement is changing. Oracle stops it because the table is half updated, and it rolls back the whole statement.\n\nHow to fix it:\n→ No need for :NEW or :OLD? Remove FOR EACH ROW. A statement-level trigger can query the table freely.\n→ Need row values? Use a compound trigger (11g+). Save the keys in AFTER EACH ROW, run your query in AFTER STATEMENT.\n→ Use the key as the collection index (g_depts(:NEW.dept_id) := TRUE). A 500-row update then runs one COUNT(*), not 500.\n→ Avoid PRAGMA AUTONOMOUS_TRANSACTION. The error goes away, but the trigger can't see the uncommitted change, so your check passes when it should fail.\n→ Test with multi-row UPDATE and INSERT ... SELECT. A single-row INSERT ... VALUES test can pass and hide the bug.\n\nHave you ever shipped a trigger that worked in testing and hit ORA-04091 in production? What was it checking?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #PLSQL #OracleSQL #SQLInterview",
+    "slides": [
+      {
+        "title": "ORA-04091: Fix the Mutating Table Error",
+        "body": "Why Oracle triggers fail, and two fixes that work"
+      },
+      {
+        "title": "What triggers ORA-04091",
+        "points": [
+          "A FOR EACH ROW trigger queries its own table",
+          "The table is half changed while the statement runs",
+          "Oracle rolls back the statement and the trigger work",
+          "Even a one-row UPDATE can fail"
+        ]
+      },
+      {
+        "title": "The trigger that fails",
+        "body": "Counting rows in the same table from a row trigger.",
+        "code": "CREATE OR REPLACE TRIGGER trg_dept_limit\n  AFTER UPDATE OF dept_id ON employees\n  FOR EACH ROW\nDECLARE\n  v_count NUMBER;\nBEGIN\n  SELECT COUNT(*) INTO v_count\n    FROM employees\n   WHERE dept_id = :NEW.dept_id;",
+        "lang": "plsql"
+      },
+      {
+        "title": "Fix 1: statement-level trigger",
+        "points": [
+          "Remove FOR EACH ROW if you do not need :NEW or :OLD",
+          "Fires once after the statement finishes",
+          "Can query the table without ORA-04091"
+        ]
+      },
+      {
+        "title": "Fix 2: compound trigger (11g+)",
+        "body": "Save keys per row, query once at the end.",
+        "code": "AFTER EACH ROW IS\nBEGIN\n  g_depts(:NEW.dept_id) := TRUE;\nEND AFTER EACH ROW;\n\nAFTER STATEMENT IS\nBEGIN\n  -- count only g_depts here\nEND AFTER STATEMENT;",
+        "lang": "plsql"
+      },
+      {
+        "title": "Do not use autonomous transactions",
+        "points": [
+          "The error goes away, but the logic breaks",
+          "The trigger cannot see the uncommitted change",
+          "A full department passes the check",
+          "Keep autonomous triggers for audit logging"
+        ]
+      }
+    ]
+  }
+}
