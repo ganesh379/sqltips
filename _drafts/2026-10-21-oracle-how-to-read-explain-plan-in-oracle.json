@@ -1,0 +1,784 @@
+{
+ "schemaVersion": 1,
+ "title": "How to Read Explain Plan in Oracle (With Examples)",
+ "slug": "how-to-read-explain-plan-in-oracle",
+ "category": "plsql",
+ "description": "Learn how to read an explain plan in Oracle: execution order, Rows and Cost, access vs filter predicates, and real row counts with DBMS_XPLAN.",
+ "focusKeyword": "how to read explain plan in oracle",
+ "tags": [
+  "oracle",
+  "explain-plan",
+  "performance",
+  "sql-tuning",
+  "dbms-xplan"
+ ],
+ "related": [
+  "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/",
+  "/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/",
+  "/posts/sql/sql-query-design-patterns-writing-efficient-queries/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle 19c SQL Tuning Guide: Explaining and Displaying Execution Plans",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/tgsql/generating-and-displaying-execution-plans.html"
+  },
+  {
+   "title": "Oracle 19c SQL Tuning Guide: SQL Processing (row source generation and execution)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/tgsql/sql-processing.html"
+  },
+  {
+   "title": "Oracle 19c SQL Tuning Guide: Query Optimizer Concepts (cost)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/tgsql/query-optimizer-concepts.html"
+  },
+  {
+   "title": "Oracle 18c SQL Tuning Guide: Reading Execution Plans (PLAN_TABLE columns, access/filter predicates)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/18/tgsql/reading-execution-plans.html"
+  },
+  {
+   "title": "Oracle 19c PL/SQL Packages and Types Reference: DBMS_XPLAN",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_XPLAN.html"
+  }
+ ],
+ "reviewNotes": "All examples were written from the Oracle 19c docs and have NOT been run. Every plan output block is illustrative: please run the setup script on 19c or 23ai and paste in the real plans (Rows, Bytes, Cost, Buffers, the SYS_C index name and the Time/A-Time columns will differ, and the join may come out as NESTED LOOPS rather than HASH JOIN; if it does, update the walkthrough, the LinkedIn post and slide 4). I left out the 'Plan hash value' lines on purpose so I wouldn't invent numbers. Taken from community sources rather than the Oracle docs, so please check: the SERVEROUTPUT ON pitfall with DISPLAY_CURSOR(), the A-Time/Buffers/Starts column definitions (DBMS_XPLAN docs list the format keywords but don't define the columns), F10 as the SQL Developer shortcut, and DISPLAY_WORKLOAD_REPOSITORY being available from 19c (Diagnostics Pack licence).",
+ "generatedAt": "2026-10-21T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To read an explain plan in Oracle, read it as a tree, not as a list. Find the operations that are indented furthest to the right. Those run first and fetch the data. Their rows flow up to the parent operation, one level to the left, until they reach line 0, the <code class=\"inline-code\">SELECT STATEMENT</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "That one rule explains most plans. In this tutorial you will generate a plan with <code class=\"inline-code\">EXPLAIN PLAN FOR</code> and <code class=\"inline-code\">DBMS_XPLAN.DISPLAY</code>, read every column, understand the Predicate Information section, and then compare the optimizer's guesses with real row counts using <code class=\"inline-code\">DBMS_XPLAN.DISPLAY_CURSOR</code>. The examples follow the Oracle 19c documentation and also apply to 21c and 23ai."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What an explain plan is",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When you send a query, the optimizer decides how to run it. It picks an access path for each table (full scan, index scan), a join order and a join method. That set of steps is the <b>execution plan</b>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">EXPLAIN PLAN</code> asks the optimizer to describe the plan it <i>would</i> use, without running the query. It writes the steps into a table called <code class=\"inline-code\">PLAN_TABLE</code>. <code class=\"inline-code\">DBMS_XPLAN.DISPLAY</code> then formats those rows into the familiar text grid."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This difference matters. An explain plan is a prediction. The plan the database actually used is stored with the cursor in the shared pool, and you read that with <code class=\"inline-code\">DBMS_XPLAN.DISPLAY_CURSOR</code>. The Oracle docs warn that the two can differ, for example when the query uses bind variables, when a different user runs it, or when session parameters differ."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Term",
+      "What it shows",
+      "How you get it"
+     ],
+     [
+      "Explain plan",
+      "The plan the optimizer expects to use. Estimates only.",
+      "EXPLAIN PLAN FOR + DBMS_XPLAN.DISPLAY"
+     ],
+     [
+      "Execution plan (actual)",
+      "The plan used by a cursor that really ran. Can include actual row counts.",
+      "DBMS_XPLAN.DISPLAY_CURSOR"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create two small tables so you can follow along. Then gather statistics, because the optimizer relies on them to estimate row counts."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "CREATE TABLE customers (\n  customer_id   NUMBER PRIMARY KEY,\n  customer_name VARCHAR2(50) NOT NULL,\n  city          VARCHAR2(30) NOT NULL\n);\n\nCREATE TABLE orders (\n  order_id     NUMBER PRIMARY KEY,\n  customer_id  NUMBER NOT NULL REFERENCES customers,\n  order_date   DATE NOT NULL,\n  amount       NUMBER(10,2) NOT NULL,\n  status       VARCHAR2(10) NOT NULL\n);\n\nCREATE INDEX orders_cust_ix ON orders (customer_id);\n\nINSERT INTO customers VALUES (1, 'Asha Rao',     'Bengaluru');\nINSERT INTO customers VALUES (2, 'Vikram Singh', 'Delhi');\nINSERT INTO customers VALUES (3, 'Meera Iyer',   'Chennai');\nINSERT INTO customers VALUES (4, 'Rahul Shah',   'Mumbai');\n\nINSERT INTO orders VALUES (101, 1, DATE '2026-09-01', 2500,  'SHIPPED');\nINSERT INTO orders VALUES (102, 2, DATE '2026-09-03', 1200,  'PENDING');\nINSERT INTO orders VALUES (103, 1, DATE '2026-09-05', 800,   'SHIPPED');\nINSERT INTO orders VALUES (104, 3, DATE '2026-09-07', 4300,  'CANCELLED');\nINSERT INTO orders VALUES (105, 4, DATE '2026-09-10', 1500,  'PENDING');\nINSERT INTO orders VALUES (106, 2, DATE '2026-09-12', 3100,  'SHIPPED');\nCOMMIT;\n\nBEGIN\n  DBMS_STATS.GATHER_TABLE_STATS(USER, 'CUSTOMERS');\n  DBMS_STATS.GATHER_TABLE_STATS(USER, 'ORDERS');\nEND;\n/",
+    "caption": "Tables, sample rows and statistics"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "The numbers in the plans below (Rows, Bytes, Cost) depend on your data, statistics and version. Your output will not match digit for digit. Focus on the shape of the plan and the steps."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: generate and display a plan",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Explain a simple query",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "EXPLAIN PLAN FOR\n  SELECT order_id, amount\n    FROM orders\n   WHERE order_id = 103;\n\nSELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);",
+    "caption": "Explain the query, then format the plan"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">EXPLAIN PLAN</code> does not run the query, so it returns instantly even for a query that would take an hour. The second statement reads the most recent plan from <code class=\"inline-code\">PLAN_TABLE</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-------------------------------------------------------------------------------\n| Id | Operation                   | Name         | Rows | Bytes | Cost (%CPU)|\n-------------------------------------------------------------------------------\n|  0 | SELECT STATEMENT            |              |    1 |     8 |     1   (0)|\n|  1 |  TABLE ACCESS BY INDEX ROWID| ORDERS       |    1 |     8 |     1   (0)|\n|* 2 |   INDEX UNIQUE SCAN         | SYS_C0012345 |    1 |       |     0   (0)|\n-------------------------------------------------------------------------------\n\nPredicate Information (identified by operation id):\n-------------------------------------------------------------------------------\n\n   2 - access(\"ORDER_ID\"=103)",
+    "caption": "Output (expected output, Time column trimmed for width)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it from the most indented line. Step 2 looks up the value 103 in the primary key index and gets back a rowid. Step 1 uses that rowid to fetch the row from the <code class=\"inline-code\">ORDERS</code> table. Step 0 returns the row to you. The index name is system generated, so yours will have a different <code class=\"inline-code\">SYS_C</code> number."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The real output also starts with a line like <code class=\"inline-code\">Plan hash value: ...</code>. That number identifies the plan shape. If the hash value changes between two runs, the plan changed."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What each column means",
+    "level": 3
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Column",
+      "Meaning"
+     ],
+     [
+      "Id",
+      "Step number. The asterisk (*) means this step has a predicate listed under Predicate Information."
+     ],
+     [
+      "Operation",
+      "What the step does: TABLE ACCESS FULL, INDEX RANGE SCAN, HASH JOIN, SORT ORDER BY and so on. The indentation shows the parent and child steps."
+     ],
+     [
+      "Name",
+      "The table or index the step works on."
+     ],
+     [
+      "Rows",
+      "The optimizer's estimate of how many rows this step returns (its cardinality). It is a guess based on statistics."
+     ],
+     [
+      "Bytes",
+      "Estimated size of those rows."
+     ],
+     [
+      "Cost (%CPU)",
+      "An internal unit of estimated work (I/O, CPU, memory). Line 0 shows the cost of the whole plan. The value in brackets is the CPU share."
+     ],
+     [
+      "Time",
+      "The optimizer's estimated elapsed time for the step. It is not a measurement."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "Cost is useful for comparing plans for the same query. The Oracle docs state that you cannot compare the costs of different queries with one another, and cost does not equal time. A lower cost on a different query tells you nothing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: read the execution order of a join",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Single-table plans are easy. Joins are where people get lost, because the Id numbers are <b>not</b> the order of execution. Here is a join with a filter and a sort."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "EXPLAIN PLAN FOR\n  SELECT c.customer_name, o.order_id, o.amount\n    FROM customers c\n    JOIN orders o ON o.customer_id = c.customer_id\n   WHERE c.city = 'Delhi'\n   ORDER BY o.amount DESC;\n\nSELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);",
+    "caption": "A join with a filter and ORDER BY"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "--------------------------------------------------------------------\n| Id | Operation           | Name      | Rows | Bytes | Cost (%CPU)|\n--------------------------------------------------------------------\n|  0 | SELECT STATEMENT    |           |    2 |    60 |     7  (15)|\n|  1 |  SORT ORDER BY      |           |    2 |    60 |     7  (15)|\n|* 2 |   HASH JOIN         |           |    2 |    60 |     6   (0)|\n|* 3 |    TABLE ACCESS FULL| CUSTOMERS |    1 |    20 |     3   (0)|\n|  4 |    TABLE ACCESS FULL| ORDERS    |    6 |    60 |     3   (0)|\n--------------------------------------------------------------------\n\nPredicate Information (identified by operation id):\n--------------------------------------------------------------------\n\n   2 - access(\"O\".\"CUSTOMER_ID\"=\"C\".\"CUSTOMER_ID\")\n   3 - filter(\"C\".\"CITY\"='Delhi')",
+    "caption": "Output (expected output, Time column trimmed for width)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With tables this small, Oracle may choose <code class=\"inline-code\">NESTED LOOPS</code> with the <code class=\"inline-code\">ORDERS_CUST_IX</code> index instead of a hash join. Both plans are read the same way."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Walk the tree from the leaves up",
+    "level": 3
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "<b>Step 3</b> runs first. It is a leaf (it has no children) and it is the first child of the hash join. It scans <code class=\"inline-code\">CUSTOMERS</code> and keeps only rows where city is Delhi. The optimizer expects 1 row.",
+      "items": []
+     },
+     {
+      "content": "The hash join (step 2) builds an in-memory hash table on <code class=\"inline-code\">CUSTOMER_ID</code> from those rows. The first child of a hash join is the <b>build</b> input.",
+      "items": []
+     },
+     {
+      "content": "<b>Step 4</b> scans <code class=\"inline-code\">ORDERS</code>. Each order row probes the hash table. This second child is the <b>probe</b> input.",
+      "items": []
+     },
+     {
+      "content": "<b>Step 2</b> outputs the matching rows: Delhi customers with their orders.",
+      "items": []
+     },
+     {
+      "content": "<b>Step 1</b> sorts the joined rows by amount, descending.",
+      "items": []
+     },
+     {
+      "content": "<b>Step 0</b> returns the sorted rows to the client.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "So the order of work is 3, 4, 2, 1, 0. Here are the rules that got us there:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "A step's children are the lines directly below it with one more level of indentation.",
+      "items": []
+     },
+     {
+      "content": "A child must produce rows before its parent can use them, so start at the leaves.",
+      "items": []
+     },
+     {
+      "content": "When two children share a parent, the upper one (the first child) is processed first.",
+      "items": []
+     },
+     {
+      "content": "Operations that need all their input before returning anything, such as SORT ORDER BY or the build side of HASH JOIN, finish their input completely. Others, such as NESTED LOOPS, pass rows up one at a time.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The Oracle 19c SQL Tuning Guide walks through its own example the same way: the access paths at the bottom of the tree retrieve the data, and the join steps above them accept those row sources and return the result."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: understand access and filter predicates",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The Predicate Information section is the most useful part of the plan, and many people skip it. It tells you <i>how</i> each condition in your WHERE clause is applied."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Predicate type",
+      "What it means",
+      "Example"
+     ],
+     [
+      "access",
+      "Used to locate rows, for example the start and stop keys of an index scan, or the join key of a hash join. Only matching rows are read.",
+      "access(\"ORDER_ID\"=103)"
+     ],
+     [
+      "filter",
+      "Applied to rows after they are read. Rows are fetched and then thrown away if they fail the test.",
+      "filter(\"C\".\"CITY\"='Delhi')"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In the join example, the city condition is a <b>filter</b> on a full table scan. Oracle reads every customer row and discards the ones not in Delhi. On four rows that is fine. On four million rows it may not be."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Look at this query on the status column, which has no index:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "EXPLAIN PLAN FOR\n  SELECT order_id, amount\n    FROM orders\n   WHERE status = 'PENDING';\n\nSELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);",
+    "caption": "Filter on a column with no index"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "---------------------------------------------------------------\n| Id | Operation         | Name   | Rows | Bytes | Cost (%CPU)|\n---------------------------------------------------------------\n|  0 | SELECT STATEMENT  |        |    2 |    32 |     3   (0)|\n|* 1 |  TABLE ACCESS FULL| ORDERS |    2 |    32 |     3   (0)|\n---------------------------------------------------------------\n\nPredicate Information (identified by operation id):\n---------------------------------------------------------------\n\n   1 - filter(\"STATUS\"='PENDING')",
+    "caption": "Output (expected output, Time column trimmed for width)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A <code class=\"inline-code\">filter</code> on <code class=\"inline-code\">TABLE ACCESS FULL</code> means every row was read to find two. If this table were large and the condition very selective, an index on <code class=\"inline-code\">status</code> could turn the filter into an access predicate. If most rows are PENDING, the full scan is the right choice, and an index would not help."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "Watch the Predicate Information for functions you did not write, such as <code class=\"inline-code\">TO_NUMBER(\"COL\")=10</code> or <code class=\"inline-code\">INTERNAL_FUNCTION(...)</code>. They often mean an implicit data type conversion, which can stop Oracle from using an index on that column."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: see the actual plan with real row counts",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An explain plan only shows estimates. To find out where the optimizer guessed wrong, run the query and compare estimated rows with actual rows. Oracle collects these runtime statistics when you add the <code class=\"inline-code\">GATHER_PLAN_STATISTICS</code> hint or set <code class=\"inline-code\">STATISTICS_LEVEL</code> to <code class=\"inline-code\">ALL</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Run the query with the hint",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT /*+ GATHER_PLAN_STATISTICS */\n       c.customer_name, o.order_id, o.amount\n  FROM customers c\n  JOIN orders o ON o.customer_id = c.customer_id\n WHERE c.city = 'Delhi'\n ORDER BY o.amount DESC;",
+    "caption": "Run the real query once"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Display the plan of the last statement",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT *\n  FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(format => 'ALLSTATS LAST'));",
+    "caption": "Plan of the last cursor run by this session"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With no <code class=\"inline-code\">sql_id</code>, <code class=\"inline-code\">DISPLAY_CURSOR</code> shows the last cursor executed by your session. <code class=\"inline-code\">ALLSTATS</code> adds I/O and memory statistics, and <code class=\"inline-code\">LAST</code> limits them to the most recent execution instead of the total of all executions."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-----------------------------------------------------------------------------\n| Id | Operation           | Name      | Starts | E-Rows | A-Rows | Buffers |\n-----------------------------------------------------------------------------\n|  0 | SELECT STATEMENT    |           |      1 |        |      2 |      14 |\n|  1 |  SORT ORDER BY      |           |      1 |      2 |      2 |      14 |\n|* 2 |   HASH JOIN         |           |      1 |      2 |      2 |      14 |\n|* 3 |    TABLE ACCESS FULL| CUSTOMERS |      1 |      1 |      1 |       7 |\n|  4 |    TABLE ACCESS FULL| ORDERS    |      1 |      6 |      6 |       7 |\n-----------------------------------------------------------------------------",
+    "caption": "Output (expected output, A-Time and memory columns trimmed for width)"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Column",
+      "Meaning"
+     ],
+     [
+      "Starts",
+      "How many times this step was executed. Steps under NESTED LOOPS often start many times."
+     ],
+     [
+      "E-Rows",
+      "Estimated rows per start (the same number as Rows in an explain plan)."
+     ],
+     [
+      "A-Rows",
+      "Actual rows returned, summed over all starts."
+     ],
+     [
+      "A-Time",
+      "Actual elapsed time, including the time of the child steps."
+     ],
+     [
+      "Buffers",
+      "Logical reads (blocks read from the buffer cache) for this step and its children."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here the estimates match reality, which is what you want. When tuning a slow query, scan down for the first step where <b>E-Rows multiplied by Starts</b> is far from <b>A-Rows</b>, say 10 estimated against 200,000 actual. That bad estimate usually explains a poor join method or join order above it. Common causes are stale statistics, correlated columns and skewed data."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To look at a statement that ran in another session, find its <code class=\"inline-code\">SQL_ID</code> in <code class=\"inline-code\">V$SQL</code> and pass it in: <code class=\"inline-code\">DBMS_XPLAN.DISPLAY_CURSOR('your_sql_id', NULL, 'ALLSTATS LAST')</code>. Passing NULL as the child number shows all child cursors. You need SELECT access on <code class=\"inline-code\">V$SQL</code>, <code class=\"inline-code\">V$SQL_PLAN</code> and <code class=\"inline-code\">V$SQL_PLAN_STATISTICS_ALL</code>, which the <code class=\"inline-code\">SELECT_CATALOG_ROLE</code> role includes."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes when reading explain plans",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Reading the plan top to bottom.</b> Step 1 is not the first thing that happens. Start at the most indented leaf and work up.",
+      "items": []
+     },
+     {
+      "content": "<b>Comparing cost across different queries.</b> Cost only ranks alternative plans for the same statement. Use elapsed time and Buffers from DISPLAY_CURSOR to compare two rewrites of a query.",
+      "items": []
+     },
+     {
+      "content": "<b>Treating every full table scan as a problem.</b> Reading a whole small table, or most of a big one, is often cheaper than thousands of index lookups. Judge it by the rows returned compared with rows in the table.",
+      "items": []
+     },
+     {
+      "content": "<b>Trusting EXPLAIN PLAN for queries with bind variables.</b> EXPLAIN PLAN does not peek at bind values, so the real plan can differ. Check the cursor plan with DISPLAY_CURSOR.",
+      "items": []
+     },
+     {
+      "content": "<b>Getting the wrong statement from DISPLAY_CURSOR().</b> In SQL*Plus or SQL Developer with SERVEROUTPUT ON, the tool runs an extra call after your query to fetch DBMS_OUTPUT, so the \"last cursor\" is not your query. Run SET SERVEROUTPUT OFF first, or pass the SQL_ID.",
+      "items": []
+     },
+     {
+      "content": "<b>Seeing E-Rows but no A-Rows.</b> You asked for ALLSTATS without the GATHER_PLAN_STATISTICS hint or STATISTICS_LEVEL = ALL, so no runtime statistics were collected.",
+      "items": []
+     },
+     {
+      "content": "<b>Mixing plans in PLAN_TABLE.</b> If you explain several statements, tag each with SET STATEMENT_ID = 'name' and pass that ID to DBMS_XPLAN.DISPLAY. Oracle advises deleting existing rows for a statement ID before reusing it.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Tips for faster plan reading",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Gather statistics after large data loads. Most bad plans start with bad estimates.",
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">format => 'ALL'</code> in DBMS_XPLAN.DISPLAY when you need the column projection and query block names. Use <code class=\"inline-code\">'BASIC'</code> when you only want the shape.",
+      "items": []
+     },
+     {
+      "content": "Read the Note section at the bottom of the output. It tells you when dynamic sampling, an adaptive plan or a SQL plan baseline was used.",
+      "items": []
+     },
+     {
+      "content": "In a big plan, look first at the steps with the highest A-Rows or Buffers. That is where the time goes.",
+      "items": []
+     },
+     {
+      "content": "Fix the earliest bad estimate in the tree first. Errors below it multiply as rows flow upward.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I read an explain plan in Oracle SQL Developer?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Press F10 (or click the Explain Plan button) with the query in the worksheet. SQL Developer shows the same operations as a tree you can expand. The reading rules are the same: start at the deepest node and move up to its parent. Running the DBMS_XPLAN queries in the worksheet gives you the text version shown in this article."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between explain plan and execution plan in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An explain plan is the optimizer's prediction, produced without running the query. An execution plan is what the database actually used when the statement ran, stored with the cursor. Use DISPLAY_CURSOR to see the actual plan and, with plan statistics, actual row counts."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is cardinality vs cost in an Oracle explain plan?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Cardinality (the Rows or E-Rows column) is the estimated number of rows a step returns. Cost is the estimated amount of work for the step and everything below it. Cost is calculated from cardinality, so a wrong cardinality leads to a wrong cost and often a poor plan."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I get the explain plan for a SQL_ID?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the cursor is still in the shared pool, run <code class=\"inline-code\">SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR('your_sql_id'))</code>. If it has aged out and you are licensed for the Diagnostics Pack, <code class=\"inline-code\">DBMS_XPLAN.DISPLAY_WORKLOAD_REPOSITORY</code> (19c and later) or the older <code class=\"inline-code\">DISPLAY_AWR</code> can show plans stored in AWR."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does EXPLAIN PLAN execute the query?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. It only parses the statement and writes the predicted plan into PLAN_TABLE. It is safe to use on a DELETE or UPDATE. Note that EXPLAIN PLAN itself is a DML statement on PLAN_TABLE, and it does not commit."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Generate a predicted plan with EXPLAIN PLAN FOR and show it with DBMS_XPLAN.DISPLAY.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Read the plan as a tree: the most indented leaf runs first, and the first child of a parent before the second.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Rows is an estimate and Cost is only for comparing plans of the same query.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Check Predicate Information: access predicates locate rows, filter predicates discard rows after reading them.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use GATHER_PLAN_STATISTICS with DISPLAY_CURSOR('ALLSTATS LAST') to compare E-Rows with A-Rows.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Fix the lowest step where estimates and actual rows differ most, often by refreshing statistics.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Reading an Oracle explain plan from the top down gives you the wrong execution order.\n\nHow to read one correctly:\n\n1. Start at the line indented furthest right. Leaf steps fetch the data and run first.\n2. Rows flow up to the parent, one indent to the left, until they reach line 0.\n3. When two steps share a parent, the upper one runs first. For a HASH JOIN, that is the build input.\n4. Check Predicate Information. \"access\" means the condition was used to locate rows (index keys, join keys). \"filter\" means rows were read and then thrown away.\n5. Cost only compares plans for the same query. Never compare the cost of two different queries.\n\nThe best trick: add /*+ GATHER_PLAN_STATISTICS */ to the query, run it, then:\nSELECT * FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(format => 'ALLSTATS LAST'));\n\nNow you see E-Rows (the optimizer's guess) next to A-Rows (what really happened). The first step where those two are far apart is usually the reason your query is slow.\n\nWhich column do you look at first when a query is slow: Cost, Rows or Buffers?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #SQLInterview",
+  "slides": [
+   {
+    "title": "How to Read an Oracle Explain Plan",
+    "body": "Execution order, predicates and real row counts in 6 slides"
+   },
+   {
+    "title": "Get the plan",
+    "points": [
+     "EXPLAIN PLAN predicts the plan without running the query",
+     "DBMS_XPLAN.DISPLAY formats PLAN_TABLE as text"
+    ],
+    "code": "EXPLAIN PLAN FOR\n  SELECT order_id, amount\n    FROM orders\n   WHERE status = 'PENDING';\n\nSELECT *\n  FROM TABLE(DBMS_XPLAN.DISPLAY);",
+    "lang": "sql"
+   },
+   {
+    "title": "Read it as a tree, not a list",
+    "points": [
+     "The most indented line runs first",
+     "Child rows flow up to the parent, one indent left",
+     "Of two children, the upper one runs first",
+     "Id numbers are not the execution order"
+    ]
+   },
+   {
+    "title": "Example: order is 3, 4, 2, 1, 0",
+    "points": [
+     "0 SELECT STATEMENT, 1 SORT ORDER BY, 2 HASH JOIN",
+     "3 full scan CUSTOMERS builds the hash table",
+     "4 full scan ORDERS probes it, 2 joins the rows",
+     "1 sorts the result, 0 returns it to you"
+    ]
+   },
+   {
+    "title": "access vs filter",
+    "points": [
+     "access: used to locate rows, e.g. index start and stop keys",
+     "filter: rows are read first, then discarded if they fail",
+     "filter on a big full scan is a tuning hint"
+    ]
+   },
+   {
+    "title": "Compare guesses with reality",
+    "code": "SELECT /*+ GATHER_PLAN_STATISTICS */\n  COUNT(*) FROM orders\n WHERE status = 'PENDING';\n\nSELECT * FROM TABLE(\n  DBMS_XPLAN.DISPLAY_CURSOR(\n    format => 'ALLSTATS LAST'));",
+    "lang": "sql",
+    "body": "E-Rows is the estimate, A-Rows is actual. A big gap points to the problem."
+   }
+  ]
+ }
+}

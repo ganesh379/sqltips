@@ -10,3 +10,4 @@
 - 2026-10-19 [PostgreSQL] postgresql architecture explained -> _drafts/2026-10-19-postgresql-postgresql-dba-part-1-dba-role-and-architecture.json
 - 2026-10-20 [Oracle] mutating table error in oracle -> _drafts/2026-10-20-oracle-mutating-table-error-in-oracle.json
 - 2026-10-20 [PostgreSQL] install postgresql 18 on ubuntu -> _drafts/2026-10-20-postgresql-postgresql-dba-part-2-install-postgresql-18-ubuntu.json
+- 2026-10-21 [Oracle] how to read explain plan in oracle -> _drafts/2026-10-21-oracle-how-to-read-explain-plan-in-oracle.json
