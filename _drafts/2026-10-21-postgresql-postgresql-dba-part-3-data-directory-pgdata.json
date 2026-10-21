@@ -1,0 +1,1742 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 3: The Data Directory (PGDATA) Explained",
+ "slug": "postgresql-dba-part-3-data-directory-pgdata",
+ "category": "postgresql",
+ "description": "What every file and folder in the PostgreSQL 18 data directory on Ubuntu does, how tables map to files, and how to move PGDATA to a new disk safely.",
+ "focusKeyword": "postgresql data directory",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "pgdata",
+  "storage",
+  "dba"
+ ],
+ "related": [
+  "/posts/postgresql/mastering-postgresql-architecture-6-powerful-steps-to-optimize-performance-scalability/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 66.1 Database File Layout",
+   "url": "https://www.postgresql.org/docs/current/storage-file-layout.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 18.2 Creating a Database Cluster (permissions, secondary file systems)",
+   "url": "https://www.postgresql.org/docs/current/creating-cluster.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.2 File Locations (data_directory, config_file, hba_file, ident_file)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-file-locations.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 18.3 Starting the Database Server (postmaster.pid)",
+   "url": "https://www.postgresql.org/docs/current/server-start.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 9.28 System Administration Functions (pg_relation_filepath, pg_filenode_relation, pg_ls_waldir, pg_ls_tmpdir, size functions)",
+   "url": "https://www.postgresql.org/docs/current/functions-admin.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 28.6 WAL Internals (segment files, pg_control)",
+   "url": "https://www.postgresql.org/docs/current/wal-internals.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.5 Write Ahead Log (summarize_wal, wal_summary_keep_time)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-wal.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 25.3 Continuous Archiving (pg_wal/summaries, files to omit from a base backup)",
+   "url": "https://www.postgresql.org/docs/current/continuous-archiving.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.1 Setting Parameters (postgresql.auto.conf overrides postgresql.conf)",
+   "url": "https://www.postgresql.org/docs/current/config-setting.html"
+  },
+  {
+   "title": "PostgreSQL 10 release notes (pg_xlog renamed to pg_wal, pg_clog to pg_xact)",
+   "url": "https://www.postgresql.org/docs/release/10.0/"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_controldata",
+   "url": "https://www.postgresql.org/docs/current/app-pgcontroldata.html"
+  }
+ ],
+ "reviewNotes": "Series part 3. Publish Part 2 first (postgresql-dba-part-2-install-postgresql-18-ubuntu is not live yet, so it is named without a link; Part 1 is not live either). Followed the PostgreSQL 18 documentation (docs/current). IMPORTANT: PostgreSQL 18 could NOT be installed in this sandbox: the PGDG repository was reachable, but archive.ubuntu.com/security.ubuntu.com are blocked, so the postgresql-18 dependency liburing2 was not installable, and building liburing from source was not permitted this run. Following the routine's fallback, every command was run on the preinstalled Ubuntu package PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on Ubuntu 24.04.5 LTS. Outputs captioned 'Output' contain no version-specific values and are real. Outputs captioned '(expected output)' are the real PostgreSQL 16 outputs with paths changed from 16 to 18, plus these 18-specific edits the editor should confirm on a real 18 server: (1) pg_wal listing adds the 'summaries' folder (created by initdb since PostgreSQL 17; documented in continuous-archiving.html as pg_wal/summaries); (2) pg_controldata shows 'Data page checksum version: 1' because checksums are on by default in 18 (16 showed 0); the grep keeps only lines whose format is unchanged; (3) the PGDATA top-level listing is identical to Table 66.1 of the 18 docs. The sandbox has no systemd, so the move procedure was tested with pg_ctlcluster stop/start; the article uses systemctl stop/start postgresql@18-main as in Part 2. rsync is not installed in the sandbox, so the copy uses cp -a (tested). Permission and lock-file error messages are real (from 16; same wording in 18 source). OIDs/filenodes will differ for readers; the article says so.",
+ "generatedAt": "2026-10-21T13:10:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 3 of the PostgreSQL DBA series on SQL Tips. The PostgreSQL data directory, usually called <b>PGDATA</b>, is the one folder where a cluster keeps everything it stores: every table, every index, the write-ahead log and the control file. On Ubuntu with PostgreSQL 18 it is <code class=\"inline-code\">/var/lib/postgresql/18/main</code>, while the configuration files live separately in <code class=\"inline-code\">/etc/postgresql/18/main</code>. By the end of this part you will be able to find the data directory, explain what every file and folder in it does, map any table to the file behind it, measure what is using the space, and move the data directory to another disk safely."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 2 we installed PostgreSQL 18 from the official PGDG repository and learned to start, stop and reload the <b>18 main</b> cluster. Part 1 gave a quick look inside the data directory. This part opens every drawer and explains what is in it, because a DBA who knows these files can answer questions like \"why is the disk full?\" and \"which table is this file?\" in minutes."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "What PGDATA is, who owns it and why its permissions must be 0700",
+      "items": []
+     },
+     {
+      "content": "What each file and folder in <code class=\"inline-code\">/var/lib/postgresql/18/main</code> is for, and which ones you must never touch",
+      "items": []
+     },
+     {
+      "content": "How databases map to folders under <code class=\"inline-code\">base</code> and tables map to files (filenodes, forks and 1GB segments)",
+      "items": []
+     },
+     {
+      "content": "How to read <code class=\"inline-code\">postmaster.pid</code>, <code class=\"inline-code\">postgresql.auto.conf</code> and the control file with <code class=\"inline-code\">pg_controldata</code>",
+      "items": []
+     },
+     {
+      "content": "How to measure disk usage and spot temporary files",
+      "items": []
+     },
+     {
+      "content": "How to move the data directory to a new disk on Ubuntu, step by step",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 and 2 of this series: you know what the postmaster and backends are, and you have a running PostgreSQL 18 cluster called 18 main.",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu Server LTS machine with PostgreSQL 18 installed from the PGDG repository, as set up in Part 2.",
+      "items": []
+     },
+     {
+      "content": "A user account that can run <code class=\"inline-code\">sudo</code>. Most commands here read files owned by the postgres operating system user, so they need <code class=\"inline-code\">sudo</code> or <code class=\"inline-code\">sudo -u postgres</code>.",
+      "items": []
+     },
+     {
+      "content": "For the last section (moving the data directory), a second disk or at least a second folder such as <code class=\"inline-code\">/srv/pgdata</code>. Practise that section on a test server first.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A PostgreSQL <b>cluster</b> is one running server and the set of databases it manages. On disk, a cluster is exactly one directory: the <b>data directory</b>. The name PGDATA comes from the environment variable that PostgreSQL tools use to find it. Think of the data directory as the server's filing cabinet: each drawer (subfolder) holds one kind of record, and only one clerk (the postgres user) has the key."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The program <code class=\"inline-code\">initdb</code> creates and fills the data directory once, when the cluster is created. On Ubuntu, <code class=\"inline-code\">pg_createcluster</code> ran <code class=\"inline-code\">initdb</code> for you during installation. From then on, only the PostgreSQL server should write to these files. You read them to understand the server; you change them only through SQL and PostgreSQL tools."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Ubuntu (through the postgresql-common package) splits each cluster into two places. Core PostgreSQL keeps its configuration files inside the data directory by default, but Ubuntu moves the hand-edited ones to <code class=\"inline-code\">/etc</code> so they are easy to find and back up:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Path",
+      "What lives there"
+     ],
+     [
+      "/etc/postgresql/18/main/",
+      "Hand-edited config: postgresql.conf, pg_hba.conf, pg_ident.conf, plus Ubuntu's start.conf, pg_ctl.conf, environment and the conf.d folder"
+     ],
+     [
+      "/var/lib/postgresql/18/main/",
+      "The data directory (PGDATA): data files, WAL, control file, postgresql.auto.conf"
+     ],
+     [
+      "/usr/lib/postgresql/18/bin/",
+      "The programs: postgres, initdb, pg_ctl, pg_controldata and others"
+     ],
+     [
+      "/var/log/postgresql/postgresql-18-main.log",
+      "The server log"
+     ],
+     [
+      "/var/run/postgresql/",
+      "The Unix socket and Ubuntu's extra PID file, 18-main.pid"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The server finds its data directory through the <code class=\"inline-code\">data_directory</code> setting in <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code>. This setting can only be set at server start, so changing it needs a restart, not a reload."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Security is simple and strict. The data directory holds all your data, so <code class=\"inline-code\">initdb</code> removes access for everyone except the postgres user. The server checks this at every start: the directory must have mode 0700 (owner only) or 0750 (owner plus read-only group access), or it refuses to start."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find and inspect the data directory",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Find the data directory",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your sudo user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "pg_lsclusters",
+    "caption": "List clusters with their data directory"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_lsclusters</code> is Ubuntu's cluster list from Part 2. The <b>Data directory</b> column is PGDATA for each cluster. Now ask the running server itself, which is the most reliable answer because it shows what the server actually uses:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -X -c \"SELECT name, setting\n  FROM pg_settings\n WHERE name IN ('data_directory','config_file','hba_file','ident_file','external_pid_file')\n ORDER BY name;\"",
+    "caption": "Ask PostgreSQL where its files are"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "sudo -u postgres",
+      "Runs psql as the postgres operating system user, which maps to the postgres database superuser (peer authentication, Part 6)"
+     ],
+     [
+      "-X",
+      "Does not read the ~/.psqlrc startup file, so the output is not changed by personal settings"
+     ],
+     [
+      "-c",
+      "Runs one command and exits"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "       name        |                 setting\n-------------------+-----------------------------------------\n config_file       | /etc/postgresql/18/main/postgresql.conf\n data_directory    | /var/lib/postgresql/18/main\n external_pid_file | /var/run/postgresql/18-main.pid\n hba_file          | /etc/postgresql/18/main/pg_hba.conf\n ident_file        | /etc/postgresql/18/main/pg_ident.conf\n(5 rows)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The output shows the Ubuntu split: three config files in <code class=\"inline-code\">/etc</code>, the data in <code class=\"inline-code\">/var/lib</code>, and an extra PID file in <code class=\"inline-code\">/var/run/postgresql</code> that Ubuntu's tools use."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the <code class=\"inline-code\">data_directory</code> value matches the Data directory column of <code class=\"inline-code\">pg_lsclusters</code>. You can also run <code class=\"inline-code\">SHOW data_directory;</code> inside psql for just that one value."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Check ownership and permissions",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your sudo user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo stat -c '%A %a %U:%G %n' /var/lib/postgresql/18/main",
+    "caption": "Show mode, owner and group of PGDATA"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Format",
+      "What it prints"
+     ],
+     [
+      "%A",
+      "Permissions in human-readable form (drwx------)"
+     ],
+     [
+      "%a",
+      "Permissions as an octal number (700)"
+     ],
+     [
+      "%U:%G",
+      "Owner user and group"
+     ],
+     [
+      "%n",
+      "The file name"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "drwx------ 700 postgres:postgres /var/lib/postgresql/18/main",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Mode 700 means only the owner, postgres, can read, write or enter the folder. Files inside are 0600. If your cluster was created with group access (<code class=\"inline-code\">initdb --allow-group-access</code>), you would see 750 for folders and 0640 for files; group access is read-only and lets a backup user in the same group read the files."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the line starts with <code class=\"inline-code\">drwx------</code> (or <code class=\"inline-code\">drwxr-x---</code> for group access) and the owner is <code class=\"inline-code\">postgres:postgres</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: List what is inside",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your sudo user. The folder is closed to other users, so <code class=\"inline-code\">ls</code> needs sudo."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo ls -l /var/lib/postgresql/18/main",
+    "caption": "List the top level of PGDATA"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "total 92\n-rw------- 1 postgres postgres    3 Oct 20 14:25 PG_VERSION\ndrwx------ 5 postgres postgres 4096 Oct 20 14:25 base\ndrwx------ 2 postgres postgres 4096 Oct 21 12:46 global\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 pg_commit_ts\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 pg_dynshmem\ndrwx------ 4 postgres postgres 4096 Oct 20 14:25 pg_logical\ndrwx------ 4 postgres postgres 4096 Oct 20 14:25 pg_multixact\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 pg_notify\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 pg_replslot\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 pg_serial\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 pg_snapshots\ndrwx------ 2 postgres postgres 4096 Oct 21 12:46 pg_stat\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 pg_stat_tmp\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 pg_subtrans\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 pg_tblspc\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 pg_twophase\ndrwx------ 3 postgres postgres 4096 Oct 20 14:25 pg_wal\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 pg_xact\n-rw------- 1 postgres postgres   88 Oct 20 14:25 postgresql.auto.conf\n-rw------- 1 postgres postgres  130 Oct 21 12:46 postmaster.opts\n-rw------- 1 postgres postgres  107 Oct 21 12:46 postmaster.pid",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice what is <i>not</i> here: <code class=\"inline-code\">postgresql.conf</code> and <code class=\"inline-code\">pg_hba.conf</code>. On Ubuntu they are in <code class=\"inline-code\">/etc/postgresql/18/main</code>. Here is what every item does, grouped by how often a DBA deals with it:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Item",
+      "What it holds",
+      "How often you care"
+     ],
+     [
+      "base/",
+      "One subfolder per database, holding its tables and indexes",
+      "Daily: this is where your data is"
+     ],
+     [
+      "global/",
+      "Cluster-wide tables such as pg_database and pg_authid, plus the pg_control file",
+      "Often: pg_control is read with pg_controldata"
+     ],
+     [
+      "pg_wal/",
+      "Write-ahead log (WAL) segment files, 16MB each by default",
+      "Daily: the usual cause of a full disk"
+     ],
+     [
+      "pg_xact/",
+      "Commit status of every transaction (committed or aborted)",
+      "Rarely, but never delete it"
+     ],
+     [
+      "pg_tblspc/",
+      "Symbolic links to tablespaces outside PGDATA (Part 9)",
+      "When you use tablespaces"
+     ],
+     [
+      "pg_replslot/",
+      "Replication slot data (Part 34)",
+      "When you run replication"
+     ],
+     [
+      "pg_logical/",
+      "Status data for logical decoding (Part 37)",
+      "When you use logical replication"
+     ],
+     [
+      "pg_stat/",
+      "Permanent statistics files, written at a clean shutdown",
+      "Rarely"
+     ],
+     [
+      "pg_stat_tmp/",
+      "Temporary files for the statistics subsystem",
+      "Rarely"
+     ],
+     [
+      "pg_multixact/",
+      "Multitransaction status, used for shared row locks",
+      "Rarely (wraparound, Part 14)"
+     ],
+     [
+      "pg_subtrans/",
+      "Subtransaction status data",
+      "Rarely"
+     ],
+     [
+      "pg_commit_ts/",
+      "Commit timestamps, only if track_commit_timestamp is on",
+      "Rarely"
+     ],
+     [
+      "pg_twophase/",
+      "State files for prepared transactions (PREPARE TRANSACTION)",
+      "Rarely"
+     ],
+     [
+      "pg_serial/",
+      "Information about committed serializable transactions",
+      "Rarely"
+     ],
+     [
+      "pg_snapshots/",
+      "Exported snapshots (used by parallel pg_dump)",
+      "Rarely"
+     ],
+     [
+      "pg_notify/",
+      "LISTEN/NOTIFY status data",
+      "Rarely"
+     ],
+     [
+      "pg_dynshmem/",
+      "Files used by dynamic shared memory",
+      "Rarely"
+     ],
+     [
+      "PG_VERSION",
+      "The major version number",
+      "When checking a cluster"
+     ],
+     [
+      "postgresql.auto.conf",
+      "Settings written by ALTER SYSTEM",
+      "Part 5"
+     ],
+     [
+      "postmaster.opts",
+      "Command-line options of the last server start",
+      "When debugging start-up"
+     ],
+     [
+      "postmaster.pid",
+      "Lock file of the running server (missing after shutdown)",
+      "When debugging start-up"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Several of these names end in <code class=\"inline-code\">_xact</code> or <code class=\"inline-code\">_wal</code> for a reason. Before PostgreSQL 10, <code class=\"inline-code\">pg_wal</code> was called <code class=\"inline-code\">pg_xlog</code> and <code class=\"inline-code\">pg_xact</code> was called <code class=\"inline-code\">pg_clog</code>. They were renamed because people kept deleting folders with \"log\" in the name, thinking they were only message logs. If an old blog post tells you to look in <code class=\"inline-code\">pg_xlog</code>, that is the same folder under its old name."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> your listing contains the same names as the table. A missing <code class=\"inline-code\">postmaster.pid</code> simply means the cluster is stopped."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Never edit or delete files in PGDATA by hand",
+    "text": "Deleting files in pg_wal, pg_xact or base to free space can make the cluster unrecoverable, even if the server keeps running for a while. Copying the folder while the server runs gives you a broken copy. Use SQL and PostgreSQL tools for every change. Part 47 covers what to do when the disk is really full."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The small files at the top",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Read PG_VERSION, postmaster.opts and postmaster.pid",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your sudo user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo cat /var/lib/postgresql/18/main/PG_VERSION\nsudo cat /var/lib/postgresql/18/main/postmaster.opts\nsudo cat /var/lib/postgresql/18/main/postmaster.pid",
+    "caption": "Read the three small files"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "18\n/usr/lib/postgresql/18/bin/postgres \"-D\" \"/var/lib/postgresql/18/main\" \"-c\" \"config_file=/etc/postgresql/18/main/postgresql.conf\"\n786\n/var/lib/postgresql/18/main\n1792586884\n5432\n/var/run/postgresql\nlocalhost\n   208940         1\nready   ",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">PG_VERSION</code> contains only the major version. Tools such as <code class=\"inline-code\">pg_upgrade</code> read it to know what kind of cluster they are looking at. <code class=\"inline-code\">postmaster.opts</code> shows exactly how the server was last started: Ubuntu's <code class=\"inline-code\">pg_ctlcluster</code> passes <code class=\"inline-code\">-D</code> with the data directory and <code class=\"inline-code\">-c config_file=</code> pointing to the file in <code class=\"inline-code\">/etc</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">postmaster.pid</code> is the lock file of the running server. It stops a second server from starting on the same data directory. Line by line:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Line",
+      "Value in the example",
+      "Meaning"
+     ],
+     [
+      "1",
+      "786",
+      "Process ID (PID) of the postmaster"
+     ],
+     [
+      "2",
+      "/var/lib/postgresql/18/main",
+      "Data directory path"
+     ],
+     [
+      "3",
+      "1792586884",
+      "Postmaster start time, in seconds since 1970 (a Unix timestamp)"
+     ],
+     [
+      "4",
+      "5432",
+      "Port number"
+     ],
+     [
+      "5",
+      "/var/run/postgresql",
+      "Unix-domain socket directory"
+     ],
+     [
+      "6",
+      "localhost",
+      "First listen address (from listen_addresses)"
+     ],
+     [
+      "7",
+      "208940  1",
+      "Shared memory segment key and ID"
+     ],
+     [
+      "8",
+      "ready",
+      "Server state (starting, ready or stopping)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the PID on line 1 is the parent of all other PostgreSQL processes. <code class=\"inline-code\">ps -o pid,cmd -p 786</code> (use your PID) shows <code class=\"inline-code\">/usr/lib/postgresql/18/bin/postgres -D /var/lib/postgresql/18/main ...</code>"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Look at postgresql.auto.conf",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your sudo user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo cat /var/lib/postgresql/18/main/postgresql.auto.conf",
+    "caption": "Read the ALTER SYSTEM file"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# Do not edit this file manually!\n# It will be overwritten by the ALTER SYSTEM command.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This file stays inside PGDATA even on Ubuntu, because the server itself writes it when you run <code class=\"inline-code\">ALTER SYSTEM SET ...</code>. It is read after <code class=\"inline-code\">postgresql.conf</code>, so a value here wins over the same value in <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code>. When a setting \"will not change\" no matter how you edit postgresql.conf, check this file first. Part 5 shows how to use <code class=\"inline-code\">ALTER SYSTEM</code> and <code class=\"inline-code\">ALTER SYSTEM RESET</code> properly."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> a fresh cluster shows only the two comment lines. Any other line is a setting someone changed with <code class=\"inline-code\">ALTER SYSTEM</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Where your tables live: base and global",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now create a small database and table so you have real files to look at. The sample is an <code class=\"inline-code\">orders</code> table with 100,000 rows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Create a sample database and see its folder",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as the postgres user through psql."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -X -c \"CREATE DATABASE shop;\"\nsudo -u postgres psql -X -c \"SELECT oid, datname FROM pg_database ORDER BY oid;\"\nsudo ls -l /var/lib/postgresql/18/main/base",
+    "caption": "Create a database and match OIDs to folders"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE DATABASE\n  oid  |  datname\n-------+-----------\n     1 | template1\n     4 | template0\n     5 | postgres\n 16384 | shop\n(4 rows)\n\ntotal 16\ndrwx------ 2 postgres postgres 4096 Oct 21 12:46 1\ndrwx------ 2 postgres postgres 4096 Oct 20 14:25 4\ndrwx------ 2 postgres postgres 4096 Oct 21 12:46 5\ndrwx------ 2 postgres postgres 4096 Oct 21 12:47 16384",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every database has an <b>OID</b> (object identifier, a number PostgreSQL gives to each object), and its folder under <code class=\"inline-code\">base</code> is named after that OID, not after the database name. So <code class=\"inline-code\">base/16384</code> is the shop database. The OIDs 1, 4 and 5 are fixed for template1, template0 and postgres. Your shop OID may differ. Later you will also see a <code class=\"inline-code\">pgsql_tmp</code> folder here; it holds temporary files (Step 11) and appears the first time one is needed."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the number of OID folders matches the number of rows in <code class=\"inline-code\">pg_database</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Find the file behind a table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, connected to shop as postgres (<code class=\"inline-code\">sudo -u postgres psql -X -d shop</code>)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders (\n    order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer    text NOT NULL,\n    amount      numeric(10,2) NOT NULL,\n    ordered_at  timestamptz NOT NULL DEFAULT now()\n);\n\nINSERT INTO orders (customer, amount)\nSELECT 'customer_' || g, round((random() * 5000)::numeric, 2)\n  FROM generate_series(1, 100000) AS g;\n\nSELECT oid, relname, relfilenode\n  FROM pg_class\n WHERE relname IN ('orders', 'orders_pkey');\n\nSELECT pg_relation_filepath('orders')      AS table_file,\n       pg_relation_filepath('orders_pkey') AS index_file;",
+    "caption": "Create the sample table and find its files"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLE\nINSERT 0 100000\n  oid  |   relname   | relfilenode\n-------+-------------+-------------\n 16386 | orders      |       16386\n 16392 | orders_pkey |       16392\n(2 rows)\n\n    table_file    |    index_file\n------------------+------------------\n base/16384/16386 | base/16384/16392\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each table and each index is stored in its own file. The file name is the <b>filenode</b>, stored in <code class=\"inline-code\">pg_class.relfilenode</code>. <code class=\"inline-code\">pg_relation_filepath()</code> returns the path relative to PGDATA, so the orders table is <code class=\"inline-code\">/var/lib/postgresql/18/main/base/16384/16386</code> and its primary key index is a separate file, <code class=\"inline-code\">16392</code>. This function is the quickest way to locate any table; it saves you remembering the rules."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> run <code class=\"inline-code\">sudo ls -l /var/lib/postgresql/18/main/base/16384/16386</code>; the file exists."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: See the forks and the 1GB segment rule",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server: the first and third commands in psql (connected to shop), the second as your sudo user in the shell."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CHECKPOINT;\nVACUUM orders;",
+    "caption": "Flush changes to disk and create the visibility map"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo ls -l /var/lib/postgresql/18/main/base/16384/16386*",
+    "caption": "List all files of the orders table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-rw------- 1 postgres postgres 6832128 Oct 21 12:47 /var/lib/postgresql/18/main/base/16384/16386\n-rw------- 1 postgres postgres   24576 Oct 21 12:47 /var/lib/postgresql/18/main/base/16384/16386_fsm\n-rw------- 1 postgres postgres    8192 Oct 21 12:47 /var/lib/postgresql/18/main/base/16384/16386_vm",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "One table can have several files, called <b>forks</b>. The file with no suffix is the <b>main fork</b> with the rows. <code class=\"inline-code\">_fsm</code> is the <b>free space map</b>, which tells PostgreSQL which pages have room for new rows. <code class=\"inline-code\">_vm</code> is the <b>visibility map</b>, which marks pages known to have no dead rows (VACUUM uses it, Part 12). Unlogged tables also get an <code class=\"inline-code\">_init</code> fork. <code class=\"inline-code\">CHECKPOINT</code> forces changed pages from memory to these files, so the sizes you see are up to date."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same sizes from SQL, without touching the file system:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_size_pretty(pg_relation_size('orders'))        AS main,\n       pg_size_pretty(pg_relation_size('orders', 'fsm')) AS fsm,\n       pg_size_pretty(pg_relation_size('orders', 'vm'))  AS vm,\n       pg_size_pretty(pg_total_relation_size('orders'))  AS total;",
+    "caption": "Size of each fork"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  main   |  fsm  |     vm     |  total\n---------+-------+------------+---------\n 6672 kB | 24 kB | 8192 bytes | 8920 kB\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">total</code> also includes the primary key index (and TOAST data, if any), which is why it is larger than the three forks added together. One more rule: when a table or index grows past 1GB, PostgreSQL splits it into 1GB <b>segments</b> named <code class=\"inline-code\">16386</code>, <code class=\"inline-code\">16386.1</code>, <code class=\"inline-code\">16386.2</code> and so on. A 10GB table is about ten files with the same filenode. Always use the <code class=\"inline-code\">16386*</code> pattern when you look for a table's files."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">pg_controldata</code> in Step 10 reports \"Blocks per segment of large relation: 131072\". 131072 blocks of 8192 bytes is exactly 1GB."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Learn why the filenode can change",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, connected to shop as postgres."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE payments (payment_id int, amount numeric(10,2));\nINSERT INTO payments VALUES (1, 250.00), (2, 990.50);\n\nSELECT oid, relfilenode, pg_relation_filepath('payments')\n  FROM pg_class WHERE relname = 'payments';\n\nTRUNCATE payments;\n\nSELECT oid, relfilenode, pg_relation_filepath('payments')\n  FROM pg_class WHERE relname = 'payments';",
+    "caption": "TRUNCATE gives the table a new file"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  oid  | relfilenode | pg_relation_filepath\n-------+-------------+----------------------\n 16394 |       16394 | base/16384/16394\n(1 row)\n\nTRUNCATE TABLE\n  oid  | relfilenode | pg_relation_filepath\n-------+-------------+----------------------\n 16394 |       16397 | base/16384/16397\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The OID stayed 16394, but the file changed to 16397. <code class=\"inline-code\">TRUNCATE</code>, <code class=\"inline-code\">REINDEX</code>, <code class=\"inline-code\">CLUSTER</code>, <code class=\"inline-code\">VACUUM FULL</code> and some forms of <code class=\"inline-code\">ALTER TABLE</code> write a fresh file and switch the table to it. So never assume the file name equals the OID; ask <code class=\"inline-code\">pg_relation_filepath()</code> every time."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can also go the other way. When a disk tool shows a big file and you need to know which table it is, use <code class=\"inline-code\">pg_filenode_relation(tablespace, filenode)</code> (tablespace 0 means the database's default tablespace), connected to the database whose folder holds the file:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_filenode_relation(0, 16386);",
+    "caption": "Which table is file 16386?"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_filenode_relation\n----------------------\n orders\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "System catalogs are a special case. For some, including <code class=\"inline-code\">pg_class</code> itself, <code class=\"inline-code\">relfilenode</code> is 0, and the real file number comes from <code class=\"inline-code\">pg_relation_filenode()</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT relname, relfilenode, pg_relation_filenode('pg_class') AS real_filenode\n  FROM pg_class WHERE relname = 'pg_class';",
+    "caption": "A catalog with relfilenode 0"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " relname  | relfilenode | real_filenode\n----------+-------------+---------------\n pg_class |           0 |          1259\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> after the TRUNCATE, <code class=\"inline-code\">sudo ls /var/lib/postgresql/18/main/base/16384/16394</code> fails with \"No such file or directory\" once the next checkpoint has run, and the 16397 file exists."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_wal and the control file",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Look at the WAL files and pg_control",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server: the SQL in psql as postgres, the commands in the shell as your sudo user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT * FROM pg_ls_waldir() ORDER BY name;\n\nSELECT pg_current_wal_lsn(), pg_walfile_name(pg_current_wal_lsn());",
+    "caption": "List WAL segments from SQL"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "           name           |   size   |      modification\n--------------------------+----------+------------------------\n 000000010000000000000002 | 16777216 | 2026-10-21 12:47:47+00\n 000000010000000000000003 | 16777216 | 2026-10-21 12:47:38+00\n(2 rows)\n\n pg_current_wal_lsn |     pg_walfile_name\n--------------------+--------------------------\n 0/2913090          | 000000010000000000000002\n(1 row)",
+    "caption": "Output (your values will differ)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "As Part 1 explained, WAL is the notebook PostgreSQL writes in before it changes the real data files. Each segment file is 16MB (16777216 bytes) by default. The name is a hexadecimal counter that only grows, starting at <code class=\"inline-code\">000000010000000000000001</code>. <code class=\"inline-code\">pg_walfile_name()</code> tells you which file the server is writing now; segment 3 here is an old file already recycled and renamed for future use. <code class=\"inline-code\">pg_ls_waldir()</code> is allowed for superusers and members of the <code class=\"inline-code\">pg_monitor</code> role, so a monitoring user does not need shell access."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo ls -l /var/lib/postgresql/18/main/pg_wal",
+    "caption": "The same folder from the shell"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "total 32776\n-rw------- 1 postgres postgres 16777216 Oct 21 12:47 000000010000000000000002\n-rw------- 1 postgres postgres 16777216 Oct 21 12:47 000000010000000000000003\ndrwx------ 2 postgres postgres     4096 Oct 20 14:25 archive_status\ndrwx------ 2 postgres postgres     4096 Oct 20 14:25 summaries",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">archive_status</code> tracks which segments have been archived (Part 19). <code class=\"inline-code\">summaries</code> is new in PostgreSQL 17: it holds WAL summaries, which incremental backups need when <code class=\"inline-code\">summarize_wal</code> is on (it is off by default, so the folder stays empty)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The most important single file in the cluster is <code class=\"inline-code\">global/pg_control</code>, the <b>control file</b>. After each checkpoint the server records the checkpoint position there, and at start-up it reads pg_control first to know where crash recovery must begin. It is binary, so you read it with <code class=\"inline-code\">pg_controldata</code>. On Ubuntu this program is not on your PATH; use its full path:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres /usr/lib/postgresql/18/bin/pg_controldata -D /var/lib/postgresql/18/main \\\n  | grep -E 'cluster state|checkpoint location|REDO WAL file|Time of latest|Database block size|Blocks per segment|Bytes per WAL|checksum version'",
+    "caption": "Read key lines of pg_control"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-D, --pgdata",
+      "The data directory to read. Without it, pg_controldata uses the PGDATA environment variable"
+     ],
+     [
+      "sudo -u postgres",
+      "pg_controldata must run as the user who owns the cluster, because it needs read access to the data directory"
+     ],
+     [
+      "grep -E",
+      "Keeps only the lines discussed here; drop it to see all fields"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Database cluster state:               in production\nLatest checkpoint location:           0/28ECE70\nLatest checkpoint's REDO WAL file:    000000010000000000000002\nTime of latest checkpoint:            Wed Oct 21 12:47:42 2026\nDatabase block size:                  8192\nBlocks per segment of large relation: 131072\nBytes per WAL segment:                16777216\nData page checksum version:           1",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "\"in production\" means the server is running (after a clean stop it says \"shut down\"). The REDO WAL file is the oldest WAL segment crash recovery would need; older segments can be recycled. Block size 8192 is the 8kB page size, and 131072 blocks per segment confirms the 1GB rule from Step 8. \"Data page checksum version: 1\" means data checksums are on, the default for new clusters since PostgreSQL 18 (older versions showed 0 unless you asked <code class=\"inline-code\">initdb</code> for <code class=\"inline-code\">--data-checksums</code>)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> \"Database cluster state\" says \"in production\" while the cluster is online. Stop the cluster and run the command again: it says \"shut down\"."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Temporary files and disk usage",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Watch a temporary file being created",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, connected to shop as postgres."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a sort or hash needs more memory than <code class=\"inline-code\">work_mem</code> allows (default 4MB), PostgreSQL spills to <b>temporary files</b> in <code class=\"inline-code\">base/pgsql_tmp</code>. They are deleted when the query ends, but on a busy server they can fill the disk for a while. The setting <code class=\"inline-code\">log_temp_files</code> (default -1, off) logs each one; 0 logs all of them. Both settings below last only for this session."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET log_temp_files = 0;\nSET work_mem = '64kB';\n\nSELECT count(*)\n  FROM (SELECT customer FROM orders ORDER BY customer OFFSET 0) AS sorted;",
+    "caption": "Force a sort to spill to disk"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "SET\nSET\n count\n--------\n 100000\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo tail -2 /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Read the log entry"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-10-21 12:48:00.962 UTC [754] postgres@shop LOG:  temporary file: path \"base/pgsql_tmp/pgsql_tmp754.0\", size 1933312\n2026-10-21 12:48:00.962 UTC [754] postgres@shop STATEMENT:  SELECT count(*) FROM (SELECT customer FROM orders ORDER BY customer OFFSET 0) AS sorted;",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The file name <code class=\"inline-code\">pgsql_tmp754.0</code> is <code class=\"inline-code\">pgsql_tmp</code> plus the PID of the backend (754) and a counter. The 64kB limit was too small for the sort, so about 1.9MB went to disk. To see temporary files while a query is still running, use <code class=\"inline-code\">SELECT * FROM pg_ls_tmpdir();</code>. Part 23 covers logging, and Part 28 shows how to size <code class=\"inline-code\">work_mem</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the log contains a \"temporary file\" line. <code class=\"inline-code\">RESET work_mem; RESET log_temp_files;</code> (or disconnecting) puts the settings back."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Measure what uses the space",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server: <code class=\"inline-code\">du</code> as your sudo user, the SQL in psql as postgres."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo du -sh /var/lib/postgresql/18/main/base /var/lib/postgresql/18/main/global /var/lib/postgresql/18/main/pg_wal\nsudo du -sh /var/lib/postgresql/18/main/base/*",
+    "caption": "Disk usage per folder and per database folder"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-s",
+      "Shows one total per argument instead of every subfolder"
+     ],
+     [
+      "-h",
+      "Prints sizes in human-readable units (K, M, G)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "38M\t/var/lib/postgresql/18/main/base\n576K\t/var/lib/postgresql/18/main/global\n33M\t/var/lib/postgresql/18/main/pg_wal\n7.4M\t/var/lib/postgresql/18/main/base/1\n16M\t/var/lib/postgresql/18/main/base/16384\n7.2M\t/var/lib/postgresql/18/main/base/4\n7.2M\t/var/lib/postgresql/18/main/base/5\n4.0K\t/var/lib/postgresql/18/main/base/pgsql_tmp",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT datname, pg_size_pretty(pg_database_size(datname)) AS size\n  FROM pg_database\n ORDER BY pg_database_size(datname) DESC;",
+    "caption": "The same per database, from SQL"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  datname  |  size\n-----------+---------\n shop      | 16 MB\n postgres  | 7503 kB\n template1 | 7503 kB\n template0 | 7345 kB\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both views agree: base/16384 (shop) is 16MB. When a disk alert fires, this is the order to check: is it <code class=\"inline-code\">pg_wal</code> (WAL piling up, often because archiving or a replication slot is stuck), <code class=\"inline-code\">base/pgsql_tmp</code> (a runaway query), or one database in <code class=\"inline-code\">base</code> (real data growth or bloat)? The answer decides the fix."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the folder sizes from <code class=\"inline-code\">du</code> and <code class=\"inline-code\">pg_database_size()</code> match within a few kB."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Move the data directory to another disk",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A common task: the root disk is small, and you have added a bigger disk mounted at <code class=\"inline-code\">/srv</code>. You want the cluster's data there. The safe procedure is: stop the server, copy the whole folder with ownership and permissions kept, point <code class=\"inline-code\">data_directory</code> at the new place, start, verify, and only then remove the old copy. Ubuntu's tools read <code class=\"inline-code\">data_directory</code> from postgresql.conf, so they follow the move automatically."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "before:  /var/lib/postgresql/18/main    (root disk)\nafter:   /srv/pgdata/18/main            (new disk mounted at /srv)",
+    "caption": "The plan"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Practise on a test server first",
+    "text": "This procedure needs downtime: the cluster is stopped from Step 14 to Step 16. Never copy a running data directory, and do not delete the old folder until the cluster has run correctly from the new place. Take a backup before you start on a production server (Parts 17 and 18)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Prepare the target folder",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your sudo user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo mkdir -p /srv/pgdata\nsudo chown postgres:postgres /srv/pgdata\nsudo chmod 700 /srv/pgdata\nsudo -u postgres mkdir -p /srv/pgdata/18",
+    "caption": "Create a postgres-owned folder inside the mount point"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Do not use the mount point itself (<code class=\"inline-code\">/srv</code>) as the data directory. The documentation recommends a postgres-owned folder inside the mount point. That avoids permission problems, for example with <code class=\"inline-code\">pg_upgrade</code>, and if the disk is ever not mounted, the server fails cleanly instead of starting on an empty folder."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">sudo ls -ld /srv/pgdata /srv/pgdata/18</code> shows both owned by <code class=\"inline-code\">postgres postgres</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: Stop the cluster",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your sudo user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl stop postgresql@18-main\npg_lsclusters",
+    "caption": "Stop 18 main and confirm it is down"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 down   postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> Status is <b>down</b> and <code class=\"inline-code\">postmaster.pid</code> no longer exists in the old data directory."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: Copy the data directory",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as the postgres user (through sudo)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres cp -a /var/lib/postgresql/18/main /srv/pgdata/18/main\nsudo ls -ld /srv/pgdata/18/main",
+    "caption": "Copy with ownership, permissions and timestamps kept"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "cp -a",
+      "Archive mode: copies folders recursively and keeps permissions, ownership, timestamps and symbolic links (needed for pg_tblspc)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "drwx------ 19 postgres postgres 4096 Oct 21 12:48 /srv/pgdata/18/main",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the new folder has mode <code class=\"inline-code\">drwx------</code> and owner postgres. <code class=\"inline-code\">sudo du -sh /var/lib/postgresql/18/main /srv/pgdata/18/main</code> shows the same size for both."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 16: Point data_directory at the new folder and start",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your sudo user. Edit with <code class=\"inline-code\">sudo nano /etc/postgresql/18/main/postgresql.conf</code> and change the <code class=\"inline-code\">data_directory</code> line."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# /etc/postgresql/18/main/postgresql.conf  (before)\ndata_directory = '/var/lib/postgresql/18/main'\t\t# use data in another directory\n\n# /etc/postgresql/18/main/postgresql.conf  (after)\ndata_directory = '/srv/pgdata/18/main'\t\t# use data in another directory",
+    "caption": "The one line to change"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">data_directory</code> has no built-in default; Ubuntu's <code class=\"inline-code\">pg_createcluster</code> writes this line for you. It can only be set at server start, so the change takes effect when you start the cluster:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl start postgresql@18-main\npg_lsclusters\nsudo -u postgres psql -X -c \"SHOW data_directory;\"\nsudo -u postgres psql -X -d shop -c \"SELECT count(*) FROM orders;\"",
+    "caption": "Start and verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory      Log file\n18  main    5432 online postgres /srv/pgdata/18/main /var/log/postgresql/postgresql-18-main.log\n   data_directory\n---------------------\n /srv/pgdata/18/main\n(1 row)\n\n count\n--------\n 100000\n(1 row)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> pg_lsclusters shows the new path and <b>online</b>, <code class=\"inline-code\">SHOW data_directory</code> agrees, and your data is all there. Check the end of <code class=\"inline-code\">/var/log/postgresql/postgresql-18-main.log</code> for \"database system is ready to accept connections\"."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> if anything is wrong, stop the cluster, put the old <code class=\"inline-code\">data_directory</code> line back and start it again. The old folder is untouched, so you are back where you began."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 17: Remove the old copy",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your sudo user, only after the cluster has run from the new place and you have a backup."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Check twice before deleting",
+    "text": "Run SHOW data_directory first and make sure it says /srv/pgdata/18/main. Deleting the folder the running cluster uses destroys your database. Renaming first gives you a safety net for a few days."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo mv /var/lib/postgresql/18/main /var/lib/postgresql/18/main.old\n# a few days later, when you are sure:\nsudo rm -rf /var/lib/postgresql/18/main.old",
+    "caption": "Rename first, delete later"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">pg_lsclusters</code> still shows the cluster online at <code class=\"inline-code\">/srv/pgdata/18/main</code> after the rename."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: data directory has invalid permissions",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This happens after someone runs <code class=\"inline-code\">chmod 755</code> on the folder, or copies it without <code class=\"inline-code\">-a</code>. The cluster will not start, and the log says:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "FATAL:  data directory \"/var/lib/postgresql/18/main\" has invalid permissions\nDETAIL:  Permissions should be u=rwx (0700) or u=rwx,g=rx (0750).\npg_ctl: could not start server\nExamine the log output.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> restore the mode and owner, then start: <code class=\"inline-code\">sudo chmod 700 /var/lib/postgresql/18/main</code>, <code class=\"inline-code\">sudo chown -R postgres:postgres /var/lib/postgresql/18/main</code>, <code class=\"inline-code\">sudo systemctl start postgresql@18-main</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: lock file \"postmaster.pid\" already exists",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You see this when you try to start a second server on a data directory that is already in use, for example by running the postgres program by hand while the service runs:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "FATAL:  lock file \"postmaster.pid\" already exists\nHINT:  Is another postmaster (PID 786) running in data directory \"/var/lib/postgresql/18/main\"?",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> check with <code class=\"inline-code\">pg_lsclusters</code> and <code class=\"inline-code\">ps -u postgres -o pid,cmd</code> first. If the server is running, use it, do not start another one. Only if no process with that PID exists (for example after a power cut) is the file stale; a normal start usually handles that by itself. Never delete postmaster.pid while a server is running: two servers on one data directory will corrupt it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Deleting WAL files to free space",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When the disk fills, <code class=\"inline-code\">pg_wal</code> is often the biggest folder, and <code class=\"inline-code\">rm</code> looks tempting. Removing segments the server still needs breaks crash recovery, and the cluster may not start again. <b>Fix:</b> find why WAL is not being recycled (a failing <code class=\"inline-code\">archive_command</code> or an inactive replication slot are the usual causes) and fix that; the server then removes old segments itself at the next checkpoint. Part 47 walks through it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Copying or backing up PGDATA while the server runs",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A plain <code class=\"inline-code\">cp</code> or <code class=\"inline-code\">tar</code> of a running data directory captures files at different moments and is usually not restorable. <b>Fix:</b> stop the cluster before a file copy, as in the move procedure, or use the proper tools: <code class=\"inline-code\">pg_dump</code> (Part 17) or <code class=\"inline-code\">pg_basebackup</code> (Part 18)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Editing postgresql.auto.conf or looking for postgresql.conf in PGDATA",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On Ubuntu, <code class=\"inline-code\">postgresql.conf</code> is in <code class=\"inline-code\">/etc/postgresql/18/main</code>, not in the data directory. And <code class=\"inline-code\">postgresql.auto.conf</code> is owned by <code class=\"inline-code\">ALTER SYSTEM</code>; hand edits can be overwritten. <b>Fix:</b> run <code class=\"inline-code\">SHOW config_file;</code> to find the real file, and use <code class=\"inline-code\">ALTER SYSTEM SET</code> or <code class=\"inline-code\">ALTER SYSTEM RESET</code> to change auto.conf (Part 5)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Create a table <code class=\"inline-code\">employees (emp_id int, name text)</code> in the shop database, insert one row, and find the full path of its data file on disk.",
+      "items": []
+     },
+     {
+      "content": "Run <code class=\"inline-code\">VACUUM FULL employees;</code> and find the path again. What changed and why?",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "1) Connect with <code class=\"inline-code\">sudo -u postgres psql -X -d shop</code>, create the table and run <code class=\"inline-code\">SELECT pg_relation_filepath('employees');</code>. Put <code class=\"inline-code\">/var/lib/postgresql/18/main/</code> in front of the result, for example <code class=\"inline-code\">/var/lib/postgresql/18/main/base/16384/16402</code> (your numbers will differ). 2) After <code class=\"inline-code\">VACUUM FULL</code> the path ends in a new, higher number (16407 in our test) while <code class=\"inline-code\">pg_class.oid</code> stays the same. VACUUM FULL writes a fresh copy of the table into a new file and switches to it, just like TRUNCATE in Step 9."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# List clusters and their data directories\npg_lsclusters\n\n# Ask the server where its data and config files are\nsudo -u postgres psql -X -c \"SELECT name, setting FROM pg_settings WHERE name IN ('data_directory','config_file','hba_file','ident_file','external_pid_file') ORDER BY name;\"\n\n# Check owner and permissions of PGDATA (expect 700 postgres:postgres)\nsudo stat -c '%A %a %U:%G %n' /var/lib/postgresql/18/main\n\n# List the data directory\nsudo ls -l /var/lib/postgresql/18/main\n\n# Read the small files\nsudo cat /var/lib/postgresql/18/main/PG_VERSION\nsudo cat /var/lib/postgresql/18/main/postmaster.opts\nsudo cat /var/lib/postgresql/18/main/postmaster.pid\nsudo cat /var/lib/postgresql/18/main/postgresql.auto.conf\n\n# Map databases to base/<oid> folders\nsudo -u postgres psql -X -c \"SELECT oid, datname FROM pg_database ORDER BY oid;\"\nsudo ls -l /var/lib/postgresql/18/main/base\n\n# Table -> file, and file -> table (run in the right database)\nsudo -u postgres psql -X -d shop -c \"SELECT pg_relation_filepath('orders');\"\nsudo -u postgres psql -X -d shop -c \"SELECT pg_filenode_relation(0, 16386);\"\n\n# All forks and segments of one table\nsudo ls -l /var/lib/postgresql/18/main/base/16384/16386*\n\n# WAL files and the current WAL file\nsudo -u postgres psql -X -c \"SELECT * FROM pg_ls_waldir() ORDER BY name;\"\nsudo -u postgres psql -X -c \"SELECT pg_walfile_name(pg_current_wal_lsn());\"\n\n# Read the control file\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_controldata -D /var/lib/postgresql/18/main\n\n# Disk usage per folder and per database\nsudo du -sh /var/lib/postgresql/18/main/base/*\nsudo -u postgres psql -X -c \"SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database;\"\n\n# Move PGDATA: prepare, stop, copy, edit data_directory, start\nsudo mkdir -p /srv/pgdata && sudo chown postgres:postgres /srv/pgdata && sudo chmod 700 /srv/pgdata\nsudo -u postgres mkdir -p /srv/pgdata/18\nsudo systemctl stop postgresql@18-main\nsudo -u postgres cp -a /var/lib/postgresql/18/main /srv/pgdata/18/main\nsudo nano /etc/postgresql/18/main/postgresql.conf   # data_directory = '/srv/pgdata/18/main'\nsudo systemctl start postgresql@18-main\nsudo -u postgres psql -X -c \"SHOW data_directory;\"\n\n# Clean up the lab database (only on a practice server)\nsudo -u postgres psql -X -c \"DROP DATABASE shop;\"",
+    "caption": "Every command from this part, in order"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Keep or drop the shop database",
+    "text": "The last command removes the practice database and its base/16384 folder. Skip it if you want to keep the sample data for the next parts. Never run DROP DATABASE on a production database you have not backed up."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "PGDATA is one folder per cluster; on Ubuntu with PostgreSQL 18 it is /var/lib/postgresql/18/main, and the hand-edited config files live in /etc/postgresql/18/main.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "The data directory must be owned by postgres with mode 0700 (or 0750 with group access), or the server refuses to start.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "base/&lt;database OID&gt;/&lt;filenode&gt; holds each table and index, with _fsm and _vm forks and 1GB segments; pg_relation_filepath() finds the file, pg_filenode_relation() finds the table.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "The filenode can change after TRUNCATE, REINDEX, CLUSTER or VACUUM FULL, so never assume it equals the OID.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "pg_wal holds 16MB WAL segments, global/pg_control holds the checkpoint position, and pg_controldata reads it.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "You can measure space with du and pg_database_size(), spot temporary files with log_temp_files, and move PGDATA safely with stop, cp -a, data_directory and start.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "You never delete or edit files in PGDATA by hand.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 4 you will learn the psql essentials every DBA uses: meta-commands, running scripts and changing output formats."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your PostgreSQL disk is 90% full. Do you know which folder to check first, and which one you must never touch?\n\nPart 3 of my PostgreSQL DBA series opens the data directory (PGDATA) on Ubuntu with PostgreSQL 18:\n\n→ PGDATA is /var/lib/postgresql/18/main. On Ubuntu, postgresql.conf and pg_hba.conf live in /etc/postgresql/18/main instead.\n→ Each database is a folder base/<oid>, and each table is a file named after its filenode. SELECT pg_relation_filepath('orders'); gives you the path.\n→ The filenode is not always the OID. TRUNCATE, REINDEX and VACUUM FULL switch the table to a new file.\n→ pg_wal holds 16MB WAL segments. Never rm them to free space. Find out why they are not recycled (stuck archiving or a replication slot).\n→ The folder must be 0700 and owned by postgres, or the server refuses to start with \"data directory has invalid permissions\".\n\nIt also shows how to move PGDATA to a new disk safely: stop, cp -a, change data_directory, start, verify.\n\nWhich PGDATA folder has caused you the most trouble in production?\n\nFollow the series for Part 4: psql essentials for DBAs.\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "PostgreSQL DBA Part 3: The Data Directory",
+    "body": "What every folder in PGDATA does, on Ubuntu with PostgreSQL 18"
+   },
+   {
+    "title": "Where PGDATA lives on Ubuntu",
+    "points": [
+     "Data: /var/lib/postgresql/18/main",
+     "Config: /etc/postgresql/18/main",
+     "Programs: /usr/lib/postgresql/18/bin",
+     "Mode 0700, owner postgres, or it won't start"
+    ]
+   },
+   {
+    "title": "Ask the server, not your memory",
+    "code": "SELECT name, setting\n  FROM pg_settings\n WHERE name IN ('data_directory',\n               'config_file',\n               'hba_file');",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Table to file, file to table",
+    "points": [
+     "base/<database oid>/<filenode>",
+     "Forks: _fsm free space map, _vm visibility map",
+     "Files over 1GB split into .1, .2 segments"
+    ],
+    "code": "SELECT pg_relation_filepath('orders');\nSELECT pg_filenode_relation(0, 16386);",
+    "lang": "postgresql"
+   },
+   {
+    "title": "The folders that matter most",
+    "points": [
+     "pg_wal: 16MB WAL segments, never delete by hand",
+     "global/pg_control: last checkpoint position",
+     "base/pgsql_tmp: spill files from big sorts",
+     "postgresql.auto.conf: ALTER SYSTEM settings"
+    ]
+   },
+   {
+    "title": "Move PGDATA to a new disk",
+    "points": [
+     "Stop the cluster, copy with cp -a",
+     "Set data_directory in postgresql.conf",
+     "Start, then check SHOW data_directory",
+     "Delete the old copy only days later"
+    ]
+   }
+  ]
+ }
+}
