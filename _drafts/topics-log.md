@@ -13,3 +13,4 @@
 - 2026-10-21 [Oracle] how to read explain plan in oracle -> _drafts/2026-10-21-oracle-how-to-read-explain-plan-in-oracle.json
 - 2026-10-21 [PostgreSQL] postgresql data directory -> _drafts/2026-10-21-postgresql-postgresql-dba-part-3-data-directory-pgdata.json
 - 2026-10-22 [Oracle] ora-00060 deadlock detected -> _drafts/2026-10-22-oracle-ora-00060-deadlock-detected.json
+- 2026-10-22 [PostgreSQL] psql commands -> _drafts/2026-10-22-postgresql-postgresql-dba-part-4-psql-commands.json

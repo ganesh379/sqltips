@@ -1,0 +1,1543 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 4: psql Commands Every DBA Needs",
+ "slug": "postgresql-dba-part-4-psql-commands",
+ "category": "postgresql",
+ "description": "Learn the psql commands a PostgreSQL DBA uses daily: connecting, meta-commands, output formats and safe scripts with ON_ERROR_STOP, on Ubuntu.",
+ "focusKeyword": "psql commands",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "psql",
+  "dba"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-2-install-postgresql-18-ubuntu/",
+  "/posts/postgresql/postgresql-dba-part-1-dba-role-and-architecture/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: psql",
+   "url": "https://www.postgresql.org/docs/current/app-psql.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Release 18 (psql changes)",
+   "url": "https://www.postgresql.org/docs/current/release-18.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: The Password File",
+   "url": "https://www.postgresql.org/docs/current/libpq-pgpass.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Environment Variables (libpq)",
+   "url": "https://www.postgresql.org/docs/current/libpq-envars.html"
+  },
+  {
+   "title": "PostgreSQL 16 release notes (\\watch count, named options)",
+   "url": "https://www.postgresql.org/docs/16/release-16.html"
+  },
+  {
+   "title": "PostgreSQL 17 release notes (\\watch min_rows)",
+   "url": "https://www.postgresql.org/docs/17/release-17.html"
+  }
+ ],
+ "reviewNotes": "Series part 4. Publish Part 3 first (postgresql-dba-part-3-data-directory-pgdata is not live yet, so it is named without a link; Parts 1 and 2 are live and linked). Followed the PostgreSQL 18 documentation (docs/current, app-psql.html and release-18.html). IMPORTANT: the postgresql-18 SERVER could NOT be installed in this sandbox: the PGDG repository was reachable, but archive.ubuntu.com is blocked by the network policy, so the dependency liburing2 was not installable (a sandbox-only stub library workaround was refused by the permission system). However postgresql-client-18 installed fine, so every command ran with the real psql 18.6 (Ubuntu 18.6-1.pgdg24.04+2) client against the preinstalled PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) server on Ubuntu 24.04.5 LTS. Blocks captioned 'Output' show client-side behaviour (formatting, \\conninfo table, scripts, exit codes, \\gset, \\gexec, \\watch, error messages) and are real. Blocks captioned '(expected output)' depend on the server version or banner: the psql banner was edited to drop ', server 16.15 ...' (psql only prints the server version when it differs), the \\c output had that same banner line removed, and \\l, \\d orders and \\du are the real outputs from the 16 server rendered by psql 18; the editor should confirm them on a real 18 server (expected identical apart from locale columns). Timing values, PIDs and the \\watch timestamps will differ for readers. Version notes checked in release notes: \\conninfo tabular format and the x suffix on list commands are new in 18; WATCH_INTERVAL new in 18; \\watch count/named options in 16; min_rows in 17. The sandbox has no systemd; systemctl is only mentioned, as in Part 2. /etc/postgresql-common/psqlrc path verified with pg_config --sysconfdir.",
+ "generatedAt": "2026-10-22T13:10:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 4 of the PostgreSQL DBA series on SQL Tips. <b>psql</b> is the command-line client that ships with PostgreSQL, and it is the tool a DBA opens first on every server. By the end of this part you will be able to connect with the right options, find any database object with backslash commands, switch output formats, and run SQL scripts that stop safely on the first error."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 3 we walked through the data directory (PGDATA) and the files inside <code class=\"inline-code\">/var/lib/postgresql/18/main</code>. Before that, <a href=\"/posts/postgresql/postgresql-dba-part-2-install-postgresql-18-ubuntu/\">Part 2 installed PostgreSQL 18 on Ubuntu</a> from the official PGDG repository. Here we use that same <b>18 main</b> cluster and learn the psql commands you will type every working day."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "How psql connects on Ubuntu, and what <code class=\"inline-code\">-d</code>, <code class=\"inline-code\">-U</code>, <code class=\"inline-code\">-h</code> and <code class=\"inline-code\">-p</code> do",
+      "items": []
+     },
+     {
+      "content": "The meta-commands DBAs use most: <code class=\"inline-code\">\\l</code>, <code class=\"inline-code\">\\c</code>, <code class=\"inline-code\">\\dt</code>, <code class=\"inline-code\">\\d</code>, <code class=\"inline-code\">\\du</code>, <code class=\"inline-code\">\\conninfo</code> and friends",
+      "items": []
+     },
+     {
+      "content": "How to change output: expanded display, CSV, unaligned output for shell scripts, NULL display and timing",
+      "items": []
+     },
+     {
+      "content": "How to run SQL scripts safely with <code class=\"inline-code\">ON_ERROR_STOP</code>, <code class=\"inline-code\">-1</code> and psql variables",
+      "items": []
+     },
+     {
+      "content": "How to automate with <code class=\"inline-code\">\\gset</code>, <code class=\"inline-code\">\\gexec</code> and <code class=\"inline-code\">\\watch</code>, and set up a useful <code class=\"inline-code\">~/.psqlrc</code>",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 3 of this series. You know what the server processes are, and you have a running cluster called 18 main.",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu Server LTS machine with PostgreSQL 18 from the PGDG repository, as installed in Part 2.",
+      "items": []
+     },
+     {
+      "content": "An Ubuntu account that can run <code class=\"inline-code\">sudo</code>. Every command below says which OS user runs it.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "psql is a client program. It does not store data and it is not the database server. It opens a connection to the server, sends your SQL, and prints the rows that come back. Think of it as a telephone: the server is the person you call, and psql is the handset you talk through."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Everything you type in psql falls into one of two groups. Ordinary <b>SQL</b> (SELECT, CREATE TABLE, VACUUM) is sent to the server when psql sees a semicolon. Lines that start with a backslash, such as <code class=\"inline-code\">\\dt</code>, are <b>meta-commands</b>: psql handles them itself. Many meta-commands quietly run a catalog query on the server for you, which is why <code class=\"inline-code\">\\dt</code> can list tables."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On Ubuntu, <code class=\"inline-code\">/usr/bin/psql</code> is not the real program. It is a symbolic link to <code class=\"inline-code\">pg_wrapper</code>, a small script from the postgresql-common package. pg_wrapper picks the right psql version and the right cluster, then starts the real binary, which for PostgreSQL 18 is <code class=\"inline-code\">/usr/lib/postgresql/18/bin/psql</code>. When you later run several clusters on one machine, <code class=\"inline-code\">psql --cluster 18/main</code> tells pg_wrapper which one you mean."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When you give no options, psql connects through a <b>Unix-domain socket</b> (a special file the server listens on, here <code class=\"inline-code\">/var/run/postgresql/.s.PGSQL.5432</code>) instead of the network. It uses your operating system user name as the database user name, and that user name as the database name. On Ubuntu the default <code class=\"inline-code\">pg_hba.conf</code> allows <b>peer</b> authentication on the socket: the server checks that your Linux user name matches the database role name. That is why the normal way in is <code class=\"inline-code\">sudo -u postgres psql</code>. Part 6 covers authentication in depth."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "your shell (OS user postgres)\n   |\n   |  psql -d dbalab\n   v\n/var/run/postgresql/.s.PGSQL.5432   (Unix socket, peer authentication)\n   |\n   v\nPostgreSQL 18 server, cluster \"18 main\", port 5432",
+    "caption": "How a local psql connection reaches the server"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Connecting to PostgreSQL with psql",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Open psql as the postgres user",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as your normal Ubuntu login user (who has sudo)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql",
+    "caption": "Start psql as the postgres OS user"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Part",
+      "What it does"
+     ],
+     [
+      "sudo -u postgres",
+      "Runs the command as the Linux user postgres, which owns the cluster and matches the postgres superuser role."
+     ],
+     [
+      "psql",
+      "Starts the client with defaults: database postgres, user postgres, Unix socket, port 5432."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql (18.6 (Ubuntu 18.6-1.pgdg24.04+2))\nType \"help\" for help.\n\npostgres=#",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The first line is the psql version. If the server version differed from the client, psql would print both. The prompt <code class=\"inline-code\">postgres=#</code> shows the current database (postgres), and the <code class=\"inline-code\">#</code> means you are connected as a superuser. A normal user sees <code class=\"inline-code\">=&gt;</code> instead."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> run <code class=\"inline-code\">\\conninfo</code>. In PostgreSQL 18 it prints a table; before PostgreSQL 18 it printed one sentence such as \"You are connected to database ...\"."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\conninfo",
+    "caption": "Show details of the current connection"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "           Connection Information\n      Parameter       |        Value\n----------------------+---------------------\n Database             | postgres\n Client User          | postgres\n Socket Directory     | /var/run/postgresql\n Server Port          | 5432\n Options              |\n Protocol Version     | 3.0\n Password Used        | false\n GSSAPI Authenticated | false\n Backend PID          | 1759\n SSL Connection       | false\n Superuser            | on\n Hot Standby          | off\n(12 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You are on the socket in <code class=\"inline-code\">/var/run/postgresql</code>, port 5432, with no password and no SSL. <b>Backend PID</b> is the operating system process ID of the server process serving you (from Part 1); yours will be a different number. <b>Hot Standby off</b> means this server is a primary, not a read-only standby."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Create a practice database and connect to it with options",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> inside the psql session from Step 1 (postgres superuser), then in the shell as your login user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE dbalab;",
+    "caption": "Create a practice database"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE DATABASE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Type <code class=\"inline-code\">\\q</code> to leave psql, then connect straight to the new database by name:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d dbalab -p 5432",
+    "caption": "Connect to a named database on a given port"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-d dbname, --dbname=dbname",
+      "Name of the database to connect to. It can also be a full connection string or URI."
+     ],
+     [
+      "-p port, --port=port",
+      "TCP port, or Unix socket file extension, the server listens on. Defaults to PGPORT or 5432."
+     ],
+     [
+      "-U username, --username=username",
+      "Connect as this database user instead of the default (your OS user name)."
+     ],
+     [
+      "-h hostname, --host=hostname",
+      "Host of the server. A value starting with a slash is a socket directory. Without -h psql uses the local socket."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For a remote server you would add <code class=\"inline-code\">-h</code> and <code class=\"inline-code\">-U</code>, for example <code class=\"inline-code\">psql -h 10.0.0.11 -U app_user -d dbalab</code>. That needs a pg_hba.conf rule and a password, which Part 6 sets up. The same details can go in a URI: <code class=\"inline-code\">psql postgresql://app_user@10.0.0.11:5432/dbalab</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> ask the server where you are."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT current_database(), current_user;",
+    "caption": "Confirm the database and user"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " current_database | current_user\n------------------+--------------\n dbalab           | postgres\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Switch databases and quit",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> inside psql, as postgres."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\c postgres\n\\c dbalab\n\\q",
+    "caption": "Switch to another database, back again, then quit"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "You are now connected to database \"postgres\" as user \"postgres\".\nYou are now connected to database \"dbalab\" as user \"postgres\".",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">\\c</code> (short for <code class=\"inline-code\">\\connect</code>) opens a new connection and closes the old one. In PostgreSQL there is no <code class=\"inline-code\">USE dbname</code> statement as in MySQL; a session belongs to exactly one database, so switching means reconnecting. If the new connection fails in an interactive session, psql keeps the old one. <code class=\"inline-code\">\\q</code> exits psql (Ctrl+D does the same)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Exploring a database with meta-commands",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Create a sample table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> in the shell, as your login user. Open psql on dbalab and paste the SQL."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d dbalab",
+    "caption": "Open psql on the practice database"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders (\n    order_id    integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer    text          NOT NULL,\n    amount      numeric(10,2) NOT NULL,\n    status      text          NOT NULL DEFAULT 'NEW',\n    order_date  date          NOT NULL DEFAULT current_date,\n    shipped_on  date\n);\nCREATE INDEX orders_status_idx ON orders (status);\nINSERT INTO orders (customer, amount, status, order_date, shipped_on) VALUES\n  ('Asha Rao',     1250.00, 'SHIPPED', '2026-10-01', '2026-10-03'),\n  ('Vikram Singh',  499.50, 'NEW',     '2026-10-02', NULL),\n  ('Meera Iyer',   3200.00, 'SHIPPED', '2026-10-03', '2026-10-05'),\n  ('Rahul Verma',   150.00, 'PAID',    '2026-10-03', NULL),\n  ('Sara Khan',     780.25, 'PAID',    '2026-10-04', NULL);",
+    "caption": "Sample orders table with five rows"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLE\nCREATE INDEX\nINSERT 0 5",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "While you type a statement across several lines, the prompt changes from <code class=\"inline-code\">dbalab=#</code> to <code class=\"inline-code\">dbalab-#</code>. The dash means psql is waiting for the rest of the command. Nothing is sent until the semicolon."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: List databases, tables, indexes and roles",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> inside psql on dbalab, as postgres. These are the meta-commands you will use most. Add a pattern to filter, for example \\dt ord*, add + for more detail, and (new in PostgreSQL 18) add x to show a list in expanded mode, for example \\dtx."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Meta-command",
+      "What it lists"
+     ],
+     [
+      "\\l or \\list",
+      "Databases, with owner, encoding, locale and access privileges (\\l+ adds size)"
+     ],
+     [
+      "\\dt",
+      "Tables in the schemas on your search_path"
+     ],
+     [
+      "\\d name",
+      "Columns, types, defaults, indexes, constraints and triggers of one table, view or index"
+     ],
+     [
+      "\\di",
+      "Indexes"
+     ],
+     [
+      "\\dn",
+      "Schemas"
+     ],
+     [
+      "\\du",
+      "Roles (users and groups); same as \\dg"
+     ],
+     [
+      "\\df",
+      "Functions and procedures"
+     ],
+     [
+      "\\dx",
+      "Installed extensions"
+     ],
+     [
+      "\\dp or \\z",
+      "Access privileges on tables, views and sequences"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\l",
+    "caption": "List all databases"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                 List of databases\n   Name    |  Owner   | Encoding | Locale Provider | Collate |  Ctype  | Locale | ICU Rules |   Access privileges\n-----------+----------+----------+-----------------+---------+---------+--------+-----------+-----------------------\n dbalab    | postgres | UTF8     | libc            | C.UTF-8 | C.UTF-8 |        |           |\n postgres  | postgres | UTF8     | libc            | C.UTF-8 | C.UTF-8 |        |           |\n template0 | postgres | UTF8     | libc            | C.UTF-8 | C.UTF-8 |        |           | =c/postgres          +\n           |          |          |                 |         |         |        |           | postgres=CTc/postgres\n template1 | postgres | UTF8     | libc            | C.UTF-8 | C.UTF-8 |        |           | =c/postgres          +\n           |          |          |                 |         |         |        |           | postgres=CTc/postgres\n(4 rows)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Four databases: your dbalab, the default postgres database, and the two templates that new databases are copied from (Part 8). Your Collate and Ctype columns show whatever locale the cluster was created with, often en_US.UTF-8 or C.UTF-8."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\d orders",
+    "caption": "Describe the orders table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                              Table \"public.orders\"\n   Column   |     Type      | Collation | Nullable |           Default\n------------+---------------+-----------+----------+------------------------------\n order_id   | integer       |           | not null | generated always as identity\n customer   | text          |           | not null |\n amount     | numeric(10,2) |           | not null |\n status     | text          |           | not null | 'NEW'::text\n order_date | date          |           | not null | CURRENT_DATE\n shipped_on | date          |           |          |\nIndexes:\n    \"orders_pkey\" PRIMARY KEY, btree (order_id)\n    \"orders_status_idx\" btree (status)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">\\d</code> is the quickest way to answer \"what does this table look like and which indexes does it have?\". The primary key created the index orders_pkey automatically. <code class=\"inline-code\">\\d+ orders</code> adds column storage details, comments and the table's access method."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\du",
+    "caption": "List roles"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                             List of roles\n Role name |                         Attributes\n-----------+------------------------------------------------------------\n postgres  | Superuser, Create role, Create DB, Replication, Bypass RLS",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only the postgres superuser exists so far. You will create more roles in Part 7."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">\\dt</code> should list exactly one table, public.orders."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "           List of tables\n Schema |  Name  | Type  |  Owner\n--------+--------+-------+----------\n public | orders | table | postgres\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: See the SQL behind a meta-command, and get help",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> in the shell, as your login user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d dbalab -E -c '\\dn'",
+    "caption": "Echo the hidden catalog query of \\dn"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-E, --echo-hidden",
+      "Echo the actual queries generated by \\d and other backslash commands (same as setting ECHO_HIDDEN to on)."
+     ],
+     [
+      "-c command, --command=command",
+      "Run one command string (SQL, or a single backslash command), then exit."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "/******** QUERY *********/\nSELECT n.nspname AS \"Name\",\n  pg_catalog.pg_get_userbyid(n.nspowner) AS \"Owner\"\nFROM pg_catalog.pg_namespace n\nWHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'\nORDER BY 1;\n/************************/\n\n      List of schemas\n  Name  |       Owner\n--------+-------------------\n public | pg_database_owner\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is how DBAs learn the system catalogs: let psql show you its query, then copy and adapt it for your own monitoring scripts. For help, <code class=\"inline-code\">\\?</code> lists every meta-command and <code class=\"inline-code\">\\h CREATE DATABASE</code> prints the SQL syntax of any statement, ending with a link to the matching documentation page."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Controlling output formats",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Use expanded display for wide rows",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> inside psql on dbalab, as postgres. When a row has many columns, the normal table wraps and becomes unreadable, especially in a narrow terminal on a phone over SSH. Expanded mode prints one column per line."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\x\nSELECT * FROM orders WHERE order_id = 1;\n\\x",
+    "caption": "Turn expanded display on, run a query, turn it off"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Expanded display is on.\n-[ RECORD 1 ]----------\norder_id   | 1\ncustomer   | Asha Rao\namount     | 1250.00\nstatus     | SHIPPED\norder_date | 2026-10-01\nshipped_on | 2026-10-03\n\nExpanded display is off.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Three handy variants: <code class=\"inline-code\">\\x auto</code> switches to expanded mode only when a result is too wide for the screen; <code class=\"inline-code\">\\gx</code> at the end of a query, instead of the semicolon, uses expanded mode for that one query; and <code class=\"inline-code\">psql -x</code> starts the whole session in expanded mode."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, customer, amount FROM orders WHERE order_id = 3 \\gx",
+    "caption": "Expanded output for one query only"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-[ RECORD 1 ]--------\norder_id | 3\ncustomer | Meera Iyer\namount   | 3200.00",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Show NULLs clearly and time your queries",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> inside psql on dbalab, as postgres. By default a NULL prints as an empty cell, so you cannot tell NULL from an empty string. <code class=\"inline-code\">\\pset null</code> sets a visible marker, and <code class=\"inline-code\">\\timing</code> prints how long each statement took."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\pset null '(null)'\nSELECT order_id, status, shipped_on FROM orders ORDER BY order_id;\n\\timing on\nSELECT count(*) FROM orders;",
+    "caption": "Visible NULLs and query timing"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Null display is \"(null)\".\n order_id | status  | shipped_on\n----------+---------+------------\n        1 | SHIPPED | 2026-10-03\n        2 | NEW     | (null)\n        3 | SHIPPED | 2026-10-05\n        4 | PAID    | (null)\n        5 | PAID    | (null)\n(5 rows)\n\nTiming is on.\n count\n-------\n     5\n(1 row)\n\nTime: 0.262 ms",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The time is measured by psql, so it includes the network round trip as well as the server work. It is perfect for a quick \"is this faster now?\" check; Part 26 shows how to read EXPLAIN ANALYZE for the server-side detail. <code class=\"inline-code\">\\pset</code> on its own lists every print option and its current value."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Get plain output for shell scripts, CSV and files",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> in the shell, as the postgres OS user's command (through sudo). Shell scripts do not want borders, headers or a \"(2 rows)\" footer. They want just the values."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d dbalab -At -c \"SELECT customer, amount FROM orders WHERE status = 'PAID' ORDER BY order_id;\"\nsudo -u postgres psql -d dbalab --csv -c \"SELECT order_id, customer, amount FROM orders ORDER BY order_id;\"",
+    "caption": "Unaligned tuples-only output, then CSV output"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-A, --no-align",
+      "Unaligned output mode: values separated by the field separator (default |), no padding."
+     ],
+     [
+      "-t, --tuples-only",
+      "Turn off column names and the row count footer."
+     ],
+     [
+      "--csv",
+      "CSV (comma-separated values) output mode, same as \\pset format csv."
+     ],
+     [
+      "-F separator",
+      "Field separator for unaligned output, for example -F ','."
+     ],
+     [
+      "-o filename",
+      "Put all query output into a file, same as \\o."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Rahul Verma|150.00\nSara Khan|780.25\norder_id,customer,amount\n1,Asha Rao,1250.00\n2,Vikram Singh,499.50\n3,Meera Iyer,3200.00\n4,Rahul Verma,150.00\n5,Sara Khan,780.25",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With <code class=\"inline-code\">-At</code> a single value comes back bare, so a shell script can capture it: <code class=\"inline-code\">ROWS=$(sudo -u postgres psql -X -d dbalab -At -c \"SELECT count(*) FROM orders;\")</code> sets ROWS to 5. The <code class=\"inline-code\">-X</code> option (skip the startup file) is explained in Step 13."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To write a result to a file, use <code class=\"inline-code\">\\copy</code>. It runs the SQL COPY command, but psql reads or writes the file on the client side, with the permissions of your OS user, and it does not need superuser rights. The server-side SQL <code class=\"inline-code\">COPY ... TO '/path'</code> instead writes as the server's OS user and needs superuser or the pg_write_server_files role."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d dbalab -c \"\\copy (SELECT order_id, customer, amount FROM orders ORDER BY order_id) TO '/var/lib/postgresql/orders.csv' WITH (FORMAT csv, HEADER)\"\nsudo -u postgres head -3 /var/lib/postgresql/orders.csv",
+    "caption": "Export a query to a CSV file on the client"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "COPY 5\norder_id,customer,amount\n1,Asha Rao,1250.00\n2,Vikram Singh,499.50",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">COPY 5</code> confirms five rows were written. <code class=\"inline-code\">/var/lib/postgresql</code> is the home directory of the postgres OS user on Ubuntu, so the file is owned by postgres. A <code class=\"inline-code\">\\copy</code> command must fit on one line. <b>Cleanup:</b> <code class=\"inline-code\">sudo -u postgres rm /var/lib/postgresql/orders.csv</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Running SQL scripts safely",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Run a script with -f, and make it stop on errors",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as the postgres OS user. Open a shell as that user so the files land in its home directory:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -i -u postgres\ncd ~\npwd",
+    "caption": "Become the postgres OS user"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "/var/lib/postgresql",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small change script with nano (<code class=\"inline-code\">nano fix_orders.sql</code>). It has a typo on line 2 on purpose, the kind of mistake that happens in real change scripts:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders SET status = 'SHIPPED', shipped_on = DATE '2026-10-06' WHERE order_id = 4;\nUPDATE ordrs SET status = 'SHIPPED' WHERE order_id = 5;\nUPDATE orders SET status = 'CANCELLED' WHERE order_id = 2;",
+    "caption": "fix_orders.sql"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "First run it the default way:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql -d dbalab -f fix_orders.sql\necho \"exit code: $?\"",
+    "caption": "Run the script with default settings"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "UPDATE 1\npsql:fix_orders.sql:2: ERROR:  relation \"ordrs\" does not exist\nLINE 1: UPDATE ordrs SET status = 'SHIPPED' WHERE order_id = 5;\n               ^\nUPDATE 1\nexit code: 0",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the trap. By default psql reports the error and <b>carries on</b> with the next statement, so rows 4 and 2 were changed and row 5 was not. Worse, the exit code is 0, so a cron job or deployment tool thinks everything went fine. The table is now half-changed."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Put the two rows back, then run the script the safe way:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql -d dbalab -c \"UPDATE orders SET status = 'NEW' WHERE order_id = 2;\" -c \"UPDATE orders SET status = 'PAID', shipped_on = NULL WHERE order_id = 4;\"\npsql -d dbalab -v ON_ERROR_STOP=1 -1 -f fix_orders.sql\necho \"exit code: $?\"",
+    "caption": "Undo the partial change, then run with ON_ERROR_STOP and a single transaction"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-f filename, --file=filename",
+      "Read commands from the file. Error messages include the file name and line number."
+     ],
+     [
+      "-v ON_ERROR_STOP=1",
+      "Set the psql variable ON_ERROR_STOP: stop at the first error; in a script psql exits with code 3."
+     ],
+     [
+      "-1, --single-transaction",
+      "Wrap all -c and -f commands in one BEGIN ... COMMIT. If a command fails and ON_ERROR_STOP is set, psql sends ROLLBACK instead."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "UPDATE 1\nUPDATE 1\nUPDATE 1\npsql:fix_orders.sql:2: ERROR:  relation \"ordrs\" does not exist\nLINE 1: UPDATE ordrs SET status = 'SHIPPED' WHERE order_id = 5;\n               ^\nexit code: 3",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The first two UPDATE 1 lines come from the undo commands. Then the script ran line 1, hit the error on line 2, stopped and rolled back. Line 3 never ran, and exit code 3 tells the calling script that a SQL error stopped it. The documented exit codes are: 0 finished normally, 1 fatal psql error (for example file not found), 2 connection lost in a non-interactive session, 3 error in a script with ON_ERROR_STOP set."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> nothing was changed."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, status, shipped_on FROM orders WHERE order_id IN (2, 4, 5) ORDER BY order_id;",
+    "caption": "Rows 2, 4 and 5 are untouched"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | status | shipped_on\n----------+--------+------------\n        2 | NEW    |\n        4 | PAID   |\n        5 | PAID   |\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Always use both on production changes",
+    "text": "Run every production change script with <code class=\"inline-code\">-v ON_ERROR_STOP=1 -1</code>. The documentation warns that <code class=\"inline-code\">-1</code> does not help if the script contains its own BEGIN, COMMIT or ROLLBACK, and that a command which cannot run inside a transaction block (such as VACUUM, or CREATE INDEX CONCURRENTLY) makes the whole transaction fail."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Pass values into a script with variables",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> as the postgres OS user, in its home directory. psql variables let one script work for many inputs. Set them with <code class=\"inline-code\">-v name=value</code> on the command line or <code class=\"inline-code\">\\set name value</code> inside psql. In SQL, <code class=\"inline-code\">:name</code> inserts the value as is, <code class=\"inline-code\">:'name'</code> inserts it as a quoted string literal, and <code class=\"inline-code\">:\"name\"</code> as a quoted identifier."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create orders_by_status.sql:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\echo Report for status :status\nSELECT order_id, customer, amount\n  FROM orders\n WHERE status = :'status'\n ORDER BY order_id;",
+    "caption": "orders_by_status.sql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql -d dbalab -v status=PAID -f orders_by_status.sql",
+    "caption": "Run the script with status set to PAID"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Report for status PAID\n order_id |  customer   | amount\n----------+-------------+--------\n        4 | Rahul Verma | 150.00\n        5 | Sara Khan   | 780.25\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">:'status'</code> for values, never <code class=\"inline-code\">':status'</code>: variables are not replaced inside quoted SQL text, and the quoting form also escapes any single quote in the value safely."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The reverse direction is <code class=\"inline-code\">\\gset</code>: it runs a query that returns exactly one row and stores each column in a psql variable named after the column."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT count(*) AS order_count, sum(amount) AS total FROM orders \\gset\n\\echo Orders: :order_count Total: :total",
+    "caption": "Store query results in variables"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Orders: 5 Total: 5879.75",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Generate and run statements with \\gexec, and repeat a query with \\watch",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> inside psql on dbalab, as postgres. <code class=\"inline-code\">\\gexec</code> runs a query, then executes every value in the result as a SQL statement. DBAs use it to apply the same command to many objects. Here it runs ANALYZE (which refreshes planner statistics, Part 32) on every user table."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Preview before you execute",
+    "text": "Run the query once with a normal semicolon first and read the generated statements. With <code class=\"inline-code\">\\gexec</code> they all run immediately, and by default execution continues even if one of them fails unless ON_ERROR_STOP is set. Be especially careful with generated DROP, TRUNCATE or ALTER statements on production."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\set ECHO queries\nSELECT format('ANALYZE %I.%I', schemaname, relname)\n  FROM pg_stat_user_tables\n ORDER BY relname \\gexec",
+    "caption": "Run ANALYZE on every user table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "SELECT format('ANALYZE %I.%I', schemaname, relname)\n  FROM pg_stat_user_tables\n ORDER BY relname \nANALYZE public.orders\nANALYZE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With ECHO set to queries, psql prints the query it sends, then each generated statement (ANALYZE public.orders) before its result (ANALYZE). <code class=\"inline-code\">format()</code> with <code class=\"inline-code\">%I</code> quotes identifiers correctly, so table names with capital letters or spaces do not break the generated SQL. Undo the echo with <code class=\"inline-code\">\\unset ECHO</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">\\watch</code> re-runs the last query every few seconds until you press Ctrl+C. It is the simplest live monitor: for example, watch the client sessions during a deployment."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, state, left(query, 40) AS query\n  FROM pg_stat_activity\n WHERE backend_type = 'client backend'\n\\watch interval=2 count=2",
+    "caption": "Run a query every 2 seconds, twice"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "           Thu Oct 22 12:51:17 2026 (every 2s)\n\n pid  | state  |                  query\n------+--------+------------------------------------------\n 1904 | active | SELECT pid, state, left(query, 40) AS qu\n(1 row)\n\n           Thu Oct 22 12:51:19 2026 (every 2s)\n\n pid  | state  |                  query\n------+--------+------------------------------------------\n 1904 | active | SELECT pid, state, left(query, 40) AS qu\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each run is stamped with the time. The only client session is your own psql. Named options such as <code class=\"inline-code\">count=</code> need psql 16 or later, <code class=\"inline-code\">min_rows=</code> needs 17, and PostgreSQL 18 adds the WATCH_INTERVAL variable to change the default 2-second wait. Part 10 covers pg_stat_activity properly."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Setting up ~/.psqlrc",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Create a startup file for the postgres user",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as the postgres OS user, in <code class=\"inline-code\">/var/lib/postgresql</code>. psql reads a system-wide file called psqlrc and then your personal <code class=\"inline-code\">~/.psqlrc</code> every time it starts, unless you pass <code class=\"inline-code\">-X</code>. On Ubuntu the system-wide file would be <code class=\"inline-code\">/etc/postgresql-common/psqlrc</code> (the directory <code class=\"inline-code\">pg_config --sysconfdir</code> reports); it does not exist by default. Create the personal file with <code class=\"inline-code\">nano ~/.psqlrc</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-- ~/.psqlrc for the postgres OS user\n\\set QUIET 1\n\\pset null '(null)'\n\\set PROMPT1 '%n@%/%R%x%# '\n\\set HISTFILE ~/.psql_history-:DBNAME\n\\set HISTCONTROL ignoredups\n\\x auto\n\\timing on\n\\set QUIET 0",
+    "caption": "/var/lib/postgresql/.psqlrc"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Line",
+      "What it does"
+     ],
+     [
+      "\\set QUIET 1 ... \\set QUIET 0",
+      "Hide the \"Timing is on.\" style messages while the file loads."
+     ],
+     [
+      "\\pset null '(null)'",
+      "Show NULL values visibly."
+     ],
+     [
+      "\\set PROMPT1 '%n@%/%R%x%# '",
+      "Prompt shows user@database. %R shows = (or - while a statement continues), %x shows * inside a transaction and ! in a failed one, %# shows # for a superuser."
+     ],
+     [
+      "\\set HISTFILE ~/.psql_history-:DBNAME",
+      "Keep a separate command history for each database."
+     ],
+     [
+      "\\set HISTCONTROL ignoredups",
+      "Do not store the same line twice in a row in the history."
+     ],
+     [
+      "\\x auto and \\timing on",
+      "Expanded output only when needed, and timing for every statement."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> start psql and open a transaction."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql -d dbalab",
+    "caption": "Start psql with the new startup file"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql (18.6 (Ubuntu 18.6-1.pgdg24.04+2))\nType \"help\" for help.\n\npostgres@dbalab=# BEGIN;\nBEGIN\nTime: 0.103 ms\npostgres@dbalab=*# UPDATE orders SET amount = amount WHERE order_id = 2;\nUPDATE 1\nTime: 0.585 ms\npostgres@dbalab=*# ROLLBACK;\nROLLBACK\nTime: 0.378 ms\npostgres@dbalab=#",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The prompt now names the user and database, and the <code class=\"inline-code\">*</code> warns you that a transaction is open. That one character prevents a classic incident: an open transaction left in a forgotten terminal, holding locks for hours. (The default prompt shows it too, as <code class=\"inline-code\">dbalab=*#</code>.)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">rm ~/.psqlrc</code>, or start psql with <code class=\"inline-code\">-X</code> to ignore the file for one run. Use <code class=\"inline-code\">-X</code> in automated scripts: with this file in place, <code class=\"inline-code\">psql -At -c \"SELECT count(*) FROM orders;\"</code> prints an extra <code class=\"inline-code\">Time: ... ms</code> line after the number, which breaks any script that reads the output. You can also make a file version-specific, for example <code class=\"inline-code\">~/.psqlrc-18</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "psql: FATAL: role \"ubuntu\" does not exist",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: FATAL:  role \"ubuntu\" does not exist",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You ran plain <code class=\"inline-code\">psql</code> as your Linux user, so psql tried a database role with the same name. Fix: run <code class=\"inline-code\">sudo -u postgres psql</code>, or create a role for yourself (Part 7). As root you see the same error with role \"root\"."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: Peer authentication failed for user \"postgres\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: FATAL:  Peer authentication failed for user \"postgres\"",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You ran <code class=\"inline-code\">psql -U postgres</code> as a different Linux user. Peer authentication requires the OS user name to match the role. Fix: <code class=\"inline-code\">sudo -u postgres psql</code>, not <code class=\"inline-code\">psql -U postgres</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "fe_sendauth: no password supplied",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: fe_sendauth: no password supplied",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Adding <code class=\"inline-code\">-h localhost</code> switches from the socket to TCP, where Ubuntu's default pg_hba.conf asks for a password (scram-sha-256), and the postgres role has none. In a terminal psql first asks for a password; in a script, or with <code class=\"inline-code\">-w</code> (never prompt), you get this error. Fix: drop <code class=\"inline-code\">-h</code> for local admin work, or set a password and rules as shown in Part 6."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: database \"salesdb\" does not exist",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: FATAL:  database \"salesdb\" does not exist",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A typo, or the database is on another cluster. Fix: list databases with <code class=\"inline-code\">sudo -u postgres psql -l</code> and check the port with <code class=\"inline-code\">pg_lsclusters</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "No such file or directory ... Is the server running locally?",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5433\" failed: No such file or directory\n\tIs the server running locally and accepting connections on that socket?",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Nothing listens on that port: wrong <code class=\"inline-code\">-p</code>, or the cluster is down. Fix: run <code class=\"inline-code\">pg_lsclusters</code>; if Status says down, start it with <code class=\"inline-code\">sudo systemctl start postgresql@18-main</code> (Part 2)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The query does nothing and the prompt shows dbalab-#",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You forgot the semicolon, so psql is waiting for more input. Type <code class=\"inline-code\">;</code> to send it, or <code class=\"inline-code\">\\r</code> to clear the query buffer and start again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: syntax error at or near \"order\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  syntax error at or near \"order\"\nLINE 1: SELECT * FROM order;\n                      ^",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A one-letter typo turned the table name into the reserved word ORDER. psql points at the exact spot with <code class=\"inline-code\">^</code>. Fix the name (<code class=\"inline-code\">orders</code>); use <code class=\"inline-code\">\\errverbose</code> to see the most recent error at maximum detail."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Write one shell command that prints only the number of orders with status SHIPPED, as a bare number with no header or footer.",
+      "items": []
+     },
+     {
+      "content": "Write a script total_for.sql that prints the total amount for a customer passed in with -v cust=..., and run it so it stops on any error.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answers",
+    "text": "1. <code class=\"inline-code\">sudo -u postgres psql -X -d dbalab -At -c \"SELECT count(*) FROM orders WHERE status = 'SHIPPED';\"</code> prints 2 (-X keeps the Time line from ~/.psqlrc out of the output).<br>2. total_for.sql contains <code class=\"inline-code\">SELECT sum(amount) AS total FROM orders WHERE customer = :'cust';</code>. As the postgres OS user run <code class=\"inline-code\">psql -X -d dbalab -v ON_ERROR_STOP=1 -v cust='Asha Rao' -f total_for.sql</code>; the total is 1250.00."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Connect as the postgres superuser (Unix socket, peer authentication)\nsudo -u postgres psql\n# Connect to a database on a port; remote form adds -h and -U\nsudo -u postgres psql -d dbalab -p 5432\npsql -h 10.0.0.11 -U app_user -d dbalab\n# Inside psql: connection info, switch database, quit\n\\conninfo\n\\c dbalab\n\\q\n# Inside psql: list databases, tables, one table, indexes, schemas, roles, extensions\n\\l\n\\dt\n\\d orders\n\\di\n\\dn\n\\du\n\\dx\n# Show the catalog query behind a meta-command\nsudo -u postgres psql -d dbalab -E -c '\\dn'\n# Inside psql: expanded display, one-off expanded query, NULL marker, timing\n\\x auto\nSELECT * FROM orders WHERE order_id = 3 \\gx\n\\pset null '(null)'\n\\timing on\n# Script-friendly output: bare values, CSV\nsudo -u postgres psql -d dbalab -At -c \"SELECT count(*) FROM orders;\"\nsudo -u postgres psql -d dbalab --csv -c \"SELECT * FROM orders;\"\n# Client-side export to a CSV file\nsudo -u postgres psql -d dbalab -c \"\\copy (SELECT * FROM orders) TO '/var/lib/postgresql/orders.csv' WITH (FORMAT csv, HEADER)\"\n# Run a change script safely (stop on error, one transaction)\npsql -X -d dbalab -v ON_ERROR_STOP=1 -1 -f fix_orders.sql\n# Pass a variable into a script\npsql -d dbalab -v status=PAID -f orders_by_status.sql\n# Inside psql: store results in variables, generate statements, repeat a query\nSELECT count(*) AS order_count FROM orders \\gset\nSELECT format('ANALYZE %I.%I', schemaname, relname) FROM pg_stat_user_tables \\gexec\nSELECT count(*) FROM pg_stat_activity \\watch interval=2\n# Ignore ~/.psqlrc for one run\npsql -X -d dbalab",
+    "caption": "psql commands from this part, in order"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "psql is a client: SQL goes to the server at the semicolon, backslash meta-commands are handled by psql.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "On Ubuntu, sudo -u postgres psql connects over the Unix socket with peer authentication; /usr/bin/psql is pg_wrapper, which starts /usr/lib/postgresql/18/bin/psql.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "-d, -U, -h and -p choose database, user, host and port; \\c switches database, \\conninfo shows where you are.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "\\l, \\dt, \\d, \\di, \\dn, \\du and \\dx answer most \"what is in this database?\" questions; -E shows the SQL behind them.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "\\x auto, \\gx, \\pset null and \\timing make interactive output readable; -At and --csv make it script-friendly.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Production scripts run with -X -v ON_ERROR_STOP=1 -1 -f, and check for exit code 3.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Variables (-v, :'name', \\gset), \\gexec and \\watch automate routine DBA work.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "A ~/.psqlrc with a prompt showing the transaction state prevents forgotten open transactions.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 5 you will learn postgresql.conf basics: how parameters are set, the difference between reload and restart, and how to read pg_settings."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your psql change script failed on line 2, kept running lines 3 to 50, and still returned exit code 0.\n\nThat is psql's default behaviour. Part 4 of my PostgreSQL DBA series covers the psql commands a DBA uses every day, on Ubuntu with PostgreSQL 18:\n\n→ sudo -u postgres psql connects over the Unix socket with peer authentication. psql -U postgres from another Linux user fails.\n→ \\l, \\dt, \\d orders, \\du and \\dx answer most questions. psql -E shows the catalog query behind each one.\n→ \\x auto and \\gx make wide rows readable. -At and --csv give clean output for shell scripts.\n→ Run change scripts with -v ON_ERROR_STOP=1 -1 -f script.sql. psql stops at the first error, rolls back, and exits with code 3.\n→ Use -X in cron jobs. Settings in ~/.psqlrc such as \\timing on add extra lines that break scripts.\n\nWhich psql meta-command do you type most often?\n\nFollow the series: Part 5 is postgresql.conf basics.\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #SQL #Database",
+  "slides": [
+   {
+    "title": "PostgreSQL DBA Part 4: psql Commands",
+    "body": "Connect, explore, format output and run scripts safely"
+   },
+   {
+    "title": "Connecting on Ubuntu",
+    "points": [
+     "sudo -u postgres psql uses the socket and peer auth",
+     "-d database, -U user, -h host, -p port",
+     "\\c dbname switches database, \\conninfo shows details",
+     "No USE statement: one session, one database"
+    ]
+   },
+   {
+    "title": "Meta-commands DBAs use daily",
+    "points": [
+     "\\l databases, \\dt tables, \\d one table",
+     "\\di indexes, \\dn schemas, \\du roles",
+     "\\dx extensions, \\? help, \\h SQL syntax",
+     "psql -E shows the catalog query behind them"
+    ],
+    "code": "\\d orders\n\\du\n\\dx",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Readable output",
+    "points": [
+     "\\x auto: expanded rows only when too wide",
+     "\\gx: expanded output for one query",
+     "\\pset null '(null)' shows NULLs clearly",
+     "\\timing on prints time per statement"
+    ],
+    "code": "SELECT *\n  FROM orders\n WHERE order_id = 3 \\gx",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Scripts that stop on errors",
+    "body": "By default psql reports an error, runs the next statement and exits with 0. Use -v ON_ERROR_STOP=1 with -1 (one transaction): psql stops, rolls back and exits with code 3."
+   },
+   {
+    "title": "Variables and automation",
+    "points": [
+     "-v status=PAID, then :'status' in SQL",
+     "\\gset stores one row in variables",
+     "\\gexec runs each generated statement",
+     "\\watch interval=2 repeats a query"
+    ],
+    "code": "SELECT format('ANALYZE %I.%I',\n  schemaname, relname)\n  FROM pg_stat_user_tables\n\\gexec",
+    "lang": "postgresql"
+   }
+  ]
+ }
+}
