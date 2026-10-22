@@ -1,0 +1,818 @@
+{
+ "schemaVersion": 1,
+ "title": "ORA-00060 Deadlock Detected in Oracle: Causes and Fixes",
+ "slug": "ora-00060-deadlock-detected-oracle",
+ "category": "plsql",
+ "description": "Why Oracle raises ORA-00060 deadlock detected, what it rolls back, how to read the trace file, and code fixes: lock order, FK indexes and retries.",
+ "focusKeyword": "ora-00060 deadlock detected",
+ "tags": [
+  "oracle",
+  "locking",
+  "deadlock",
+  "ora-errors",
+  "plsql"
+ ],
+ "related": [
+  "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/",
+  "/posts/postgresql/postgresql-deadlock-detected/",
+  "/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle error help: ORA-00060",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-00060/"
+  },
+  {
+   "title": "Oracle Database 19c Concepts: Data Concurrency and Consistency (Locks and Deadlocks, Locks and Foreign Keys)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/cncpt/data-concurrency-and-consistency.html"
+  },
+  {
+   "title": "Oracle Database 19c PL/SQL Language Reference: Autonomous Transactions",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/autonomous-transactions.html"
+  },
+  {
+   "title": "Oracle Database 19c PL/SQL Language Reference: EXCEPTION_INIT pragma",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/EXCEPTION_INIT-pragma.html"
+  }
+ ],
+ "reviewNotes": "Examples written from the Oracle 19c docs and not run; please test on a real database. Check: (1) the two-session reproduction and which session gets ORA-00060 (docs say either can); (2) the trace-file description (TX vs TM, 'Rows waited on', the 'not an ORACLE error' wording) is from secondary sources and memory of trace format, so confirm against a real trace; no trace output is quoted on purpose; (3) the autonomous-transaction self-deadlock example should raise ORA-00060 per the lnpls warning, confirm; (4) DBMS_SESSION.SLEEP requires 18c+; (5) the unindexed-FK query output row is illustrative (constraint name will differ); (6) the trace path in the bash example is a placeholder. Not covered in existing drafts: the blocking-sessions draft only mentions ORA-00060 in one line.",
+ "generatedAt": "2026-10-22T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>ORA-00060: deadlock detected while waiting for resource</b> means two (or more) sessions were each waiting for a lock the other one held, so neither could ever continue. Oracle spots the cycle on its own and breaks it by rolling back <b>one statement</b> in one of the sessions. That session gets ORA-00060, and its earlier work in the same transaction is still there, still holding locks."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The fix is almost never a database parameter. Deadlocks come from the order in which your code locks rows, from unindexed foreign keys, or from an autonomous transaction fighting its own parent. This tutorial reproduces a deadlock step by step, shows how to read the trace file Oracle writes, and covers the code changes that stop it from happening again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How a deadlock happens in Oracle",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle locks rows, not pages, and plain queries never take read locks. So a deadlock needs two sessions that both change data and grab their locks in a different order. Session A locks row 1 and then asks for row 2. Session B already holds row 2 and now asks for row 1. Both wait, and no amount of waiting will ever help."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is different from ordinary <b>blocking</b>. With blocking, one session waits until the other commits or rolls back, and then it carries on. With a deadlock the wait is circular, so Oracle has to step in."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "",
+      "Blocking",
+      "Deadlock (ORA-00060)"
+     ],
+     [
+      "What it is",
+      "One session waits for another",
+      "Two or more sessions wait for each other"
+     ],
+     [
+      "Does it end by itself?",
+      "Yes, when the holder commits or rolls back",
+      "No, Oracle must break the cycle"
+     ],
+     [
+      "Error raised",
+      "None (unless you use NOWAIT or WAIT n)",
+      "ORA-00060 in one session"
+     ],
+     [
+      "Trace file written",
+      "No",
+      "Yes, in the diagnostic trace directory"
+     ],
+     [
+      "Who fixes it",
+      "Holder ends its transaction (or a DBA kills it)",
+      "The application, by changing lock order or design"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "According to the Oracle Concepts guide, the statement that gets rolled back belongs to the session that detects the deadlock. Only one session gets the error, but you cannot predict which one. The rest of that session's transaction is <b>not</b> rolled back."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small accounts table. A money transfer updates two rows, which is the classic place where deadlocks appear."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE accounts (\n  account_id  NUMBER PRIMARY KEY,\n  owner_name  VARCHAR2(50) NOT NULL,\n  balance     NUMBER(12,2) NOT NULL\n);\n\nINSERT INTO accounts VALUES (1, 'Asha',  5000);\nINSERT INTO accounts VALUES (2, 'Ravi',  3000);\nINSERT INTO accounts VALUES (3, 'Meena', 8000);\nCOMMIT;",
+    "caption": "Sample table for the examples"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You need two separate connections to follow along, for example two SQL*Plus or SQL Developer windows. Turn off autocommit in your GUI tool, otherwise every statement commits at once and no deadlock can form."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reproduce ORA-00060 with two sessions",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run the statements in this exact order. Session 1 sends Asha's money to Ravi. Session 2 sends Ravi's money to Asha at the same moment."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: each session locks one row",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Session 1\nUPDATE accounts SET balance = balance - 500 WHERE account_id = 1;\n\n-- Session 2\nUPDATE accounts SET balance = balance - 200 WHERE account_id = 2;",
+    "caption": "Run in two different sessions"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "1 row updated.",
+    "caption": "Output in each session (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No problem yet. Session 1 holds a row lock on account 1 and session 2 holds a row lock on account 2."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: each session asks for the other row",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Session 1 (hangs, waiting for session 2)\nUPDATE accounts SET balance = balance + 500 WHERE account_id = 2;\n\n-- Session 2 (hangs, waiting for session 1)\nUPDATE accounts SET balance = balance + 200 WHERE account_id = 1;",
+    "caption": "The circular wait"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now both sessions are stuck. After a short time Oracle detects the cycle, and one of them gets the error:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "UPDATE accounts SET balance = balance + 500 WHERE account_id = 2\n       *\nERROR at line 1:\nORA-00060: deadlock detected while waiting for resource",
+    "caption": "Session 1 (expected output; either session could get it)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: understand what was rolled back",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only the failed UPDATE was undone. Session 1 still holds the lock on account 1 from step 1, so <b>session 2 is still waiting</b>. You can check it from session 1:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT account_id, balance FROM accounts ORDER BY account_id;",
+    "caption": "Run in session 1"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ACCOUNT_ID",
+      "BALANCE"
+     ],
+     [
+      "1",
+      "4500"
+     ],
+     [
+      "2",
+      "3000"
+     ],
+     [
+      "3",
+      "8000"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Account 1 shows 4500 because session 1 sees its own uncommitted debit. The credit to account 2 never happened. If session 1 committed now, Asha would lose 500 and Ravi would get nothing. That is why the right reaction to ORA-00060 is a full <b>ROLLBACK</b>, not a COMMIT."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Session 1\nROLLBACK;\n\n-- Session 2 continues immediately\n-- 1 row updated.\nCOMMIT;",
+    "caption": "Ending the deadlock cleanly"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Never commit after ORA-00060",
+    "text": "A program that catches ORA-00060, logs it and then carries on to COMMIT will save half a business transaction. Always roll back the whole transaction (or re-run it from the start) after a deadlock."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find the deadlock details in the trace file",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every ORA-00060 writes a message to the alert log and a trace file in the diagnostic trace directory. The Oracle error reference says to look at that trace file to see the transactions and resources involved. Find the directory with:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT value FROM v$diag_info WHERE name = 'Diag Trace';",
+    "caption": "Where Oracle writes trace files"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You need access to the database server (or a DBA) to read the files. On the server, search for the error:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "cd /u01/app/oracle/diag/rdbms/orcl/orcl/trace   # use the path from the query\ngrep -l \"ORA-00060\" *.trc",
+    "caption": "Find trace files that mention the deadlock"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What to look for in the trace",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The trace contains a section called the <b>deadlock graph</b>, followed by the SQL being run by each session. Oracle's trace usually states that the deadlock is not an Oracle error but a result of application design or ad hoc SQL. Focus on these parts:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Resource name</b>: a resource starting with <b>TX</b> is a row-level (transaction) lock. A resource starting with <b>TM</b> is a table-level lock, which very often points to an unindexed foreign key.",
+      "items": []
+     },
+     {
+      "content": "<b>holds / waits</b>: which lock mode each session held and which one it was waiting for.",
+      "items": []
+     },
+     {
+      "content": "<b>Rows waited on</b>: the object and row each session wanted. Map the object number to a name with <code class=\"inline-code\">SELECT object_name FROM dba_objects WHERE object_id = ...</code>.",
+      "items": []
+     },
+     {
+      "content": "<b>Current SQL</b>: the statement of the session that got the error, and information for the other waiting sessions. These tell you which two code paths collide.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two row lock (TX) deadlocks in the graph almost always mean the lock order problem from the example above. A TM lock in the graph sends you to the foreign key check in the next section."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 1: always lock rows in the same order",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The deadlock above happened because session 1 locked account 1 then 2, while session 2 locked 2 then 1. If every transfer locks the <b>lower account_id first</b>, the second session simply waits behind the first one. That is normal blocking, which ends on commit."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "CREATE OR REPLACE PROCEDURE transfer (\n  p_from   IN accounts.account_id%TYPE,\n  p_to     IN accounts.account_id%TYPE,\n  p_amount IN NUMBER\n) AS\n  v_balance accounts.balance%TYPE;\nBEGIN\n  -- Lock both rows in a fixed order: lowest id first\n  SELECT balance INTO v_balance\n    FROM accounts\n   WHERE account_id = LEAST(p_from, p_to)\n     FOR UPDATE;\n\n  SELECT balance INTO v_balance\n    FROM accounts\n   WHERE account_id = GREATEST(p_from, p_to)\n     FOR UPDATE;\n\n  UPDATE accounts SET balance = balance - p_amount\n   WHERE account_id = p_from;\n\n  UPDATE accounts SET balance = balance + p_amount\n   WHERE account_id = p_to;\nEND transfer;\n/",
+    "caption": "Lock rows in a consistent order"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now run <code class=\"inline-code\">EXEC transfer(1, 2, 500)</code> in session 1 and <code class=\"inline-code\">EXEC transfer(2, 1, 200)</code> in session 2. Both calls lock account 1 first. Session 2 waits on its first SELECT ... FOR UPDATE until session 1 commits, then completes. No ORA-00060."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same idea applies to batch jobs. If two jobs update overlapping sets of orders, have both process them sorted by the primary key, one row or one small batch at a time, so their lock order matches."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "A single UPDATE that touches many rows (for example WHERE account_id IN (1, 2)) does not guarantee the order in which it locks them. If two such statements overlap, they can still deadlock. Lock in a known order with separate statements, or make sure concurrent jobs work on different rows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 2: index your foreign keys",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the deadlock cause people miss most. The Oracle Concepts guide explains that when a foreign key column has <b>no index</b>, deleting a parent row or changing its primary key takes a full table lock on the child table. Two sessions doing this on different parents while others change the child table can deadlock, and the graph shows TM locks."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE payments (\n  payment_id  NUMBER PRIMARY KEY,\n  account_id  NUMBER NOT NULL REFERENCES accounts (account_id),\n  amount      NUMBER(12,2) NOT NULL,\n  paid_on     DATE DEFAULT SYSDATE\n);\n-- No index on payments.account_id yet",
+    "caption": "Child table with an unindexed foreign key"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Find foreign keys in your schema whose columns are not covered by an index with the same leading columns:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT c.table_name, c.constraint_name, cc.column_name, cc.position\n  FROM user_constraints  c\n  JOIN user_cons_columns cc\n    ON cc.constraint_name = c.constraint_name\n WHERE c.constraint_type = 'R'\n   AND NOT EXISTS (\n         SELECT 1\n           FROM user_ind_columns ic\n          WHERE ic.table_name      = cc.table_name\n            AND ic.column_name     = cc.column_name\n            AND ic.column_position = cc.position)\n ORDER BY c.table_name, c.constraint_name, cc.position;",
+    "caption": "Unindexed foreign key columns"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "TABLE_NAME",
+      "CONSTRAINT_NAME",
+      "COLUMN_NAME",
+      "POSITION"
+     ],
+     [
+      "PAYMENTS",
+      "SYS_C0012345",
+      "ACCOUNT_ID",
+      "1"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "(expected output; the constraint name is system generated and will differ on your database.) The fix is one statement:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE INDEX payments_account_ix ON payments (account_id);",
+    "caption": "Index the foreign key column"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation says foreign keys should almost always be indexed, with one exception: when the parent's primary key is never updated and parent rows are never deleted. The query above is a simple check that compares column positions. A multi-column foreign key needs an index whose leading columns are exactly the key columns, in any order, so review composite keys by hand."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 3: retry the whole transaction, once or twice",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Even with good design, rare deadlocks can happen under heavy load. Oracle's own advice for ORA-00060 is to retry if necessary. Retry the <b>whole</b> unit of work after a rollback, never just the failed statement on top of half-done work."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  e_deadlock EXCEPTION;\n  PRAGMA EXCEPTION_INIT(e_deadlock, -60);\nBEGIN\n  FOR attempt IN 1 .. 3 LOOP\n    BEGIN\n      transfer(1, 2, 500);\n      COMMIT;\n      EXIT;                       -- success, leave the loop\n    EXCEPTION\n      WHEN e_deadlock THEN\n        ROLLBACK;                 -- undo the whole transfer\n        IF attempt = 3 THEN\n          RAISE;                  -- give up, report the error\n        END IF;\n        DBMS_SESSION.SLEEP(1);    -- 18c and later\n    END;\n  END LOOP;\nEND;\n/",
+    "caption": "Retry on ORA-00060 with a limit"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">PRAGMA EXCEPTION_INIT</code> gives ORA-00060 a name so you can catch only that error. Everything else still fails normally. On Oracle releases before 18c, use <code class=\"inline-code\">DBMS_LOCK.SLEEP</code> instead of <code class=\"inline-code\">DBMS_SESSION.SLEEP</code> (it needs an EXECUTE grant on DBMS_LOCK)."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "Keep the retry in the layer that owns the transaction, usually the application or a top-level procedure. A ROLLBACK deep inside a helper procedure also undoes the caller's earlier work, which surprises people."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Other causes worth checking",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "An autonomous transaction locking its parent's row",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A deadlock can happen inside a single session. The PL/SQL Language Reference warns that if an autonomous transaction tries to use a resource held by the main transaction, a deadlock can occur. Here the main transaction locks account 3, then the autonomous procedure tries to update the same row and waits for a transaction that can never finish."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "CREATE OR REPLACE PROCEDURE log_balance_change (p_id NUMBER) AS\n  PRAGMA AUTONOMOUS_TRANSACTION;\nBEGIN\n  UPDATE accounts SET balance = balance WHERE account_id = p_id;\n  COMMIT;\nEND;\n/\n\nUPDATE accounts SET balance = balance + 100 WHERE account_id = 3;\nEXEC log_balance_change(3);   -- raises ORA-00060",
+    "caption": "Self-deadlock with an autonomous transaction"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Autonomous transactions should write to their own tables (audit or log tables), not to rows the caller has already changed."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Bitmap indexes and very busy blocks",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A bitmap index entry covers many rows, so concurrent DML on a table with bitmap indexes can lock far more than the rows you changed. Bitmap indexes suit data warehouses with bulk loads, not OLTP tables updated by many sessions. Deadlock graphs that show TX waits in share mode can also come from waiting for an interested transaction list (ITL) slot in a very busy block, or from two sessions inserting the same unique key value. In those cases the trace, not guesswork, should guide the fix."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Committing after ORA-00060.</b> The earlier statements of the transaction are still there. Commit them and you save partial work. Roll back instead.",
+      "items": []
+     },
+     {
+      "content": "<b>Killing sessions or restarting the database.</b> Oracle has already resolved the deadlock. Killing the other session only throws away its work.",
+      "items": []
+     },
+     {
+      "content": "<b>Raising a timeout parameter.</b> No setting makes deadlocks go away. They come from the code's lock order and the schema.",
+      "items": []
+     },
+     {
+      "content": "<b>Retrying only the failed statement.</b> Retry the whole transaction from the start after a rollback, with a small limit on attempts.",
+      "items": []
+     },
+     {
+      "content": "<b>Ignoring the trace file.</b> It names both SQL statements and the locked objects. Read it before you change anything.",
+      "items": []
+     },
+     {
+      "content": "<b>Leaving foreign keys unindexed</b> on child tables whose parents get deleted or updated.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Best practices to prevent deadlocks",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Lock rows in one fixed order everywhere, for example by ascending primary key.",
+      "items": []
+     },
+     {
+      "content": "Keep transactions short. Do not wait for user input or call slow web services while holding row locks.",
+      "items": []
+     },
+     {
+      "content": "Index foreign key columns on child tables.",
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">SELECT ... FOR UPDATE NOWAIT</code> or <code class=\"inline-code\">FOR UPDATE WAIT n</code> where waiting makes no sense. They fail fast with ORA-00054 or ORA-30006 instead of queuing.",
+      "items": []
+     },
+     {
+      "content": "Avoid bitmap indexes on tables with concurrent DML.",
+      "items": []
+     },
+     {
+      "content": "Monitor the alert log for ORA-00060 so recurring deadlocks get noticed and fixed.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I resolve ORA-00060 deadlock detected while waiting for resource?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In the session that got the error, roll back the transaction and retry it if needed. To stop it coming back, read the trace file, find the two statements involved and make them lock rows in the same order, or index the foreign key if the graph shows TM locks."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does Oracle roll back the whole transaction on a deadlock?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. Oracle rolls back only the single statement that detected the deadlock. Earlier changes in that transaction stay in place and keep their locks until you commit or roll back."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Where can I find the ORA-00060 trace file?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In the directory returned by <code class=\"inline-code\">SELECT value FROM v$diag_info WHERE name = 'Diag Trace'</code>. The alert log entry for the deadlock names the exact trace file."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can a single session cause a deadlock in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes, with an autonomous transaction that tries to lock a row its own main transaction already holds. The autonomous transaction waits for a parent that is waiting for it, and Oracle raises ORA-00060."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between a deadlock and a blocking session?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A blocking session makes others wait until it ends its transaction, then they continue. A deadlock is a circular wait that never ends by itself, so Oracle breaks it with ORA-00060."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "ORA-00060 means sessions waited on each other in a cycle; Oracle rolled back one statement to break it.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Roll back the whole transaction after the error. Never commit the half-done work.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Read the trace file in the Diag Trace directory: TX resources point to lock order, TM resources to unindexed foreign keys.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Lock rows in a fixed order, for example lowest primary key first.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Index foreign key columns on child tables.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Retry the full transaction a limited number of times with PRAGMA EXCEPTION_INIT(e, -60).",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Keep autonomous transactions away from rows the caller has locked.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your transfer job fails with ORA-00060 and half the money has already moved. Here is what Oracle actually rolled back.\n\nORA-00060 means two sessions waited on each other's locks in a circle. Oracle breaks the cycle by rolling back ONE statement in one session, not the whole transaction.\n\nWhat to do about it:\n→ Roll back the full transaction after the error. A COMMIT here saves half a transfer.\n→ Read the trace file. Find it with: SELECT value FROM v$diag_info WHERE name = 'Diag Trace'\n→ TX locks in the deadlock graph usually mean two code paths lock rows in a different order. Lock the lowest primary key first, everywhere.\n→ TM locks often point to an unindexed foreign key. Index the child column.\n→ Retry the whole unit of work a few times using PRAGMA EXCEPTION_INIT(e_deadlock, -60).\n\nOne more surprise: an autonomous transaction that updates a row its own caller has locked deadlocks inside a single session.\n\nWhich one have you hit in production: lock order or a missing foreign key index?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #PLSQL #OracleSQL #OracleDBA",
+  "slides": [
+   {
+    "title": "ORA-00060 Deadlock Detected in Oracle",
+    "body": "Why it happens, what gets rolled back, and how to stop it"
+   },
+   {
+    "title": "What a deadlock is",
+    "points": [
+     "Session A holds row 1 and wants row 2",
+     "Session B holds row 2 and wants row 1",
+     "Neither can ever continue",
+     "Oracle breaks the cycle with ORA-00060"
+    ]
+   },
+   {
+    "title": "Only one statement is rolled back",
+    "body": "Oracle undoes the statement that detected the deadlock. Earlier changes in that transaction stay and keep their locks. Roll back the whole transaction. Do not commit half the work."
+   },
+   {
+    "title": "Find the trace file",
+    "code": "SELECT value\n  FROM v$diag_info\n WHERE name = 'Diag Trace';",
+    "lang": "sql",
+    "points": [
+     "TX resource: row lock order problem",
+     "TM resource: often an unindexed foreign key"
+    ]
+   },
+   {
+    "title": "Lock rows in the same order",
+    "code": "SELECT balance INTO v_bal\n  FROM accounts\n WHERE account_id =\n       LEAST(p_from, p_to)\n   FOR UPDATE;",
+    "lang": "plsql",
+    "body": "Lock the lowest id first in every code path. The second session then just waits instead of deadlocking."
+   },
+   {
+    "title": "Index foreign keys, retry safely",
+    "code": "CREATE INDEX payments_account_ix\n  ON payments (account_id);\n\nPRAGMA EXCEPTION_INIT(e_dl, -60);",
+    "lang": "plsql",
+    "points": [
+     "Retry the whole transaction after ROLLBACK",
+     "Limit the number of attempts"
+    ]
+   }
+  ]
+ }
+}
