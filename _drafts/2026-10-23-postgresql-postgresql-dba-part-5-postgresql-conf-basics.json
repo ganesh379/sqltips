@@ -1,0 +1,1513 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 5: postgresql.conf, Reload vs Restart",
+ "slug": "postgresql-dba-part-5-postgresql-conf-basics",
+ "category": "postgresql",
+ "description": "Find postgresql.conf on Ubuntu, read settings with SHOW and pg_settings, and learn which changes need a reload and which need a restart in PostgreSQL 18.",
+ "focusKeyword": "postgresql.conf",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "configuration",
+  "pg-settings",
+  "dba"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-3-data-directory-pgdata/",
+  "/posts/postgresql/postgresql-dba-part-2-install-postgresql-18-ubuntu/",
+  "/posts/postgresql/postgresql-dba-part-1-dba-role-and-architecture/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 19.1 Setting Parameters",
+   "url": "https://www.postgresql.org/docs/current/config-setting.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.2 File Locations",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-file-locations.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_settings",
+   "url": "https://www.postgresql.org/docs/current/view-pg-settings.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_file_settings",
+   "url": "https://www.postgresql.org/docs/current/view-pg-file-settings.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: ALTER SYSTEM",
+   "url": "https://www.postgresql.org/docs/current/sql-altersystem.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: SET",
+   "url": "https://www.postgresql.org/docs/current/sql-set.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: SHOW",
+   "url": "https://www.postgresql.org/docs/current/sql-show.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: System Administration Functions (current_setting, set_config, pg_reload_conf)",
+   "url": "https://www.postgresql.org/docs/current/functions-admin.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Connections and Authentication (max_connections)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-connection.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Resource Consumption (shared_buffers, work_mem)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-resource.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Client Connection Defaults (statement_timeout)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-client.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Error Reporting and Logging (log_min_duration_statement)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-logging.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Version and Platform Compatibility (allow_alter_system)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-compatible.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Vacuuming (autovacuum_max_workers context in 18)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-vacuum.html"
+  }
+ ],
+ "reviewNotes": "Series part 5. Publish Part 4 first (postgresql-dba-part-4-psql-commands is not live yet, so it is named without a link; Parts 1-3 are live and Part 3 is in related). Followed the PostgreSQL 18 documentation (docs/current). TESTING CAVEAT, same as Part 4: the postgresql-18 server package could not be installed in this sandbox because its dependency liburing2 comes from archive.ubuntu.com, which the network policy blocks (apt.postgresql.org itself worked). Every command was therefore run with psql 18.6 (postgresql-client-18 18.6-1.pgdg24.04+2) against the preinstalled PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) server on Ubuntu 24.04.5 LTS, cluster 16 main, then paths were rewritten from 16 to 18. Blocks captioned 'Output' contain nothing version- or path-specific and are real. Blocks captioned '(expected output)' had 16 replaced by 18 in paths, cluster_name and the pid file name; the editor should confirm them on a real 18 server. What I could verify for 18 without running it: I extracted the postgresql-18 18.6 .deb and (a) checked postgresql.conf.sample line numbers (max_connections is still line 65; the sample is 889 lines, used for 'about 890 lines'; Ubuntu's generated postgresql.conf keeps the sample's line numbers, confirmed on 16), and (b) grepped the 18.6 postgres binary for every server message quoted in the article (cannot be changed without restarting the server; contains errors; no changes were applied / unaffected changes were applied; setting could not be applied; %s cannot run inside a transaction block; Valid units...; unrecognized configuration parameter; permission denied to set parameter; received SIGHUP...; the work_mem short_desc): all present. Defaults checked against the 18 docs: work_mem 4MB, shared_buffers typically 128MB, max_connections typically 100, log_min_duration_statement -1, statement_timeout 0, allow_alter_system on (added in 17). Version notes: autovacuum_max_workers is postmaster on 16 (seen in test) but the 18 docs say it can only be set in postgresql.conf or on the command line, i.e. sighup; editor please confirm with SELECT context FROM pg_settings on 18. GRANT SET ON PARAMETER exists since 15. The Ubuntu pg_wrapper 'Error: invalid line 4 in ...' message is real (postgresql-common on Ubuntu 24.04). The sandbox has no systemd: reloads/restarts were done with pg_ctlcluster; systemctl commands are shown as the primary method per the series platform. Log timestamps/PIDs are from the test run. The context counts per type were deliberately not shown because they differ between 16 and 18.",
+ "generatedAt": "2026-10-23T13:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 5 of the PostgreSQL DBA series on SQL Tips. <b>postgresql.conf</b> is the main configuration file of a PostgreSQL server: it decides how much memory the server uses, how many people can connect, what gets logged and hundreds of other things. By the end of this part you will know where the file lives on Ubuntu, how to read any setting with <code class=\"inline-code\">SHOW</code> and the <code class=\"inline-code\">pg_settings</code> view, and how to tell whether a change needs a simple reload or a full restart."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 4 we covered psql essentials for DBAs, so you can already connect, run queries and read output. That article is not live yet; here we use psql to look at and change the server configuration. Every command was written for Ubuntu Server with PostgreSQL 18 from the official PGDG repository, cluster <b>18 main</b>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Where postgresql.conf, <code class=\"inline-code\">conf.d</code> and postgresql.auto.conf live on Ubuntu, and which file wins",
+      "items": []
+     },
+     {
+      "content": "How to read a setting with <code class=\"inline-code\">SHOW</code>, <code class=\"inline-code\">current_setting()</code> and the <code class=\"inline-code\">pg_settings</code> view",
+      "items": []
+     },
+     {
+      "content": "What the <code class=\"inline-code\">context</code> column means, and how it tells you reload or restart",
+      "items": []
+     },
+     {
+      "content": "How to change a setting safely: check with <code class=\"inline-code\">pg_file_settings</code>, reload, verify",
+      "items": []
+     },
+     {
+      "content": "How <code class=\"inline-code\">ALTER SYSTEM</code>, <code class=\"inline-code\">ALTER DATABASE ... SET</code>, <code class=\"inline-code\">ALTER ROLE ... SET</code> and <code class=\"inline-code\">SET</code> fit together",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Part 2 (installing PostgreSQL 18 on Ubuntu), Part 3 (the data directory) and Part 4 (psql essentials) of this series.",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server with PostgreSQL 18 from the PGDG repository and the default cluster 18 main running (check with <code class=\"inline-code\">pg_lsclusters</code>).",
+      "items": []
+     },
+     {
+      "content": "A Linux user with sudo rights. Most commands run as the <b>postgres</b> operating system user through <code class=\"inline-code\">sudo -u postgres</code>.",
+      "items": []
+     },
+     {
+      "content": "A test server. Do not practise the restart steps on a production server during working hours.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of PostgreSQL configuration as a stack of notes, read from bottom to top. The server first reads its built-in defaults. Then it reads the configuration files, and each later file or line can overwrite an earlier one. Finally, a database, a role or a single session can add its own note on top for its own use."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each setting is called a <b>parameter</b> (the documentation also says \"configuration parameter\" or GUC). Parameter names are case-insensitive. Every parameter has a type: boolean, string, integer, floating point or enum (a fixed list of allowed words). Memory and time parameters have a <b>unit</b>: <code class=\"inline-code\">work_mem</code> is counted in kilobytes, <code class=\"inline-code\">shared_buffers</code> in 8kB blocks, <code class=\"inline-code\">statement_timeout</code> in milliseconds. You can write a unit yourself, such as <code class=\"inline-code\">'64MB'</code> or <code class=\"inline-code\">'5s'</code>. Memory units are B, kB, MB, GB and TB (multiplier 1024), time units are us, ms, s, min, h and d, and unit names are case-sensitive."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On Ubuntu the files are split across two folders, because the Debian/Ubuntu packaging keeps configuration in /etc and data in /var/lib:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "File",
+      "Location on Ubuntu (cluster 18 main)",
+      "Who edits it"
+     ],
+     [
+      "postgresql.conf",
+      "/etc/postgresql/18/main/postgresql.conf",
+      "You, with a text editor"
+     ],
+     [
+      "conf.d/*.conf",
+      "/etc/postgresql/18/main/conf.d/",
+      "You (read at the end of postgresql.conf through include_dir)"
+     ],
+     [
+      "postgresql.auto.conf",
+      "/var/lib/postgresql/18/main/postgresql.auto.conf",
+      "Only ALTER SYSTEM. Never edit by hand"
+     ],
+     [
+      "pg_hba.conf",
+      "/etc/postgresql/18/main/pg_hba.conf",
+      "You (client authentication, Part 6)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The server reads postgresql.conf from top to bottom. When it meets the line <code class=\"inline-code\">include_dir = 'conf.d'</code> near the end, it reads every file in that folder whose name ends in .conf, in file name order. After that it reads postgresql.auto.conf. If the same parameter appears more than once, <b>the last value read wins</b>. So the order is: postgresql.conf, then conf.d files, then postgresql.auto.conf."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The configuration files are read again whenever the main server process (the postmaster from Part 1) receives a SIGHUP signal, which is what a <b>reload</b> sends. A reload does not disconnect anyone. But some parameters, such as <code class=\"inline-code\">max_connections</code> and <code class=\"inline-code\">shared_buffers</code>, size shared memory when the server starts, so they can only change with a <b>restart</b>, which stops and starts the server and drops every connection. The <code class=\"inline-code\">context</code> column of <code class=\"inline-code\">pg_settings</code> tells you which group a parameter belongs to."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Finding and reading the configuration files",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Ask the server which files it is using",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the database server, as the postgres user. Never guess the path: ask the running server. This is the fastest way to find postgresql.conf on any machine you have never seen before."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SHOW config_file;\" -c \"SHOW data_directory;\" -c \"SHOW hba_file;\"",
+    "caption": "Show the files the running server uses"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "               config_file               \n-----------------------------------------\n /etc/postgresql/18/main/postgresql.conf\n(1 row)\n\n       data_directory        \n-----------------------------\n /var/lib/postgresql/18/main\n(1 row)\n\n              hba_file               \n-------------------------------------\n /etc/postgresql/18/main/pg_hba.conf\n(1 row)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The configuration file is in /etc, but the data directory is in /var/lib. That is why postgresql.auto.conf (which always sits in the data directory) is in a different folder from postgresql.conf. Ubuntu achieves this by starting the server with <code class=\"inline-code\">-c config_file=/etc/postgresql/18/main/postgresql.conf</code>; you can see that option in <code class=\"inline-code\">ps -u postgres -o pid,args</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">ls -l /etc/postgresql/18/main/</code> should list conf.d, environment, pg_ctl.conf, pg_hba.conf, pg_ident.conf, postgresql.conf and start.conf."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: See only the lines that are actually set",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the database server, as any user with sudo. postgresql.conf is about 890 lines long in PostgreSQL 18, and almost all of them are comments that show the default value. A line that starts with # is ignored. This grep prints only the lines that really set something."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo grep -v -E '^\\s*(#|$)' /etc/postgresql/18/main/postgresql.conf",
+    "caption": "Print active settings only"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-v",
+      "Print the lines that do NOT match the pattern"
+     ],
+     [
+      "-E",
+      "Use extended regular expressions"
+     ],
+     [
+      "'^\\s*(#|$)'",
+      "Matches comment lines and empty lines, so they are hidden"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "data_directory = '/var/lib/postgresql/18/main'\t\t# use data in another directory\nhba_file = '/etc/postgresql/18/main/pg_hba.conf'\t# host-based authentication file\nident_file = '/etc/postgresql/18/main/pg_ident.conf'\t# ident configuration file\nexternal_pid_file = '/var/run/postgresql/18-main.pid'\t\t\t# write an extra PID file\nport = 5432\t\t\t\t# (change requires restart)\nmax_connections = 100\t\t\t# (change requires restart)\nunix_socket_directories = '/var/run/postgresql' # comma-separated list of directories\nssl = on\nssl_cert_file = '/etc/ssl/certs/ssl-cert-snakeoil.pem'\nssl_key_file = '/etc/ssl/private/ssl-cert-snakeoil.key'\nshared_buffers = 128MB\t\t\t# min 128kB\ndynamic_shared_memory_type = posix\t# the default is usually the first option\nmax_wal_size = 1GB\nmin_wal_size = 80MB\nlog_line_prefix = '%m [%p] %q%u@%d '\t\t# special values:\nlog_timezone = 'Etc/UTC'\ncluster_name = '18/main'\t\t\t# added to process titles if nonempty\ndatestyle = 'iso, mdy'\ntimezone = 'Etc/UTC'\nlc_messages = 'C.UTF-8'\t\t\t# locale for system error message\nlc_monetary = 'C.UTF-8'\t\t\t# locale for monetary formatting\nlc_numeric = 'C.UTF-8'\t\t\t# locale for number formatting\nlc_time = 'C.UTF-8'\t\t\t# locale for time formatting\ndefault_text_search_config = 'pg_catalog.english'\ninclude_dir = 'conf.d'\t\t\t# include files ending in '.conf' from",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "These are the values that Ubuntu's cluster tool and initdb wrote when the cluster was created. Your timezone and locale lines will match your server. Everything else uses the built-in default. Note the last line: anything you put in /etc/postgresql/18/main/conf.d/ is read after all of this."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the output ends with <code class=\"inline-code\">include_dir = 'conf.d'</code>. If it does not, files you put in conf.d will be ignored."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reading settings from SQL",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Read one value with SHOW and current_setting()",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In psql, as the postgres user (<code class=\"inline-code\">sudo -u postgres psql</code>). <code class=\"inline-code\">SHOW</code> prints the value the current session is using, with a readable unit. <code class=\"inline-code\">current_setting()</code> returns the same value as text, which is useful inside a query or a PL/pgSQL function."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SHOW work_mem;\nSHOW shared_buffers;\nSELECT current_setting('max_connections');",
+    "caption": "Read single values"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " work_mem \n----------\n 4MB\n(1 row)\n\n shared_buffers \n----------------\n 128MB\n(1 row)\n\n current_setting \n-----------------\n 100\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "These are the documented defaults: <code class=\"inline-code\">work_mem</code> 4MB, <code class=\"inline-code\">shared_buffers</code> typically 128MB and <code class=\"inline-code\">max_connections</code> typically 100. psql also has the meta-command <code class=\"inline-code\">\\dconfig</code> (from Part 4): <code class=\"inline-code\">\\dconfig *work_mem*</code> lists matching parameters, and <code class=\"inline-code\">\\dconfig</code> with no pattern lists only the parameters that are not at their default."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Get the full picture from pg_settings",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In psql, as the postgres user. <code class=\"inline-code\">pg_settings</code> is a system view with one row per parameter. It shows far more than <code class=\"inline-code\">SHOW</code>: the unit, the type, where the value came from and whether a change needs a restart. This is the query a DBA runs most often when checking configuration."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, unit, context, vartype, source\n  FROM pg_settings\n WHERE name IN ('work_mem', 'shared_buffers', 'max_connections',\n                'log_min_duration_statement', 'statement_timeout', 'port')\n ORDER BY name;",
+    "caption": "Look up several parameters in pg_settings"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "name",
+      "setting",
+      "unit",
+      "context",
+      "vartype",
+      "source"
+     ],
+     [
+      "log_min_duration_statement",
+      "-1",
+      "ms",
+      "superuser",
+      "integer",
+      "default"
+     ],
+     [
+      "max_connections",
+      "100",
+      "",
+      "postmaster",
+      "integer",
+      "configuration file"
+     ],
+     [
+      "port",
+      "5432",
+      "",
+      "postmaster",
+      "integer",
+      "configuration file"
+     ],
+     [
+      "shared_buffers",
+      "16384",
+      "8kB",
+      "postmaster",
+      "integer",
+      "configuration file"
+     ],
+     [
+      "statement_timeout",
+      "0",
+      "ms",
+      "user",
+      "integer",
+      "default"
+     ],
+     [
+      "work_mem",
+      "4096",
+      "kB",
+      "user",
+      "integer",
+      "default"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read <code class=\"inline-code\">setting</code> together with <code class=\"inline-code\">unit</code>. <code class=\"inline-code\">shared_buffers</code> shows 16384 with unit 8kB, which is 16384 × 8kB = 128MB. <code class=\"inline-code\">work_mem</code> shows 4096 kB, which is 4MB. The <code class=\"inline-code\">source</code> column tells you where the value came from: <i>default</i> (built in), <i>configuration file</i>, <i>database</i>, <i>user</i>, <i>database user</i> or <i>session</i>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The other useful columns, with their meaning from the documentation:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Column",
+      "What it tells you"
+     ],
+     [
+      "boot_val",
+      "The value assumed at server start if the parameter is not set anywhere (the built-in default)"
+     ],
+     [
+      "reset_val",
+      "The value RESET would return to in this session"
+     ],
+     [
+      "min_val / max_val",
+      "Allowed range for numeric parameters"
+     ],
+     [
+      "enumvals",
+      "Allowed values for an enum parameter, for example {none,ddl,mod,all} for log_statement"
+     ],
+     [
+      "sourcefile / sourceline",
+      "The file and line the value came from (visible to superusers and pg_read_all_settings members)"
+     ],
+     [
+      "pending_restart",
+      "true if the value was changed in a file but needs a restart to take effect"
+     ],
+     [
+      "short_desc",
+      "A one-line description, so you do not need to look the parameter up"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reload or restart: the context column",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">context</code> column answers the question every DBA asks before a change: <i>can I apply this without downtime?</i> The documentation lists seven values, from hardest to easiest to change:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "context",
+      "How a change takes effect",
+      "Example"
+     ],
+     [
+      "internal",
+      "Cannot be changed; fixed when PostgreSQL was built or by initdb",
+      "server_version"
+     ],
+     [
+      "postmaster",
+      "Only at server start: needs a restart",
+      "max_connections, shared_buffers, port"
+     ],
+     [
+      "sighup",
+      "Edit the file and reload; no restart",
+      "autovacuum_naptime"
+     ],
+     [
+      "superuser-backend",
+      "File plus reload, but only new sessions see it; a superuser can set it at connection time",
+      "(few parameters)"
+     ],
+     [
+      "backend",
+      "File plus reload, only new sessions; any user can set it at connection time",
+      "(few parameters)"
+     ],
+     [
+      "superuser",
+      "Reload, or SET in a session by a superuser or a role granted SET on it",
+      "log_min_duration_statement"
+     ],
+     [
+      "user",
+      "Reload, or SET in a session by any user",
+      "work_mem, statement_timeout"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The comments in postgresql.conf also say <i>(change requires restart)</i> next to the postmaster parameters. To list every restart-only parameter on your server:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, unit\n  FROM pg_settings\n WHERE context = 'postmaster'\n ORDER BY name;",
+    "caption": "All parameters that need a restart"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Keep this list in mind when planning: changes to <code class=\"inline-code\">max_connections</code>, <code class=\"inline-code\">shared_buffers</code>, <code class=\"inline-code\">wal_level</code>, <code class=\"inline-code\">listen_addresses</code> or <code class=\"inline-code\">shared_preload_libraries</code> need a maintenance window."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Changing a setting with a reload",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Put your change in a conf.d file",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the database server, as the postgres user. Instead of editing the long postgresql.conf, put your own settings in a small file in conf.d. Your changes stay in one place, they are easy to review, and a package upgrade will not mix them up with the defaults. Here we log every statement that runs for 500 milliseconds or more, using <code class=\"inline-code\">log_min_duration_statement</code> (default -1, which means disabled)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres tee /etc/postgresql/18/main/conf.d/50-tuning.conf <<'EOF'\n# Local overrides for the 18/main cluster\nlog_min_duration_statement = 500ms\nEOF",
+    "caption": "Create a conf.d file as the postgres user"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Before (the default, nothing set):\n#log_min_duration_statement = -1\t# -1 is disabled, 0 logs all statements\n\nAfter (/etc/postgresql/18/main/conf.d/50-tuning.conf):\nlog_min_duration_statement = 500ms",
+    "caption": "The setting before and after"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">tee</code> writes what it reads to the file and prints it back, so the output is simply the two lines you wrote. Running it as postgres keeps the file owned by postgres, like the rest of /etc/postgresql/18/main. The name starts with 50 so you can add files that load earlier (00-...) or later (90-...)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Check the file before you reload",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In psql, as the postgres user. <code class=\"inline-code\">pg_file_settings</code> reads the current contents of the configuration files and reports, line by line, whether each value <i>could</i> be applied. It does not change anything, so it is a safe pre-flight check."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT sourcefile, sourceline, name, setting, applied, error\n  FROM pg_file_settings\n WHERE name = 'log_min_duration_statement';",
+    "caption": "Pre-check the new line"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "sourcefile",
+      "sourceline",
+      "name",
+      "setting",
+      "applied",
+      "error"
+     ],
+     [
+      "/etc/postgresql/18/main/conf.d/50-tuning.conf",
+      "2",
+      "log_min_duration_statement",
+      "500ms",
+      "t",
+      ""
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">applied</code> is t (true) and <code class=\"inline-code\">error</code> is empty, so the line is valid. To check the whole configuration at once, run <code class=\"inline-code\">SELECT * FROM pg_file_settings WHERE error IS NOT NULL;</code>; zero rows means there are no errors."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Reload the configuration",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In psql, as the postgres user, or from the shell with sudo. All three commands send the same SIGHUP signal; use whichever fits your work. None of them disconnects users."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_reload_conf();",
+    "caption": "Reload from SQL"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_reload_conf \n----------------\n t\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main\n# or, with the Ubuntu cluster tool:\nsudo pg_ctlcluster 18 main reload",
+    "caption": "Reload from the shell (prints nothing on success)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">t</code> only means the signal was sent. The reload itself happens a moment later, and each existing session picks up the new value after it finishes its current command. So verify in a <b>new</b> session, and read the server log."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SHOW log_min_duration_statement;\"\nsudo tail -3 /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Verify the new value and the log"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " log_min_duration_statement \n----------------------------\n 500ms\n(1 row)\n\n2026-10-23 12:52:53.359 UTC [1586] LOG:  received SIGHUP, reloading configuration files\n2026-10-23 12:52:53.360 UTC [1586] LOG:  parameter \"log_min_duration_statement\" changed to \"500ms\"",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The log line <i>parameter ... changed to ...</i> is your proof the server accepted the change. In <code class=\"inline-code\">pg_settings</code> the row now shows <code class=\"inline-code\">source</code> = configuration file, <code class=\"inline-code\">sourcefile</code> = /etc/postgresql/18/main/conf.d/50-tuning.conf and <code class=\"inline-code\">sourceline</code> = 2."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> delete the line (or the whole file) and reload again; the value goes back to its default of -1."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Changing a setting that needs a restart",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Change max_connections and see pending_restart",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the database server, as the postgres user. <code class=\"inline-code\">max_connections</code> has context postmaster, default typically 100, and the documentation says it can only be set at server start. Add it to the same conf.d file and reload, to see what happens."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "echo \"max_connections = 150\" | sudo -u postgres tee -a /etc/postgresql/18/main/conf.d/50-tuning.conf",
+    "caption": "Append a restart-only setting"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "tee -a",
+      "Append to the file instead of overwriting it"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Before (postgresql.conf, line 65):\nmax_connections = 100\t\t\t# (change requires restart)\n\nAfter (added to conf.d/50-tuning.conf, read later, so it wins):\nmax_connections = 150",
+    "caption": "The setting before and after"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_reload_conf();\n\n-- in a new session:\nSHOW max_connections;\nSELECT name, setting, pending_restart\n  FROM pg_settings\n WHERE pending_restart;",
+    "caption": "Reload, then look for pending restarts"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " max_connections \n-----------------\n 100\n(1 row)\n\n      name       | setting | pending_restart \n-----------------+---------+-----------------\n max_connections | 100     | t\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The value is still 100, and <code class=\"inline-code\">pending_restart</code> is true. The server log explains why:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  received SIGHUP, reloading configuration files\nLOG:  parameter \"max_connections\" cannot be changed without restarting the server\nLOG:  configuration file \"/etc/postgresql/18/main/conf.d/50-tuning.conf\" contains errors; unaffected changes were applied",
+    "caption": "Server log (expected output, timestamps removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The word \"errors\" sounds alarming, but nothing is broken: every other change was applied, and only max_connections waits for a restart. Run the query <code class=\"inline-code\">SELECT name FROM pg_settings WHERE pending_restart;</code> after every reload. If it returns rows, you have changes waiting for the next restart."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "A restart disconnects every session and rolls back their open transactions. On a production server, announce a maintenance window first. Never restart a production primary just to test a setting."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Restart the cluster and verify",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the database server, as a user with sudo."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl restart postgresql@18-main\n# or: sudo pg_ctlcluster 18 main restart\npg_lsclusters",
+    "caption": "Restart the 18 main cluster"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SHOW max_connections;\" -c \"SELECT count(*) FROM pg_settings WHERE pending_restart;\"",
+    "caption": "Verify after the restart"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " max_connections \n-----------------\n 150\n(1 row)\n\n count \n-------\n     0\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The new value is active and nothing is pending. Remember from the documentation that a higher <code class=\"inline-code\">max_connections</code> also allocates more shared memory, and that a standby must use the same or a higher value than its primary. Part 10 covers connection limits in depth."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ALTER SYSTEM and postgresql.auto.conf",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Change a setting from SQL with ALTER SYSTEM",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In psql, as the postgres user (or a role granted ALTER SYSTEM on that parameter). <code class=\"inline-code\">ALTER SYSTEM</code> writes the setting into postgresql.auto.conf in the data directory. Because that file is read last, its values override postgresql.conf and conf.d. It is handy when you have SQL access but no shell access, which is common on managed services."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER SYSTEM SET work_mem = '16MB';\nSELECT pg_reload_conf();",
+    "caption": "Set work_mem for the whole cluster"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo cat /var/lib/postgresql/18/main/postgresql.auto.conf",
+    "caption": "See what ALTER SYSTEM wrote"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# Do not edit this file manually!\n# It will be overwritten by the ALTER SYSTEM command.\nwork_mem = '16MB'",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Like a file edit, <code class=\"inline-code\">ALTER SYSTEM</code> takes effect only after a reload, or a restart for postmaster parameters. It cannot run inside a transaction block, because it writes a file that cannot be rolled back."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> in a new session, <code class=\"inline-code\">SELECT name, setting, unit, source, sourcefile FROM pg_settings WHERE name = 'work_mem';</code>"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "name",
+      "setting",
+      "unit",
+      "source",
+      "sourcefile"
+     ],
+     [
+      "work_mem",
+      "16384",
+      "kB",
+      "configuration file",
+      "/var/lib/postgresql/18/main/postgresql.auto.conf"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">ALTER SYSTEM RESET work_mem;</code> then <code class=\"inline-code\">SELECT pg_reload_conf();</code>. RESET removes the line from postgresql.auto.conf, and the value from postgresql.conf (or the default) applies again. <code class=\"inline-code\">ALTER SYSTEM RESET ALL;</code> removes every entry."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "ALTER SYSTEM is a common source of confusion: a colleague edits postgresql.conf, reloads, and nothing changes, because an older ALTER SYSTEM value in postgresql.auto.conf still wins. When a value surprises you, look at sourcefile in pg_settings first. PostgreSQL 17 added the parameter <code class=\"inline-code\">allow_alter_system</code> (default on). Setting it to off in postgresql.conf blocks ALTER SYSTEM, which helps when a tool such as Ansible owns the configuration. The documentation stresses that it is not a security feature: a superuser can still change the configuration in other ways."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Per-database, per-role and per-session settings",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Override settings for one database, one role, or one session",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In psql, as the postgres user. Not every setting must be cluster-wide. A reporting user may need more <code class=\"inline-code\">work_mem</code> for big sorts, and an application database may need a <code class=\"inline-code\">statement_timeout</code> so runaway queries stop. The documentation advises against setting <code class=\"inline-code\">statement_timeout</code> in postgresql.conf, because it would affect all sessions, including maintenance jobs. These commands use a sample database shop and a role report_user:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE shop;\nCREATE ROLE report_user LOGIN PASSWORD 'change-me';\n\nALTER DATABASE shop SET statement_timeout = '30s';\nALTER ROLE report_user SET work_mem = '128MB';\nALTER ROLE report_user IN DATABASE shop SET statement_timeout = '2min';",
+    "caption": "Store defaults for a database and a role"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Command",
+      "Applies to"
+     ],
+     [
+      "ALTER DATABASE shop SET ...",
+      "Every new session in database shop"
+     ],
+     [
+      "ALTER ROLE report_user SET ...",
+      "Every new session of report_user, in any database"
+     ],
+     [
+      "ALTER ROLE report_user IN DATABASE shop SET ...",
+      "Only report_user's new sessions in shop (the most specific, so it wins)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "These values apply only when a <b>new</b> session starts. Connect as report_user to the shop database (for example <code class=\"inline-code\">psql -h localhost -U report_user -d shop</code>) and check:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, unit, source\n  FROM pg_settings\n WHERE name IN ('work_mem', 'statement_timeout')\n ORDER BY name;",
+    "caption": "As report_user in database shop"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "name",
+      "setting",
+      "unit",
+      "source"
+     ],
+     [
+      "statement_timeout",
+      "120000",
+      "ms",
+      "database user"
+     ],
+     [
+      "work_mem",
+      "131072",
+      "kB",
+      "user"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">source</code> shows exactly which level won: <i>database user</i> (the role-in-database setting, 2 minutes) beat <i>database</i> (30 seconds), and <i>user</i> gave report_user 128MB of work_mem. psql's <code class=\"inline-code\">\\drds</code> lists all stored role and database settings."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Inside a session, <code class=\"inline-code\">SET</code> changes a value for that session only, <code class=\"inline-code\">SET LOCAL</code> for the current transaction only, and <code class=\"inline-code\">RESET</code> goes back:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET work_mem = '64MB';\nSHOW work_mem;\nRESET work_mem;\n\nBEGIN;\nSET LOCAL statement_timeout = '5s';\nSHOW statement_timeout;\nCOMMIT;\nSHOW statement_timeout;",
+    "caption": "Session and transaction settings"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " work_mem \n----------\n 64MB\n(1 row)\n\n statement_timeout \n-------------------\n 5s\n(1 row)\n\n statement_timeout \n-------------------\n 0\n(1 row)",
+    "caption": "Output (SET/RESET/BEGIN/COMMIT lines removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "After <code class=\"inline-code\">COMMIT</code> the transaction-level value is gone and <code class=\"inline-code\">statement_timeout</code> is back to 0 (disabled). A normal user can only <code class=\"inline-code\">SET</code> parameters with context user. For superuser parameters such as <code class=\"inline-code\">log_min_duration_statement</code>, a normal user gets an error (see below)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">ALTER DATABASE shop RESET statement_timeout;</code>, <code class=\"inline-code\">ALTER ROLE report_user RESET ALL;</code> and <code class=\"inline-code\">ALTER ROLE report_user IN DATABASE shop RESET ALL;</code>. Then <code class=\"inline-code\">\\drds</code> shows zero rows."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Putting it all together, from lowest to highest priority:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Level",
+      "Set with",
+      "Takes effect"
+     ],
+     [
+      "Built-in default",
+      "(nothing)",
+      "Always"
+     ],
+     [
+      "postgresql.conf, then conf.d",
+      "Text editor",
+      "Reload or restart"
+     ],
+     [
+      "postgresql.auto.conf",
+      "ALTER SYSTEM",
+      "Reload or restart"
+     ],
+     [
+      "Server command line",
+      "postgres -c name=value",
+      "Server start"
+     ],
+     [
+      "Database",
+      "ALTER DATABASE ... SET",
+      "New sessions"
+     ],
+     [
+      "Role",
+      "ALTER ROLE ... SET",
+      "New sessions"
+     ],
+     [
+      "Role in database",
+      "ALTER ROLE ... IN DATABASE ... SET",
+      "New sessions"
+     ],
+     [
+      "Session",
+      "SET, set_config(), PGOPTIONS",
+      "Immediately, this session only"
+     ],
+     [
+      "Transaction",
+      "SET LOCAL",
+      "Until COMMIT or ROLLBACK"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Wrong unit case: invalid value for parameter \"work_mem\": \"64mb\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  invalid value for parameter \"work_mem\": \"64mb\"\nHINT:  Valid units for this parameter are \"B\", \"kB\", \"MB\", \"GB\", and \"TB\".",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Units are case-sensitive. Write <code class=\"inline-code\">'64MB'</code>, not 64mb. The same rule applies inside the configuration files."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "A space inside an unquoted value: syntax error in file",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A line like <code class=\"inline-code\">maintenance_work_mem = 256 MB</code> in a conf.d file breaks the whole file. <code class=\"inline-code\">pg_file_settings</code> shows a row with error <i>syntax error</i>, and after a reload the log says:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  syntax error in file \"/etc/postgresql/18/main/conf.d/50-tuning.conf\" line 4, near token \"MB\"\nLOG:  configuration file \"/etc/postgresql/18/main/postgresql.conf\" contains errors; no changes were applied",
+    "caption": "Server log (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>No</b> change from any file is applied, not even the valid lines. On Ubuntu the <code class=\"inline-code\">psql</code> command itself is a wrapper (pg_wrapper) that reads the cluster configuration, so it may also refuse to start with <i>Error: invalid line 4 in /etc/postgresql/18/main/conf.d/50-tuning.conf</i>. Fix: write <code class=\"inline-code\">256MB</code> or <code class=\"inline-code\">'256 MB'</code> with quotes, then reload. Until you fix it, <code class=\"inline-code\">/usr/lib/postgresql/18/bin/psql</code> still connects."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "A misspelled name: unrecognized configuration parameter",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  unrecognized configuration parameter \"maintenence_work_mem\" in file \"/etc/postgresql/18/main/conf.d/50-tuning.conf\" line 5\nLOG:  configuration file \"/etc/postgresql/18/main/conf.d/50-tuning.conf\" contains errors; no changes were applied",
+    "caption": "Server log (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Again nothing is applied. With <code class=\"inline-code\">ALTER SYSTEM SET wrok_mem = '64MB';</code> you get <code class=\"inline-code\">ERROR:  unrecognized configuration parameter \"wrok_mem\"</code> straight away, which is one advantage of ALTER SYSTEM. Fix the spelling, check <code class=\"inline-code\">pg_file_settings</code> for rows with an error, and reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "SET on a restart-only parameter",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  parameter \"max_connections\" cannot be changed without restarting the server",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "postmaster parameters cannot be changed in a session. Put the value in a conf.d file (or use ALTER SYSTEM) and restart, as in Steps 8 and 9."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ALTER SYSTEM cannot run inside a transaction block",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This happens when you run <code class=\"inline-code\">ALTER SYSTEM</code> after <code class=\"inline-code\">BEGIN</code>, or in a psql script started with -1 (single transaction, Part 4). Run it on its own, outside a transaction."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "permission denied to set parameter \"log_min_duration_statement\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A normal role tried <code class=\"inline-code\">SET</code> on a superuser parameter. Either set it centrally, or grant the right to that role: <code class=\"inline-code\">GRANT SET ON PARAMETER log_min_duration_statement TO report_user;</code> (available since PostgreSQL 15)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "\"I changed postgresql.conf and nothing happened\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Check three things in order: did you reload, is <code class=\"inline-code\">pending_restart</code> true (restart needed), and does <code class=\"inline-code\">sourcefile</code> in pg_settings point to postgresql.auto.conf or a conf.d file that overrides your line."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Set <code class=\"inline-code\">log_min_duration_statement</code> to 1s in /etc/postgresql/18/main/conf.d/50-tuning.conf, check it with pg_file_settings, reload, and prove in a new session that it changed.",
+      "items": []
+     },
+     {
+      "content": "Find out, without opening any documentation, whether <code class=\"inline-code\">autovacuum_max_workers</code> and <code class=\"inline-code\">random_page_cost</code> need a restart.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "Answer 1: write the line <code class=\"inline-code\">log_min_duration_statement = 1s</code>, run <code class=\"inline-code\">SELECT name, setting, applied, error FROM pg_file_settings WHERE name = 'log_min_duration_statement';</code> (applied = t), then <code class=\"inline-code\">SELECT pg_reload_conf();</code> and in a new session <code class=\"inline-code\">SHOW log_min_duration_statement;</code> returns 1s. Answer 2: <code class=\"inline-code\">SELECT name, context FROM pg_settings WHERE name IN ('autovacuum_max_workers', 'random_page_cost');</code>. random_page_cost has context user, so a reload (or even SET) is enough. autovacuum_max_workers shows sighup in PostgreSQL 18, so a reload is enough; before PostgreSQL 18 it was postmaster and needed a restart."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Which files does the server use?\nsudo -u postgres psql -c \"SHOW config_file;\" -c \"SHOW data_directory;\" -c \"SHOW hba_file;\"\n\n# Active lines of postgresql.conf, without comments\nsudo grep -v -E '^\\s*(#|$)' /etc/postgresql/18/main/postgresql.conf\n\n# Read values and their context\nsudo -u postgres psql -c \"SELECT name, setting, unit, context, source FROM pg_settings WHERE name = 'work_mem';\"\n\n# Put your own settings in conf.d\nsudo -u postgres tee /etc/postgresql/18/main/conf.d/50-tuning.conf <<'EOF'\nlog_min_duration_statement = 500ms\nEOF\n\n# Pre-check the files for errors (zero rows = OK)\nsudo -u postgres psql -c \"SELECT sourcefile, sourceline, name, error FROM pg_file_settings WHERE error IS NOT NULL;\"\n\n# Reload (sighup, superuser, user parameters)\nsudo -u postgres psql -c \"SELECT pg_reload_conf();\"\nsudo systemctl reload postgresql@18-main\n\n# Anything waiting for a restart?\nsudo -u postgres psql -c \"SELECT name, setting FROM pg_settings WHERE pending_restart;\"\n\n# Restart (postmaster parameters), then check the cluster\nsudo systemctl restart postgresql@18-main\npg_lsclusters\n\n# Read the log after a reload or restart\nsudo tail -20 /var/log/postgresql/postgresql-18-main.log\n\n# Cluster-wide change from SQL, and its undo\nsudo -u postgres psql -c \"ALTER SYSTEM SET work_mem = '16MB';\" -c \"SELECT pg_reload_conf();\"\nsudo -u postgres psql -c \"ALTER SYSTEM RESET work_mem;\" -c \"SELECT pg_reload_conf();\"\n\n# Per-database and per-role defaults, and where they are stored\nsudo -u postgres psql -c \"ALTER DATABASE shop SET statement_timeout = '30s';\"\nsudo -u postgres psql -c \"ALTER ROLE report_user SET work_mem = '128MB';\"\nsudo -u postgres psql -c \"\\drds\"",
+    "caption": "Every command from this part"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "On Ubuntu, postgresql.conf and conf.d are in /etc/postgresql/18/main; postgresql.auto.conf is in /var/lib/postgresql/18/main",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "The last value read wins: postgresql.conf, then conf.d files, then postgresql.auto.conf",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "SHOW reads one value; pg_settings shows unit, context, source, sourcefile and pending_restart",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "context postmaster means restart; sighup, superuser and user mean a reload is enough",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Check pg_file_settings before a reload, and the server log and pending_restart after it",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "ALTER SYSTEM writes postgresql.auto.conf and also needs a reload; undo it with ALTER SYSTEM RESET",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use ALTER DATABASE / ALTER ROLE ... SET for targeted defaults, and SET or SET LOCAL for one session or transaction",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 6 you will learn pg_hba.conf and client authentication with scram-sha-256: who may connect to which database, from where, and how they prove who they are."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "You edited postgresql.conf, reloaded, and the value did not change. PostgreSQL told you why. You just did not ask.\n\nPart 5 of my PostgreSQL DBA series is about postgresql.conf basics on Ubuntu with PostgreSQL 18:\n\n→ Ask the server where its files are: SHOW config_file; On Ubuntu it is /etc/postgresql/18/main/postgresql.conf\n→ The last value read wins: postgresql.conf, then conf.d files, then postgresql.auto.conf (written by ALTER SYSTEM)\n→ The context column in pg_settings decides reload or restart. postmaster means restart (max_connections, shared_buffers)\n→ Check pg_file_settings for errors before SELECT pg_reload_conf(); One bad line and no changes are applied\n→ After a reload, run SELECT name FROM pg_settings WHERE pending_restart; and read the server log\n\nDo you change settings by editing the file or with ALTER SYSTEM, and why?\n\nFollow the series: Part 6 is pg_hba.conf and client authentication.\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #SQL #Database",
+  "slides": [
+   {
+    "title": "PostgreSQL DBA Part 5: postgresql.conf",
+    "body": "Where settings live, how to read them, and reload vs restart"
+   },
+   {
+    "title": "Where the files are on Ubuntu",
+    "points": [
+     "postgresql.conf and conf.d: /etc/postgresql/18/main",
+     "postgresql.auto.conf: /var/lib/postgresql/18/main",
+     "Read order: postgresql.conf, conf.d, auto.conf",
+     "The last value read wins"
+    ]
+   },
+   {
+    "title": "Read any setting",
+    "body": "SHOW gives one value. pg_settings adds the unit, the context, the source file and whether a restart is pending.",
+    "code": "SELECT name, setting, unit,\n       context, source\n  FROM pg_settings\n WHERE name = 'work_mem';",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Reload or restart?",
+    "points": [
+     "postmaster: restart (max_connections, shared_buffers)",
+     "sighup: edit the file and reload",
+     "superuser and user: reload, or SET in a session",
+     "internal: cannot be changed"
+    ]
+   },
+   {
+    "title": "Change safely in 3 checks",
+    "code": "-- 1. any errors in the files?\nSELECT name, error FROM pg_file_settings\n WHERE error IS NOT NULL;\n-- 2. apply\nSELECT pg_reload_conf();\n-- 3. waiting for a restart?\nSELECT name FROM pg_settings\n WHERE pending_restart;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "ALTER SYSTEM and narrower scopes",
+    "points": [
+     "ALTER SYSTEM writes postgresql.auto.conf, then reload",
+     "Undo with ALTER SYSTEM RESET work_mem",
+     "ALTER DATABASE / ALTER ROLE ... SET for new sessions",
+     "SET for one session, SET LOCAL for one transaction"
+    ]
+   }
+  ]
+ }
+}

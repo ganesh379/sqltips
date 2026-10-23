@@ -3,3 +3,4 @@
 - Part 2 | postgresql-dba-part-2-install-postgresql-18-ubuntu | 2026-10-20
 - Part 3 | postgresql-dba-part-3-data-directory-pgdata | 2026-10-21
 - Part 4 | postgresql-dba-part-4-psql-commands | 2026-10-22
+- Part 5 | postgresql-dba-part-5-postgresql-conf-basics | 2026-10-23

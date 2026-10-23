@@ -15,3 +15,4 @@
 - 2026-10-22 [Oracle] ora-00060 deadlock detected -> _drafts/2026-10-22-oracle-ora-00060-deadlock-detected.json
 - 2026-10-22 [PostgreSQL] psql commands -> _drafts/2026-10-22-postgresql-postgresql-dba-part-4-psql-commands.json
 - 2026-10-23 [Oracle] ora-01555 snapshot too old -> _drafts/2026-10-23-oracle-ora-01555-snapshot-too-old.json
+- 2026-10-23 [PostgreSQL] postgresql.conf -> _drafts/2026-10-23-postgresql-postgresql-dba-part-5-postgresql-conf-basics.json
