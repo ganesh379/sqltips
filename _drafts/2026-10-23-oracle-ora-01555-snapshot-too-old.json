@@ -1,0 +1,887 @@
+{
+  "schemaVersion": 1,
+  "title": "ORA-01555 Snapshot Too Old in Oracle: Causes and Fixes",
+  "slug": "ora-01555-snapshot-too-old",
+  "category": "plsql",
+  "description": "Fix ORA-01555 snapshot too old in Oracle: find the failing query, read V$UNDOSTAT, size undo correctly and stop committing inside cursor loops.",
+  "focusKeyword": "ora-01555 snapshot too old",
+  "tags": [
+    "oracle",
+    "ora-errors",
+    "undo",
+    "performance",
+    "plsql"
+  ],
+  "related": [
+    "/posts/plsql/oracle-bulk-collect-limit-example/",
+    "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/",
+    "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle error help: ORA-01555",
+      "url": "https://docs.oracle.com/error-help/db/ora-01555/"
+    },
+    {
+      "title": "Oracle error help: ORA-22924",
+      "url": "https://docs.oracle.com/error-help/db/ora-22924/"
+    },
+    {
+      "title": "Oracle 19c Administrator's Guide: Managing Undo",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/admin/managing-undo.html"
+    },
+    {
+      "title": "Oracle 19c Reference: UNDO_RETENTION",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/UNDO_RETENTION.html"
+    },
+    {
+      "title": "Oracle 19c Reference: V$UNDOSTAT",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/V-UNDOSTAT.html"
+    },
+    {
+      "title": "Oracle 19c Concepts: Data Concurrency and Consistency",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/cncpt/data-concurrency-and-consistency.html"
+    },
+    {
+      "title": "Oracle 19c SQL Reference: CREATE TABLESPACE (tablespace_retention_clause)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/CREATE-TABLESPACE.html"
+    }
+  ],
+  "reviewNotes": "Written from the Oracle 19c docs; examples not run, need a test run. Check: (1) the V$UNDOSTAT output row is illustrative, not real; (2) the alert log line 'ORA-01555 caused by SQL statement below' with SQL ID / Query Duration / SCN is described from community examples, not an Oracle doc page; (3) the ADRCI show alert -p predicate syntax; (4) ORA-30036 message wording ('unable to extend segment by %s in undo tablespace') in the FAQ; (5) the LOB section (RETENTION/PCTVERSION, possible LOB corruption warning) is deliberately general, confirm it matches BasicFiles vs SecureFiles behaviour on your version; (6) the 19.7 / 19.9 Release Update behaviour notes come from the UNDO_RETENTION reference page. Datafile paths and sizes in Fix 1 are placeholders.",
+  "generatedAt": "2026-10-23T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>ORA-01555: snapshot too old</b> means a query needed an old version of some data to stay read-consistent, but the undo that held that old version had already been overwritten. The query fails, even though nothing is wrong with the SQL itself."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The fix is almost never \"just raise <code class=\"inline-code\">UNDO_RETENTION</code>\". You first find out which query failed and how long it ran, then fix the real cause: an undo tablespace that is too small for your longest query, a PL/SQL loop that commits while its cursor is still open, or LOB undo. This guide walks through each case with queries you can run."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What ORA-01555 means",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle never shows a query half-finished changes. In the default read committed mode, every query sees the data as it was at the moment the query started, identified by a system change number (SCN). If another session changes a row after your query starts, Oracle rebuilds the old version of that block using <b>undo</b> data. The rebuilt copy is called a consistent read (CR) clone."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Undo lives in the undo tablespace and is reused in a circular way. Once a transaction commits, its undo is kept for a while (the undo retention period) and then becomes <i>expired</i>, which means it can be overwritten. If your query is still running and needs undo that has been overwritten, Oracle cannot rebuild the old block, so it raises ORA-01555."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The full message looks like this:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-01555: snapshot too old: rollback segment number <n> with name \"<segment name>\" too small",
+        "caption": "Error text format (from the Oracle error reference)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The words \"rollback segment\" and \"too small\" are historical. With Automatic Undo Management (the normal setup today), the segment named in the message is a system-managed undo segment, and resizing that one segment is not the fix."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Here is the sequence of events that leads to the error:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Time",
+            "Session A (report)",
+            "Session B (batch job)"
+          ],
+          [
+            "10:00",
+            "Starts a long SELECT on orders (consistent as of 10:00)",
+            ""
+          ],
+          [
+            "10:05",
+            "Still reading",
+            "Updates many orders rows, commits"
+          ],
+          [
+            "10:20",
+            "Still reading",
+            "Keeps updating and committing; undo space is reused"
+          ],
+          [
+            "10:40",
+            "Reaches a block changed at 10:05, needs its 10:00 version",
+            "The undo for the 10:05 change has been overwritten"
+          ],
+          [
+            "10:40",
+            "Fails with ORA-01555",
+            ""
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Notice that session A did nothing wrong except run for a long time while other sessions changed the same data. That is why ORA-01555 is mostly a question of <b>query duration versus how long undo survives</b>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The examples use a small <code class=\"inline-code\">orders</code> table and an <code class=\"inline-code\">order_audit</code> table. Generate enough rows that a slow loop takes a while to finish."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE orders (\n  order_id    NUMBER        PRIMARY KEY,\n  customer_id NUMBER        NOT NULL,\n  amount      NUMBER(10,2)  NOT NULL,\n  status      VARCHAR2(10)  NOT NULL,\n  created_at  DATE          NOT NULL\n);\n\nINSERT INTO orders (order_id, customer_id, amount, status, created_at)\nSELECT LEVEL,\n       MOD(LEVEL, 500) + 1,\n       ROUND(DBMS_RANDOM.VALUE(100, 5000), 2),\n       'NEW',\n       SYSDATE - MOD(LEVEL, 90)\n  FROM dual\nCONNECT BY LEVEL <= 200000;\n\nCOMMIT;",
+        "caption": "Sample orders table"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: Confirm the error and find the failing query",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Before changing any setting, collect three facts: which SQL failed, how long it had been running, and how much undo your database was keeping at that time."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Check the alert log",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle writes an entry to the alert log when ORA-01555 happens. It starts with a line similar to <code class=\"inline-code\">ORA-01555 caused by SQL statement below</code> and includes the SQL ID, the query duration in seconds and the SCN, followed by the SQL text. You can search the alert log with ADRCI:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "adrci> show homes\nadrci> set home diag/rdbms/<db_name>/<instance_name>\nadrci> show alert -p \"message_text like '%ORA-01555%'\"",
+        "caption": "Search the alert log for ORA-01555"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The <b>query duration</b> is the most useful number here. Compare it with the undo retention figures in the next step."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Check V$UNDOSTAT",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">V$UNDOSTAT</code> keeps one row per 10-minute interval for roughly the last four days (older intervals go to <code class=\"inline-code\">DBA_HIST_UNDOSTAT</code>). Three columns matter most for ORA-01555:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<code class=\"inline-code\">SSOLDERRCNT</code>: how many times ORA-01555 occurred in that interval.",
+            "items": []
+          },
+          {
+            "content": "<code class=\"inline-code\">MAXQUERYLEN</code> and <code class=\"inline-code\">MAXQUERYID</code>: the longest query in seconds and its SQL ID.",
+            "items": []
+          },
+          {
+            "content": "<code class=\"inline-code\">TUNED_UNDORETENTION</code>: the retention, in seconds, that Oracle was actually using.",
+            "items": []
+          },
+          {
+            "content": "<code class=\"inline-code\">NOSPACEERRCNT</code>: how many times a transaction asked for undo space and none was free.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT TO_CHAR(begin_time, 'DD-MON HH24:MI') AS begin_time,\n       maxquerylen,\n       maxqueryid,\n       tuned_undoretention,\n       ssolderrcnt,\n       nospaceerrcnt\n  FROM v$undostat\n WHERE ssolderrcnt > 0\n    OR nospaceerrcnt > 0\n ORDER BY begin_time;",
+        "caption": "Intervals where ORA-01555 or undo space errors happened"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "BEGIN_TIME",
+            "MAXQUERYLEN",
+            "MAXQUERYID",
+            "TUNED_UNDORETENTION",
+            "SSOLDERRCNT",
+            "NOSPACEERRCNT"
+          ],
+          [
+            "22-OCT 02:10",
+            "5412",
+            "<sql_id>",
+            "2310",
+            "1",
+            "0"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output, illustrative values). Read it like this: the longest query had been running for about 90 minutes (5412 seconds), but Oracle was only able to keep undo for about 38 minutes (2310 seconds). Any query that runs longer than the tuned retention while other sessions change its data is at risk. A non-zero <code class=\"inline-code\">NOSPACEERRCNT</code> would also tell you the undo tablespace was completely full of active transactions."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To see the SQL text of the failing query, look up <code class=\"inline-code\">MAXQUERYID</code> (or the SQL ID from the alert log) in <code class=\"inline-code\">V$SQL</code>, or in AWR if it has aged out of the shared pool."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: Check your undo configuration",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Next, see how undo is set up. These queries need DBA privileges (or SELECT on the views)."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT name, value\n  FROM v$parameter\n WHERE name IN ('undo_management', 'undo_tablespace', 'undo_retention');",
+        "caption": "Undo parameters"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "NAME",
+            "VALUE"
+          ],
+          [
+            "undo_management",
+            "AUTO"
+          ],
+          [
+            "undo_tablespace",
+            "UNDOTBS1"
+          ],
+          [
+            "undo_retention",
+            "900"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). <code class=\"inline-code\">900</code> seconds (15 minutes) is the documented default for <code class=\"inline-code\">UNDO_RETENTION</code>. It is a <i>low threshold</i>, not a cap: Oracle tunes the real retention, which you saw in <code class=\"inline-code\">TUNED_UNDORETENTION</code>."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT t.tablespace_name,\n       t.retention,\n       f.file_name,\n       ROUND(f.bytes / 1024 / 1024)    AS size_mb,\n       f.autoextensible,\n       ROUND(f.maxbytes / 1024 / 1024) AS max_mb\n  FROM dba_tablespaces t\n  JOIN dba_data_files  f ON f.tablespace_name = t.tablespace_name\n WHERE t.contents = 'UNDO';",
+        "caption": "Undo tablespace size, autoextend and retention mode"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">RETENTION</code> shows <code class=\"inline-code\">NOGUARANTEE</code> (the default) or <code class=\"inline-code\">GUARANTEE</code>. Whether the datafiles autoextend changes how Oracle treats <code class=\"inline-code\">UNDO_RETENTION</code>:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Undo tablespace",
+            "How retention is tuned"
+          ],
+          [
+            "Autoextend ON",
+            "Oracle aims for slightly longer than the longest running query and honours UNDO_RETENTION, extending the files rather than overwriting unexpired undo. Once MAXSIZE is reached, unexpired undo can be overwritten."
+          ],
+          [
+            "Fixed size, 19c before RU 19.7",
+            "Oracle tunes for the longest retention the space allows and ignores UNDO_RETENTION unless RETENTION GUARANTEE is set."
+          ],
+          [
+            "Fixed size, 19c RU 19.7 and later",
+            "Oracle keeps undo for at least UNDO_RETENTION when space allows, and tunes upwards to suit the queries."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In every case the rule is the same: retention is only honoured if there is space. With <code class=\"inline-code\">NOGUARANTEE</code>, an active transaction that needs undo space will reuse unexpired undo, and that is exactly when long queries get ORA-01555."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Fix 1: Long query and not enough undo space",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is the most common case. A report, an export or a batch reader runs longer than the undo your system can keep while other sessions are busy changing the same tables."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Make undo big enough for the longest query",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Size the undo tablespace so that it can hold all the undo generated during your longest query. The Undo Advisor (in Enterprise Manager, or through <code class=\"inline-code\">DBMS_ADVISOR</code>) gives a size recommendation based on AWR history. You can also add space directly:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "-- Let an existing undo datafile grow, with a sensible ceiling\nALTER DATABASE DATAFILE '/u01/oradata/ORCL/undotbs01.dbf'\n  AUTOEXTEND ON NEXT 512M MAXSIZE 32G;\n\n-- Or add another datafile to the undo tablespace\nALTER TABLESPACE undotbs1\n  ADD DATAFILE '/u01/oradata/ORCL/undotbs02.dbf'\n  SIZE 4G AUTOEXTEND ON NEXT 512M MAXSIZE 32G;",
+        "caption": "Giving the undo tablespace more room (adjust paths and sizes)"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Raise UNDO_RETENTION only when space backs it up",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If the alert log shows a query duration of 5,400 seconds, setting <code class=\"inline-code\">UNDO_RETENTION</code> a bit above that tells Oracle to try to keep undo that long:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "ALTER SYSTEM SET undo_retention = 6000 SCOPE = BOTH;",
+        "caption": "Ask Oracle to keep committed undo for at least 100 minutes"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This change takes effect immediately, but it is best effort. If the undo tablespace cannot hold 100 minutes of undo for your workload, Oracle will still reuse unexpired undo and the error will come back. Oracle's own guidance is to leave the parameter at its default unless you use Flashback features or Active Data Guard, and to rely on automatic tuning plus enough space otherwise."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "",
+        "text": "In a multitenant database, <code class=\"inline-code\">UNDO_RETENTION</code> can be set per PDB when the PDB uses local undo. From 19c RU 19.9 the value is not inherited from CDB$ROOT, so set it in each PDB where you need it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Make the query shorter",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A query that finishes in 5 minutes instead of 90 needs far less undo. Check its execution plan for full scans that an index would avoid, missing join conditions, or row-by-row function calls. Running the report when fewer batch jobs are changing the same tables also helps, because less undo is generated while it runs."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Fix 2: Commit inside a cursor loop",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The second classic cause is in your own code. A PL/SQL loop opens a cursor on a table, updates rows of the same table, and commits every few rows. Developers often do this to \"keep transactions small\", but it is the pattern most likely to cause ORA-01555 for the loop itself."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  FOR r IN (SELECT order_id\n              FROM orders\n             WHERE status = 'NEW') LOOP\n    UPDATE orders\n       SET status = 'BILLED'\n     WHERE order_id = r.order_id;\n\n    COMMIT;  -- commit while the cursor is still open\n  END LOOP;\nEND;\n/",
+        "caption": "Risky: committing on every row while the cursor is open"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Why it fails",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The cursor is a query, so it must see <code class=\"inline-code\">orders</code> as it was when the loop started. Each block it reads later may contain rows your own loop has already changed, so Oracle must undo those changes to rebuild the original block. After each <code class=\"inline-code\">COMMIT</code>, the undo for those changes is committed undo, which can be overwritten once it expires or space runs short. The loop keeps generating new undo, often in the same undo space, so it can overwrite the very undo its own cursor still needs."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Committing often does not save undo space overall. It only tells Oracle that the old undo is no longer protected by an active transaction."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Better: one SQL statement",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "UPDATE orders\n   SET status = 'BILLED'\n WHERE status = 'NEW';\n\nCOMMIT;",
+        "caption": "One statement, one commit"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A single UPDATE is faster than a row-by-row loop and keeps its own undo active until the commit, so that undo cannot be overwritten under it. If the volume is too large for one transaction, the next option is a restartable batch."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "If you must commit in batches, reopen the cursor",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Process a limited number of rows, commit, and then start a <b>new</b> query for the next batch. Because each batch opens a fresh cursor, no query has to look back past a commit."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  l_rows PLS_INTEGER;\nBEGIN\n  LOOP\n    UPDATE orders\n       SET status = 'BILLED'\n     WHERE status = 'NEW'\n       AND ROWNUM <= 10000;\n\n    l_rows := SQL%ROWCOUNT;\n    COMMIT;\n\n    EXIT WHEN l_rows = 0;\n  END LOOP;\nEND;\n/",
+        "caption": "Batches of 10,000 rows; each UPDATE is a new statement"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Each <code class=\"inline-code\">UPDATE</code> only touches rows still marked <code class=\"inline-code\">'NEW'</code>, so the job can also be restarted safely after a failure. For loops that do more than one UPDATE per row, the same idea works with <a href=\"/posts/plsql/oracle-bulk-collect-limit-example/\">BULK COLLECT with LIMIT and FORALL</a>, as long as you do not commit while the driving cursor is open over the same table."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "",
+        "text": "An index on <code class=\"inline-code\">status</code> (or on the column you filter batches by) stops each batch from scanning the whole table again."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Fix 3: ORA-01555 with LOB columns (ORA-22924)",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "LOB data keeps its old versions inside the LOB segment, not in the undo tablespace. When an old LOB version that a query needs has been overwritten, you may see ORA-01555 together with <b>ORA-22924: snapshot too old</b>. Oracle's action for ORA-22924 is to use a larger version pool."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Automatic undo tuning does not apply to LOBs. Oracle tries to honour <code class=\"inline-code\">UNDO_RETENTION</code> for LOB undo but can overwrite it when space is low. So the fixes are in the LOB storage itself: give the LOB segment's tablespace room to keep old versions, and review the LOB's <code class=\"inline-code\">RETENTION</code> or <code class=\"inline-code\">PCTVERSION</code> settings in its storage clause. Check <code class=\"inline-code\">DBA_LOBS</code> to see what each LOB column uses."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "",
+        "text": "ORA-01555 on a LOB column can also be a sign of LOB corruption rather than a retention problem. If the error repeats on the same rows even when nothing else is running, treat it as a possible corruption and check My Oracle Support before changing retention."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "When to use RETENTION GUARANTEE",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "By default an undo tablespace is <code class=\"inline-code\">RETENTION NOGUARANTEE</code>: unexpired undo can be taken by active transactions that need space. <code class=\"inline-code\">RETENTION GUARANTEE</code> flips that priority."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "ALTER TABLESPACE undotbs1 RETENTION GUARANTEE;\n\n-- back to the default\nALTER TABLESPACE undotbs1 RETENTION NOGUARANTEE;",
+        "caption": "Switching the retention mode"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "With the guarantee on, Oracle never overwrites unexpired undo. Queries are protected, but if the undo tablespace fills up, <b>DML fails instead</b> because it cannot get undo space. Oracle documents this as useful when you need Flashback Query or Flashback Transaction Query to investigate a problem. For most production systems, adding undo space is safer than guaranteeing retention."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Setting UNDO_RETENTION to a huge number and stopping there.</b> Without enough undo space it is only a request. Check <code class=\"inline-code\">TUNED_UNDORETENTION</code> and <code class=\"inline-code\">NOSPACEERRCNT</code> after the change.",
+            "items": []
+          },
+          {
+            "content": "<b>Resizing the \"rollback segment\" named in the error.</b> With automatic undo, segments are managed by Oracle. The name in the message tells you nothing you can act on.",
+            "items": []
+          },
+          {
+            "content": "<b>Committing more often to \"fix\" ORA-01555.</b> In a cursor loop this makes the error more likely, not less.",
+            "items": []
+          },
+          {
+            "content": "<b>Ignoring the query duration.</b> If the failing query ran for 6 hours, the first question is why it takes 6 hours.",
+            "items": []
+          },
+          {
+            "content": "<b>Turning on RETENTION GUARANTEE on a small undo tablespace.</b> You trade failed reports for failed transactions, which is usually worse.",
+            "items": []
+          },
+          {
+            "content": "<b>Forgetting Flashback and exports.</b> <code class=\"inline-code\">SELECT ... AS OF</code> queries and consistent Data Pump exports (for example with <code class=\"inline-code\">FLASHBACK_TIME</code>) also read old data from undo, so they can hit ORA-01555 too.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Best practices to prevent ORA-01555",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "ordered",
+        "items": [
+          {
+            "content": "Track <code class=\"inline-code\">MAXQUERYLEN</code> in <code class=\"inline-code\">V$UNDOSTAT</code> and <code class=\"inline-code\">DBA_HIST_UNDOSTAT</code> over a full business cycle, including month-end jobs.",
+            "items": []
+          },
+          {
+            "content": "Size undo for your longest query plus a margin, using the Undo Advisor. Prefer autoextend with a realistic <code class=\"inline-code\">MAXSIZE</code> over a tiny fixed size.",
+            "items": []
+          },
+          {
+            "content": "Tune long reports so they finish faster, and schedule them away from heavy batch updates on the same tables.",
+            "items": []
+          },
+          {
+            "content": "Write set-based DML. When batching, commit only between separate statements, never while a cursor on the same table is open.",
+            "items": []
+          },
+          {
+            "content": "Keep Oracle on a current Release Update, and note the 19.7 change for fixed-size undo when you read older advice.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I fix ORA-01555 snapshot too old?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Find the failing query and its duration in the alert log, compare it with <code class=\"inline-code\">TUNED_UNDORETENTION</code> in <code class=\"inline-code\">V$UNDOSTAT</code>, then add undo space (and raise <code class=\"inline-code\">UNDO_RETENTION</code> if needed), shorten the query, or remove commits from inside cursor loops."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Does increasing UNDO_RETENTION always fix ORA-01555?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "No. It is a minimum that Oracle tries to honour. If the undo tablespace runs out of space and retention is not guaranteed, unexpired undo is still reused and the error returns."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the default UNDO_RETENTION in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "900 seconds (15 minutes). Oracle tunes the actual retention above this when space allows."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can an INSERT or UPDATE get ORA-01555?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Yes. Any statement that reads data needs a consistent view, including the query part of an UPDATE, DELETE, INSERT ... SELECT or MERGE. Long-running DML that reads many blocks can fail the same way a SELECT does."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between ORA-01555 and ORA-30036?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "ORA-01555 hits a <i>reader</i> whose old data was overwritten. ORA-30036 (unable to extend segment in undo tablespace) hits a <i>writer</i> that cannot get any undo space. A guaranteed retention on a small undo tablespace can turn the first problem into the second."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "ORA-01555 means undo needed for a consistent read was overwritten.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Get the SQL ID and query duration from the alert log.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Compare MAXQUERYLEN with TUNED_UNDORETENTION in V$UNDOSTAT.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Give undo enough space for your longest query; raise UNDO_RETENTION only with space behind it.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Never commit inside a loop over a cursor on the same table.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "For LOB columns, check LOB retention and look out for ORA-22924.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use RETENTION GUARANTEE only when you accept DML failing instead.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your nightly report fails at 2 a.m. with ORA-01555, and the query itself has no bug. Here is what is really going on.\n\nA query in Oracle sees data as it was when it started. If other sessions change those rows, Oracle rebuilds the old version from undo. When that undo is overwritten first, the query dies with \"snapshot too old\".\n\nHow to fix it properly:\n→ Read the alert log entry. It gives the SQL ID and how long the query had been running.\n→ Compare MAXQUERYLEN with TUNED_UNDORETENTION in V$UNDOSTAT. If the query runs longer than undo survives, that is your gap.\n→ Add undo space first. UNDO_RETENTION (default 900 seconds) is only a request if the space is not there.\n→ Stop committing inside a cursor loop on the same table. It makes the loop overwrite undo its own cursor still needs. Use one UPDATE, or batches that each start a new statement.\n→ RETENTION GUARANTEE protects queries, but DML fails when undo fills up. Use it with care.\n\nWhat was the longest-running query that ever hit ORA-01555 on your system, and what fixed it?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleDBA #PLSQL #OracleSQL",
+    "slides": [
+      {
+        "title": "ORA-01555 Snapshot Too Old, Explained",
+        "body": "Why it happens and how to fix the real cause"
+      },
+      {
+        "title": "What the error means",
+        "body": "Each query sees data as of its start time. Oracle rebuilds changed blocks from undo. If that undo was already overwritten, the query fails with ORA-01555."
+      },
+      {
+        "title": "Step 1: find the gap",
+        "points": [
+          "Alert log gives the SQL ID and query duration",
+          "Compare MAXQUERYLEN with TUNED_UNDORETENTION"
+        ],
+        "code": "SELECT maxquerylen,\n       tuned_undoretention,\n       ssolderrcnt\n  FROM v$undostat\n WHERE ssolderrcnt > 0;",
+        "lang": "sql"
+      },
+      {
+        "title": "Step 2: space before retention",
+        "points": [
+          "UNDO_RETENTION default is 900 seconds",
+          "It is only honoured if undo has free space",
+          "Size undo for your longest query"
+        ]
+      },
+      {
+        "title": "Do not commit inside the loop",
+        "points": [
+          "The open cursor still needs old undo",
+          "Each commit lets that undo be overwritten"
+        ],
+        "code": "FOR r IN (SELECT order_id FROM orders\n          WHERE status = 'NEW') LOOP\n  UPDATE orders SET status = 'BILLED'\n   WHERE order_id = r.order_id;\n  COMMIT; -- risky\nEND LOOP;",
+        "lang": "plsql"
+      },
+      {
+        "title": "Do this instead",
+        "body": "Use one set-based statement, or batches where every batch is a new statement.",
+        "code": "UPDATE orders\n   SET status = 'BILLED'\n WHERE status = 'NEW';\nCOMMIT;",
+        "lang": "sql"
+      },
+      {
+        "title": "RETENTION GUARANTEE",
+        "points": [
+          "Never overwrites unexpired undo",
+          "But DML fails when undo is full",
+          "Adding space is usually the safer fix"
+        ]
+      }
+    ]
+  }
+}
