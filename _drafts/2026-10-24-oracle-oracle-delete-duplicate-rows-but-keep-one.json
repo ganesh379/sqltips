@@ -1,0 +1,881 @@
+{
+  "schemaVersion": 1,
+  "title": "Oracle Delete Duplicate Rows but Keep One (4 Methods)",
+  "slug": "oracle-delete-duplicate-rows-but-keep-one",
+  "category": "plsql",
+  "description": "Delete duplicate rows in Oracle but keep one, using MIN(ROWID), ROW_NUMBER and GROUP BY, with expected output, NULL traps and how to prevent repeats.",
+  "focusKeyword": "oracle delete duplicate rows but keep one",
+  "tags": [
+    "oracle",
+    "oracle-sql",
+    "duplicates",
+    "rowid",
+    "analytic-functions"
+  ],
+  "related": [
+    "/posts/plsql/oracle-merge-statement-example/",
+    "/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/",
+    "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle 19c SQL Reference: ROWID Pseudocolumn",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/ROWID-Pseudocolumn.html"
+    },
+    {
+      "title": "Oracle 19c SQL Reference: ROW_NUMBER",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/ROW_NUMBER.html"
+    },
+    {
+      "title": "Oracle 19c SQL Reference: DELETE",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/DELETE.html"
+    },
+    {
+      "title": "Oracle 19c SQL Reference: constraint (unique keys, exceptions_clause)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/constraint.html"
+    },
+    {
+      "title": "Oracle error help: ORA-02299",
+      "url": "https://docs.oracle.com/error-help/db/ora-02299/"
+    },
+    {
+      "title": "Oracle 19c SQL Reference: DECODE",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/DECODE.html"
+    }
+  ],
+  "reviewNotes": "Examples written from the Oracle 19c SQL Language Reference and not run; please test every statement (row counts, remaining rows, ORA-02299 text). Date output assumes NLS_DATE_FORMAT DD-MON-RR. Checks: DECODE null-equivalence wording; utlexcpt.sql location under $ORACLE_HOME/rdbms/admin; ORA-00001 and ORA-02292 wording quoted from memory as short descriptions only. The 'DELETE from inline view with analytic function not allowed' point comes from the DELETE docs' view restrictions. Oracle's own blog post on this topic returned 403 so was not used.",
+  "generatedAt": "2026-10-24T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To delete duplicate rows in Oracle but keep one, you first decide which row in each group survives, then delete every other row in that group. The shortest way is a <code class=\"inline-code\">DELETE</code> with a subquery that keeps <code class=\"inline-code\">MIN(ROWID)</code> (or the lowest ID) per group. When you need to keep a specific row, such as the newest one, use <code class=\"inline-code\">ROW_NUMBER()</code> to rank the rows and delete everything ranked 2 or higher."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This tutorial shows four methods on a small sample table, with the expected output after each step. You will also see how to check what will be deleted before you delete it, how NULLs change the result, and how to stop duplicates from coming back."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What counts as a duplicate row",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A duplicate is not always a row where every column matches. Usually two rows are duplicates because they share the same <b>business key</b>, for example the same email address or the same payment reference, even though their IDs or timestamps differ."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "So before writing any SQL, answer two questions:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Which columns define a duplicate?</b> These become your GROUP BY or PARTITION BY columns.",
+            "items": []
+          },
+          {
+            "content": "<b>Which row do you keep?</b> The oldest, the newest, the one with the lowest ID, or any one of them if the rows are fully identical.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle gives every row a <code class=\"inline-code\">ROWID</code>, the physical address of the row. The Oracle documentation says a rowid usually identifies a row uniquely, which is why it is the standard tiebreaker when the rows have no ID column of their own. The same documentation warns that a rowid can change (for example after export and import) and that you should not use it as a primary key. Using it inside one DELETE statement is safe; storing it for later is not."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Create two small tables. <b>customers</b> has an ID column, so duplicates differ only in their ID and date. <b>payments_stage</b> has no key at all, so its duplicate rows are completely identical."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE customers (\n  customer_id  NUMBER        NOT NULL,\n  full_name    VARCHAR2(50),\n  email        VARCHAR2(100),\n  city         VARCHAR2(30),\n  created_at   DATE\n);\n\nINSERT INTO customers VALUES (1, 'Asha Rao',    'asha@example.com',  'Pune',    DATE '2026-01-05');\nINSERT INTO customers VALUES (2, 'Ravi Kumar',  'ravi@example.com',  'Chennai', DATE '2026-01-06');\nINSERT INTO customers VALUES (3, 'Asha Rao',    'asha@example.com',  'Pune',    DATE '2026-02-10');\nINSERT INTO customers VALUES (4, 'Meena Iyer',  'meena@example.com', 'Delhi',   DATE '2026-01-07');\nINSERT INTO customers VALUES (5, 'Ravi Kumar',  'ravi@example.com',  'Chennai', DATE '2026-03-01');\nINSERT INTO customers VALUES (6, 'Ravi Kumar',  'ravi@example.com',  'Chennai', DATE '2026-03-15');\nINSERT INTO customers VALUES (7, 'John Mathew', NULL,                'Kochi',   DATE '2026-01-09');\nINSERT INTO customers VALUES (8, 'Priya Nair',  NULL,                'Mumbai',  DATE '2026-01-09');\n\nCREATE TABLE payments_stage (\n  payment_ref  VARCHAR2(20),\n  amount       NUMBER(10,2),\n  paid_on      DATE\n);\n\nINSERT INTO payments_stage VALUES ('P-1001',  500, DATE '2026-10-01');\nINSERT INTO payments_stage VALUES ('P-1001',  500, DATE '2026-10-01');\nINSERT INTO payments_stage VALUES ('P-1002', 1200, DATE '2026-10-02');\nINSERT INTO payments_stage VALUES ('P-1003',  750, DATE '2026-10-02');\nINSERT INTO payments_stage VALUES ('P-1003',  750, DATE '2026-10-02');\nINSERT INTO payments_stage VALUES ('P-1003',  750, DATE '2026-10-02');\n\nCOMMIT;",
+        "caption": "Sample tables with duplicates"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In customers, a duplicate means the same email. Asha has 2 rows and Ravi has 3. John and Priya both have a NULL email, but they are clearly different people. Keep that in mind, it matters later."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "",
+        "text": "Every DELETE in this tutorial can be undone with <code class=\"inline-code\">ROLLBACK</code> until you commit. Run each method, check the result, then roll back so you can try the next one on the same data."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: find the duplicates before deleting",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Always look before you delete. A <code class=\"inline-code\">GROUP BY</code> with <code class=\"inline-code\">HAVING COUNT(*) > 1</code> lists each duplicate key and how many rows share it."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT email, COUNT(*) AS cnt\n  FROM customers\n GROUP BY email\nHAVING COUNT(*) > 1\n ORDER BY email;",
+        "caption": "Duplicate emails and their counts"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "EMAIL",
+            "CNT"
+          ],
+          [
+            "asha@example.com",
+            "2"
+          ],
+          [
+            "ravi@example.com",
+            "3"
+          ],
+          [
+            "(null)",
+            "2"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). Notice the last row. GROUP BY puts all NULL values into one group, so John and Priya show up as \"duplicates\" of each other. If you delete by this grouping without thinking, you will lose a real customer."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "See every row and its rank",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Counts do not tell you which rows will go. Use <code class=\"inline-code\">ROW_NUMBER()</code> to number the rows inside each group. Row 1 is the one you keep; every row numbered 2 or more would be deleted."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT customer_id, email, created_at,\n       ROW_NUMBER() OVER (PARTITION BY email\n                          ORDER BY customer_id) AS rn\n  FROM customers\n WHERE email IS NOT NULL\n ORDER BY email, customer_id;",
+        "caption": "Number the rows in each duplicate group"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "CUSTOMER_ID",
+            "EMAIL",
+            "CREATED_AT",
+            "RN"
+          ],
+          [
+            "1",
+            "asha@example.com",
+            "05-JAN-26",
+            "1"
+          ],
+          [
+            "3",
+            "asha@example.com",
+            "10-FEB-26",
+            "2"
+          ],
+          [
+            "4",
+            "meena@example.com",
+            "07-JAN-26",
+            "1"
+          ],
+          [
+            "2",
+            "ravi@example.com",
+            "06-JAN-26",
+            "1"
+          ],
+          [
+            "5",
+            "ravi@example.com",
+            "01-MAR-26",
+            "2"
+          ],
+          [
+            "6",
+            "ravi@example.com",
+            "15-MAR-26",
+            "3"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output; the date format depends on your NLS_DATE_FORMAT setting). Rows 3, 5 and 6 have <code class=\"inline-code\">rn > 1</code>, so they are the ones a \"keep the lowest ID\" delete will remove. The <code class=\"inline-code\">WHERE email IS NOT NULL</code> filter keeps John and Priya out of it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Method 1: keep the row with the lowest ID",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "When the table has a unique ID, the simplest rule is \"keep the smallest ID in each group\". The subquery returns one surviving ID per email, and the DELETE removes everything else."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "DELETE FROM customers\n WHERE email IS NOT NULL\n   AND customer_id NOT IN (SELECT MIN(customer_id)\n                             FROM customers\n                            WHERE email IS NOT NULL\n                            GROUP BY email);",
+        "caption": "Keep the lowest customer_id per email"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "3 rows deleted.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Rows 3, 5 and 6 are gone, which matches the rn > 1 rows from Step 1. Querying the table now returns IDs 1, 2, 4, 7 and 8."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Why it works: the subquery reads the table once, groups by email and returns 1, 2 and 4. Every non-NULL email row whose ID is not in that list is a duplicate. Oracle's own DELETE documentation confirms that the WHERE condition can reference the table you are deleting from, so this self-reference is allowed."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "",
+        "text": "<code class=\"inline-code\">NOT IN</code> returns no rows if the subquery returns even one NULL. Here <code class=\"inline-code\">customer_id</code> is NOT NULL, so MIN can never be NULL. If your ID column allows NULLs, use the ROW_NUMBER method below or <code class=\"inline-code\">NOT EXISTS</code> instead."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Run <code class=\"inline-code\">ROLLBACK;</code> before trying the next method."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Method 2: keep the newest row with ROW_NUMBER",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Often the lowest ID is not the row you want. If a customer signed up twice, the latest record may hold the current details. ROW_NUMBER lets you choose any order you like."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Build the list of rows to delete",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You cannot filter on an analytic function in the same query level's WHERE clause, because analytic functions are calculated after WHERE. So you compute the rank in an inner query and filter on it outside. Return the <code class=\"inline-code\">ROWID</code> of each loser so the DELETE can target exact rows."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "DELETE FROM customers\n WHERE ROWID IN (\n         SELECT rid\n           FROM (SELECT ROWID AS rid,\n                        ROW_NUMBER() OVER (\n                          PARTITION BY email\n                          ORDER BY created_at DESC, customer_id DESC\n                        ) AS rn\n                   FROM customers\n                  WHERE email IS NOT NULL)\n          WHERE rn > 1);",
+        "caption": "Keep the newest row per email"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "3 rows deleted.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Check what survived",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT customer_id, full_name, email, created_at\n  FROM customers\n ORDER BY customer_id;",
+        "caption": "Remaining rows"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "CUSTOMER_ID",
+            "FULL_NAME",
+            "EMAIL",
+            "CREATED_AT"
+          ],
+          [
+            "3",
+            "Asha Rao",
+            "asha@example.com",
+            "10-FEB-26"
+          ],
+          [
+            "4",
+            "Meena Iyer",
+            "meena@example.com",
+            "07-JAN-26"
+          ],
+          [
+            "6",
+            "Ravi Kumar",
+            "ravi@example.com",
+            "15-MAR-26"
+          ],
+          [
+            "7",
+            "John Mathew",
+            "",
+            "09-JAN-26"
+          ],
+          [
+            "8",
+            "Priya Nair",
+            "",
+            "09-JAN-26"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). Asha kept her February row (ID 3) and Ravi kept his 15 March row (ID 6). John and Priya are untouched because NULL emails were filtered out."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Notice the second sort column, <code class=\"inline-code\">customer_id DESC</code>. The Oracle documentation for ROW_NUMBER says that for consistent results the query must use a deterministic sort order. If two duplicates had the same created_at and you sorted only by date, Oracle could keep a different row each time you ran it. Adding a unique column as the last sort key removes that doubt."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Run <code class=\"inline-code\">ROLLBACK;</code> again."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Method 3: fully identical rows with no key (ROWID)",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The payments_stage table has no ID. The rows for P-1001 and P-1003 are identical in every column, so it does not matter which copy you keep. ROWID gives you something to tell them apart."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "DELETE FROM payments_stage\n WHERE ROWID NOT IN (SELECT MIN(ROWID)\n                       FROM payments_stage\n                      GROUP BY payment_ref, amount, paid_on);",
+        "caption": "Keep one copy of each identical row"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "3 rows deleted.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT payment_ref, amount, paid_on\n  FROM payments_stage\n ORDER BY payment_ref;",
+        "caption": "Remaining payments"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "PAYMENT_REF",
+            "AMOUNT",
+            "PAID_ON"
+          ],
+          [
+            "P-1001",
+            "500",
+            "01-OCT-26"
+          ],
+          [
+            "P-1002",
+            "1200",
+            "02-OCT-26"
+          ],
+          [
+            "P-1003",
+            "750",
+            "02-OCT-26"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). One copy of P-1001 and two copies of P-1003 were removed. List every column that defines \"the same row\" in the GROUP BY; if you group only by payment_ref, two different payments that happen to share a reference would be treated as duplicates."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "",
+        "text": "MIN(ROWID) is not \"the first row inserted\". It is simply the lowest physical address. That is fine for identical rows, but if you need the earliest or latest row, sort on a real column with ROW_NUMBER as in Method 2."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "The same delete with EXISTS",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You will also see a correlated version in older code. It deletes a row if another row with the same values and a smaller ROWID exists:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "DELETE FROM payments_stage p\n WHERE EXISTS (SELECT 1\n                 FROM payments_stage q\n                WHERE q.payment_ref = p.payment_ref\n                  AND q.amount      = p.amount\n                  AND q.paid_on     = p.paid_on\n                  AND q.ROWID       < p.ROWID);",
+        "caption": "Correlated delete, same result on this data"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "It gives the same 3 rows deleted here. The catch is that <code class=\"inline-code\">=</code> is never true when either side is NULL, so rows with a NULL in any compared column are never seen as duplicates. The GROUP BY version groups NULLs together instead. If you want NULLs to count as equal in the EXISTS version, compare with <code class=\"inline-code\">DECODE(q.amount, p.amount, 1, 0) = 1</code>, because DECODE treats two NULLs as a match."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Method 4: rebuild the table when most rows are duplicates",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A DELETE writes undo and redo for every row it removes, and maintains every index on the table. If a large share of the table is duplicates, it can be quicker to copy the rows you want into a new table and swap names."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE payments_clean AS\n  SELECT DISTINCT payment_ref, amount, paid_on\n    FROM payments_stage;\n\n-- after checking the row count in payments_clean:\nDROP TABLE payments_stage;\nRENAME payments_clean TO payments_stage;",
+        "caption": "Copy distinct rows and swap"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is DDL, so it cannot be rolled back, and the new table does not carry over indexes, constraints, grants or triggers from the old one. You must recreate those yourself. Use this method in a maintenance window, after a backup, and only when you know every object that depends on the table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Stop duplicates from coming back",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Deleting duplicates fixes today's data. A unique constraint stops tomorrow's. Once the table is clean, add one on the columns that define a duplicate:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "ALTER TABLE customers\n  ADD CONSTRAINT customers_email_uk UNIQUE (email);",
+        "caption": "Enforce one row per email"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If duplicates still exist, the statement fails with an error like this:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-02299: cannot validate (APP.CUSTOMERS_EMAIL_UK) - duplicate keys found",
+        "caption": "Error (expected output; schema name will differ)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "NULLs do not block this constraint. The Oracle documentation states that a single-column unique key can contain NULLs, so John and Priya can both keep a NULL email. After the constraint is in place, an insert of an existing email fails with ORA-00001 (unique constraint violated). For loads that must update existing rows instead of failing, a <a href=\"/posts/plsql/oracle-merge-statement-example/\">MERGE statement</a> is the usual answer."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To find the offending rows on a big table, Oracle can write them for you with the <code class=\"inline-code\">EXCEPTIONS INTO</code> clause. Create the exceptions table with the <code class=\"inline-code\">utlexcpt.sql</code> script shipped with Oracle (under <code class=\"inline-code\">$ORACLE_HOME/rdbms/admin</code>), then add the constraint with <code class=\"inline-code\">EXCEPTIONS INTO exceptions</code>. The statement still fails, but the rowids of every violating row are stored in the EXCEPTIONS table for you to review."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Treating NULL keys as duplicates.</b> GROUP BY and PARTITION BY put all NULLs in one group. Add <code class=\"inline-code\">WHERE key IS NOT NULL</code> unless NULL really means \"same\".",
+            "items": []
+          },
+          {
+            "content": "<b>Grouping by too few columns.</b> Two rows with the same name are not always the same person. Agree on the duplicate definition with whoever owns the data.",
+            "items": []
+          },
+          {
+            "content": "<b>NOT IN on a nullable column.</b> One NULL in the subquery makes NOT IN match nothing, so the DELETE silently removes 0 rows.",
+            "items": []
+          },
+          {
+            "content": "<b>A sort order with ties in ROW_NUMBER.</b> Without a unique last sort column, the row you keep can change between runs.",
+            "items": []
+          },
+          {
+            "content": "<b>Deleting from an inline view with ROW_NUMBER.</b> Oracle does not allow DELETE through a view or subquery whose query contains analytic functions. Select the ROWIDs in a subquery and delete by ROWID, as in Method 2.",
+            "items": []
+          },
+          {
+            "content": "<b>Forgetting child tables.</b> If other tables reference these rows through a foreign key, the delete fails with ORA-02292 (child record found), or removes child rows too if the key is ON DELETE CASCADE. Re-point child rows to the surviving row first.",
+            "items": []
+          },
+          {
+            "content": "<b>Committing before checking.</b> Run the SELECT version first, compare the row count with the DELETE's \"n rows deleted\" message, and only then commit.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Performance tips",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Run the duplicate-finding query first and note the count. If it is a small fraction of the table, a single DELETE is usually the right tool.",
+            "items": []
+          },
+          {
+            "content": "If most of the table is duplicates, compare against Method 4. Rebuilding avoids per-row undo and index maintenance on the rows you throw away.",
+            "items": []
+          },
+          {
+            "content": "An index on the duplicate key columns can help the GROUP BY and the later unique constraint, but every extra index also slows the DELETE. Check the plan with EXPLAIN PLAN on your real data.",
+            "items": []
+          },
+          {
+            "content": "Avoid committing inside a loop that deletes row by row from a cursor on the same table. One set-based DELETE is simpler and usually faster.",
+            "items": []
+          },
+          {
+            "content": "On a busy production table, the DELETE locks every row it removes until you commit. Run it when other sessions are not updating the same rows.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I delete duplicate rows in Oracle using ROWID?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Group by the columns that define a duplicate, keep <code class=\"inline-code\">MIN(ROWID)</code> for each group, and delete the rest: <code class=\"inline-code\">DELETE FROM t WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM t GROUP BY col1, col2);</code> This is Method 3 above."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I delete duplicate rows based on two columns?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Put both columns in the GROUP BY (or in the PARTITION BY of ROW_NUMBER). Rows are then duplicates only when both columns match. Add a WHERE filter if either column can be NULL and NULL should not count as a match."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can I use DISTINCT to remove duplicates from a table?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "No. DISTINCT only removes duplicates from a query's result. It does not change the table. You can use it to build a clean copy with CREATE TABLE AS SELECT DISTINCT, as in Method 4."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I keep the latest record and delete older duplicates?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Use ROW_NUMBER with <code class=\"inline-code\">ORDER BY created_at DESC</code> plus a unique tiebreaker, and delete the rows where the number is greater than 1. This is Method 2."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Which method is fastest for deleting duplicates in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "It depends on how many rows you remove. For a small number of duplicates, a single DELETE with GROUP BY or ROW_NUMBER is fine. When most rows are duplicates, rebuilding the table is often quicker. Test both on a copy of your real data and compare the plans."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "Decide which columns define a duplicate and which row you keep.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Find the duplicates with GROUP BY ... HAVING COUNT(*) > 1 and preview the losers with ROW_NUMBER.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Keep the lowest ID with NOT IN (SELECT MIN(id) ...), or any order you like with ROW_NUMBER and ROWID.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use MIN(ROWID) only for rows that are identical in every column.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Filter out NULL keys unless NULL really means \"the same\".",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Check the deleted row count, then COMMIT.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Add a unique constraint so duplicates cannot return.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your table has 3 rows for the same customer. You need to delete 2 and keep the right one, not a random one.\n\nThe pattern that works in Oracle:\n\n1. Find them first: GROUP BY email HAVING COUNT(*) > 1\n\n2. Keep the lowest ID: delete rows whose ID is NOT IN (SELECT MIN(customer_id) ... GROUP BY email)\n\n3. Keep the newest row: rank with ROW_NUMBER() OVER (PARTITION BY email ORDER BY created_at DESC, customer_id DESC) and delete rank > 1 by ROWID\n\n4. Rows identical in every column? Keep MIN(ROWID) per group\n\n5. Watch NULLs: GROUP BY puts all NULL emails in one group, so two different people can look like duplicates\n\nThen add a UNIQUE constraint so the problem does not come back.\n\nOne trap: Oracle will not let you DELETE straight from an inline view that uses ROW_NUMBER. Select the ROWIDs in a subquery and delete by ROWID.\n\nWhich rule do you use in your project: keep the oldest row or the newest one?\n\nFull tutorial with examples: link in the first comment.\n\n#Oracle #OracleSQL #PLSQL #SQLInterview",
+    "slides": [
+      {
+        "title": "Delete Duplicate Rows in Oracle, Keep One",
+        "body": "Four safe methods, and the NULL trap most queries miss"
+      },
+      {
+        "title": "First, find the duplicates",
+        "points": [
+          "Decide which columns define a duplicate",
+          "Never delete before you have counted"
+        ],
+        "code": "SELECT email, COUNT(*) AS cnt\n  FROM customers\n GROUP BY email\nHAVING COUNT(*) > 1;",
+        "lang": "sql"
+      },
+      {
+        "title": "Keep the lowest ID",
+        "code": "DELETE FROM customers\n WHERE customer_id NOT IN (\n   SELECT MIN(customer_id)\n     FROM customers\n    GROUP BY email);",
+        "lang": "sql",
+        "points": [
+          "Safe only if the ID column is NOT NULL"
+        ]
+      },
+      {
+        "title": "Keep the newest row",
+        "code": "DELETE FROM customers WHERE ROWID IN (\n  SELECT rid FROM (\n    SELECT ROWID AS rid,\n      ROW_NUMBER() OVER (\n        PARTITION BY email\n        ORDER BY created_at DESC,\n                 customer_id DESC) AS rn\n    FROM customers)\n  WHERE rn > 1);",
+        "lang": "sql"
+      },
+      {
+        "title": "Identical rows? Use ROWID",
+        "points": [
+          "Keep MIN(ROWID) per group of all columns",
+          "MIN(ROWID) is not the first row inserted, just the lowest address",
+          "Fine when the copies are exactly the same"
+        ]
+      },
+      {
+        "title": "Watch the NULLs",
+        "points": [
+          "GROUP BY puts all NULL keys in one group",
+          "Add WHERE email IS NOT NULL to protect them",
+          "Finish with a UNIQUE constraint on the key"
+        ]
+      }
+    ]
+  }
+}
