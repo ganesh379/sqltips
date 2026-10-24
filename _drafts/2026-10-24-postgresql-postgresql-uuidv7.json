@@ -1,0 +1,897 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL uuidv7(): Time-Ordered UUID Primary Keys in PG 18",
+ "slug": "postgresql-uuidv7",
+ "category": "postgresql",
+ "description": "Use the new PostgreSQL uuidv7() function in PG 18 for time-ordered UUID primary keys. Examples, real output and an index test against random UUIDs.",
+ "focusKeyword": "postgresql uuidv7",
+ "tags": [
+  "postgresql",
+  "uuid",
+  "uuidv7",
+  "primary-key",
+  "postgresql-18"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-2-install-postgresql-18-ubuntu/",
+  "/posts/postgresql/postgresql-upsert-on-conflict/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 9.14 UUID Functions",
+   "url": "https://www.postgresql.org/docs/current/functions-uuid.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 8.12 UUID Type",
+   "url": "https://www.postgresql.org/docs/current/datatype-uuid.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes",
+   "url": "https://www.postgresql.org/docs/current/release-18.html"
+  },
+  {
+   "title": "PostgreSQL 17 release notes (uuid_extract_timestamp, uuid_extract_version)",
+   "url": "https://www.postgresql.org/docs/17/release-17.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CREATE INDEX (B-tree fillfactor)",
+   "url": "https://www.postgresql.org/docs/current/sql-createindex.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pgstattuple",
+   "url": "https://www.postgresql.org/docs/current/pgstattuple.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: B-Tree indexes (page splits)",
+   "url": "https://www.postgresql.org/docs/current/btree.html"
+  }
+ ],
+ "reviewNotes": "Regular Saturday article (not a series part). All examples run on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2, official PGDG packages) on Ubuntu 24.04.5 LTS; outputs are real. The 'function uuidv7() does not exist' error was captured on the PostgreSQL 16 cluster that came with the sandbox. Documentation followed: PostgreSQL 18 (docs/current). Sandbox caveats: the Ubuntu archive was unreachable, so liburing2 could not be installed; PG 18 was installed from the PGDG .debs with a local stub liburing (io_method=worker, the default, so io_uring is never used). The 18 cluster ran on port 5433 because a 16 cluster held 5432; the article uses plain 'sudo -u postgres psql' as on a clean install. The insert timings (7.9 s vs 5.7 s) and index sizes come from one run in the sandbox and are labelled as such. RFC 9562 sites were unreachable, so the article only states the UUIDv7 layout the PostgreSQL docs give (millisecond Unix time in a 48-bit field, sub-millisecond part, random bits). Ordering claim: monotonic within one statement was observed (100k values, 0 out of order); the article does not claim cross-session ordering. Please check: the 21% smaller figure in the FAQ is (38-30)/38 from pg_size_pretty values.",
+ "generatedAt": "2026-10-24T13:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL 18 has a built-in <code class=\"inline-code\">uuidv7()</code> function that generates <b>time-ordered UUIDs</b>. You can use it straight away as a primary key default with <code class=\"inline-code\">order_id uuid PRIMARY KEY DEFAULT uuidv7()</code>. No extension is needed."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "UUIDv7 values start with a timestamp, so new keys sort after older ones. That keeps B-tree index inserts at the right-hand end of the index, much like a bigint sequence, while the IDs stay globally unique. Random UUIDv4 keys land all over the index instead."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial shows how <code class=\"inline-code\">uuidv7()</code> works on PostgreSQL 18, how to read the timestamp back out, how to switch an existing table over, and what a 1 million row test showed about index size compared with random UUIDs. Every query was run on PostgreSQL 18.6 on Ubuntu, and the output shown is real."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is UUIDv7?",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A UUID (universally unique identifier) is a 128-bit value, written as 32 hex digits in five groups, like <code class=\"inline-code\">01a16df4-d9e2-78a1-965f-eed50dd1bbd3</code>. PostgreSQL stores it in the native <code class=\"inline-code\">uuid</code> type, which takes 16 bytes. The standard that defines UUIDs today is RFC 9562, and it describes several versions, each generated in a different way."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two versions matter for most applications:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Version",
+      "How it is built",
+      "Sort order",
+      "PostgreSQL 18 function"
+     ],
+     [
+      "4 (random)",
+      "Almost entirely random bits",
+      "Random",
+      "gen_random_uuid() or uuidv4()"
+     ],
+     [
+      "7 (time-ordered)",
+      "Unix time in milliseconds, a sub-millisecond part, then random bits",
+      "Roughly by creation time",
+      "uuidv7()"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "According to the PostgreSQL documentation, <code class=\"inline-code\">uuidv7()</code> builds its timestamp from Unix time with millisecond precision, adds a sub-millisecond component, and fills the rest with random bits. The millisecond timestamp sits in a 48-bit field at the front of the value. Because the most significant bits are the time, comparing two UUIDv7 values compares their creation times first."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can spot the version in any UUID: it is the first digit of the third group. In <code class=\"inline-code\">01a16df4-d9e2-<b>7</b>8a1-965f-eed50dd1bbd3</code> it is 7. In a random UUID such as <code class=\"inline-code\">fafdfd61-c94b-<b>4</b>dd9-be9e-2d3fce4ffd1e</code> it is 4."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Which versions have what",
+    "text": "<code class=\"inline-code\">gen_random_uuid()</code> has been built in since PostgreSQL 13. <code class=\"inline-code\">uuid_extract_timestamp()</code> and <code class=\"inline-code\">uuid_extract_version()</code> were added in PostgreSQL 17. <code class=\"inline-code\">uuidv7()</code> and the <code class=\"inline-code\">uuidv4()</code> alias are new in PostgreSQL 18."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Connect to PostgreSQL 18 as the postgres user (<code class=\"inline-code\">sudo -u postgres psql</code>) and create a scratch database and an orders table. The primary key gets its value from <code class=\"inline-code\">uuidv7()</code>. The <code class=\"inline-code\">created_at</code> column uses <code class=\"inline-code\">clock_timestamp()</code> so each row records its own insert time, which lets us compare it with the time stored inside the key."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE uuiddemo;\n\\c uuiddemo\n\nCREATE TABLE orders (\n    order_id    uuid PRIMARY KEY DEFAULT uuidv7(),\n    customer    text NOT NULL,\n    amount      numeric(10,2) NOT NULL,\n    created_at  timestamptz NOT NULL DEFAULT clock_timestamp()\n);\n\nINSERT INTO orders (customer, amount) VALUES ('Asha', 1250.00);\nSELECT pg_sleep(0.01);\nINSERT INTO orders (customer, amount) VALUES ('Ravi', 499.50);\nSELECT pg_sleep(0.01);\nINSERT INTO orders (customer, amount) VALUES ('Meena', 3200.00);\nSELECT pg_sleep(0.01);\nINSERT INTO orders (customer, amount) VALUES ('John', 75.25)\nRETURNING order_id;",
+    "caption": "Create the sample orders table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "               order_id\n--------------------------------------\n 01a16df4-da03-7e77-a9a2-826a59637a80\n(1 row)",
+    "caption": "Output (last INSERT)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The short <code class=\"inline-code\">pg_sleep(0.01)</code> pauses only spread the rows a few milliseconds apart so the timestamps are easy to read. <code class=\"inline-code\">RETURNING order_id</code> hands the generated key back to the application in the same statement, so you never need a second query to find out which ID was assigned."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Generate UUIDs in PostgreSQL 18",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: call uuidv7(), uuidv4() and gen_random_uuid()",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT uuidv7();\nSELECT uuidv4(), gen_random_uuid();",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                uuidv7\n--------------------------------------\n 01a16df4-d9dc-70ef-aabc-54758799e91b\n(1 row)\n\n                uuidv4                |           gen_random_uuid\n--------------------------------------+--------------------------------------\n fafdfd61-c94b-4dd9-be9e-2d3fce4ffd1e | 992e8145-be1f-4a24-9b87-4ca4a44f16ac\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Your values will differ, since every call produces a new UUID. <code class=\"inline-code\">uuidv4()</code> and <code class=\"inline-code\">gen_random_uuid()</code> do the same thing: both return a random version 4 UUID. The <code class=\"inline-code\">uuidv4()</code> name was added in PostgreSQL 18 so code can say explicitly which version it wants."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: confirm the version with uuid_extract_version()",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT uuidv7() AS id,\n       uuid_extract_version(uuidv7()) AS v7,\n       uuid_extract_version(uuidv4()) AS v4;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                  id                  | v7 | v4\n--------------------------------------+----+----\n 01a16df4-d9dc-7bf3-9ca9-bc67ee2ed75e |  7 |  4\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">uuid_extract_version()</code> returns a smallint. It is handy when a column contains a mix of old random keys and new time-ordered keys, as you will see in the migration section below."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Read the timestamp back with uuid_extract_timestamp()",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The time is stored inside every UUIDv7, so you can recover it without any extra column. Compare it with the created_at value of each sample row:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT customer,\n       uuid_extract_timestamp(order_id) AS id_time,\n       created_at\n  FROM orders\n ORDER BY order_id;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " customer |          id_time           |          created_at\n----------+----------------------------+-------------------------------\n Asha     | 2026-10-24 12:48:45.538+00 | 2026-10-24 12:48:45.538549+00\n Ravi     | 2026-10-24 12:48:45.549+00 | 2026-10-24 12:48:45.549677+00\n Meena    | 2026-10-24 12:48:45.56+00  | 2026-10-24 12:48:45.560869+00\n John     | 2026-10-24 12:48:45.571+00 | 2026-10-24 12:48:45.571915+00\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two things stand out. First, the rows ordered by <code class=\"inline-code\">order_id</code> come back in insert order, because the key starts with the time. Second, <code class=\"inline-code\">uuid_extract_timestamp()</code> returns a <code class=\"inline-code\">timestamp with time zone</code> truncated to milliseconds. The documentation also warns that the extracted value may not exactly match the generation time, depending on the implementation that created the UUID. Keep a real timestamp column if you need exact times for business logic."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For a version 4 UUID there is no timestamp to extract, so the function returns NULL:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT uuid_extract_timestamp(uuidv4());",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " uuid_extract_timestamp\n------------------------\n\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Shift the timestamp with uuidv7(interval)",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">uuidv7()</code> accepts an optional <code class=\"inline-code\">shift</code> argument of type interval. The interval is added to the current time before the UUID is built. This is useful for test data, for example generating keys that look like they were created yesterday."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT uuid_extract_timestamp(uuidv7()) AS now_id,\n       uuid_extract_timestamp(uuidv7(INTERVAL '-1 day')) AS yesterday_id;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "           now_id           |        yesterday_id\n----------------------------+----------------------------\n 2026-10-24 12:48:56.345+00 | 2026-10-23 12:48:56.345+00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The shifted time must fit in the 48-bit millisecond field, which covers 1970-01-01 to roughly the year 10889. Going outside that range, or passing an infinite interval, raises an error:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT uuidv7(INTERVAL '-100 years');\nSELECT uuidv7('infinity'::interval);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  timestamp out of range for UUID version 7\nDETAIL:  UUID version 7 supports timestamps from 1970-01-01 to approximately year 10889.\nERROR:  interval out of range for UUID version 7\nDETAIL:  UUID version 7 does not support infinite intervals.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Minus 100 years from 2026 is 1926, which is before the Unix epoch, so PostgreSQL refuses it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why uuidv7 is better than random UUIDs for primary keys",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A primary key is backed by a B-tree index. A B-tree keeps its entries sorted, so where a new key lands depends on its value."
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Random UUIDv4:</b> each new key belongs somewhere random in the index. Inserts touch pages all over the index, so more different pages must be in memory, and full pages are split in the middle, leaving half-empty pages behind.",
+      "items": []
+     },
+     {
+      "content": "<b>UUIDv7:</b> each new key is larger than the previous ones (to the millisecond), so inserts go to the rightmost leaf page. The pages being written stay hot in memory, and pages fill up in order.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see the difference, create two identical tables that differ only in the key default, and insert 1 million rows into each:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders_v4 (order_id uuid PRIMARY KEY DEFAULT uuidv4(),\n                        amount numeric(10,2));\nCREATE TABLE orders_v7 (order_id uuid PRIMARY KEY DEFAULT uuidv7(),\n                        amount numeric(10,2));\n\nINSERT INTO orders_v4 (amount)\nSELECT (random()*5000)::numeric(10,2) FROM generate_series(1, 1000000);\n\nINSERT INTO orders_v7 (amount)\nSELECT (random()*5000)::numeric(10,2) FROM generate_series(1, 1000000);",
+    "caption": "1 million rows with random keys vs time-ordered keys"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now measure both primary key indexes with <code class=\"inline-code\">pgstatindex()</code> from the pgstattuple extension, which ships with PostgreSQL. By default only superusers and members of the <code class=\"inline-code\">pg_stat_scan_tables</code> role may run it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE EXTENSION pgstattuple;\n\nSELECT 'orders_v4_pkey' AS index_name,\n       pg_size_pretty(pg_relation_size('orders_v4_pkey')) AS size,\n       round(avg_leaf_density::numeric, 1) AS avg_leaf_density,\n       leaf_fragmentation\n  FROM pgstatindex('orders_v4_pkey')\nUNION ALL\nSELECT 'orders_v7_pkey',\n       pg_size_pretty(pg_relation_size('orders_v7_pkey')),\n       round(avg_leaf_density::numeric, 1),\n       leaf_fragmentation\n  FROM pgstatindex('orders_v7_pkey');",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "   index_name   | size  | avg_leaf_density | leaf_fragmentation\n----------------+-------+------------------+--------------------\n orders_v4_pkey | 38 MB |             71.8 |              49.82\n orders_v7_pkey | 30 MB |             90.0 |                  0\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Same data, same number of rows, but:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "The UUIDv7 index is about a fifth smaller (30 MB against 38 MB).",
+      "items": []
+     },
+     {
+      "content": "Its leaf pages are 90% full. That is exactly the B-tree default fillfactor: the documentation says leaf pages are filled to this percentage when the index is extended at the right with new largest key values. The random index sits at about 72% because of mid-page splits.",
+      "items": []
+     },
+     {
+      "content": "Leaf fragmentation is 0 for UUIDv7, meaning leaf pages are stored on disk in key order. The random index is about 50% fragmented.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A smaller, denser index means fewer pages to cache and fewer pages to read during index scans. Insert speed also tends to improve because fewer pages are touched. On this test machine the 1 million row insert took about 7.9 seconds for UUIDv4 and 5.7 seconds for UUIDv7, but timings depend heavily on hardware, memory and settings, so measure on your own system before quoting numbers."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Ordering inside one session",
+    "text": "In a test generating 100,000 values in one statement, every uuidv7() value was larger than the one before it. The documentation describes the sub-millisecond component but does not promise a strict order between different sessions or servers that generate keys in the same millisecond. Treat UUIDv7 order as creation order to roughly the millisecond, and use a timestamp column when you need an exact sequence of events."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Keyset pagination on a uuidv7 key",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Because the key is roughly time-ordered, it works well for keyset pagination (\"give me the next page after the last row I saw\") without a separate created_at index:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, customer, amount\n  FROM orders\n WHERE order_id > '01a16df4-d9ed-7aab-98a9-3bba5570015c'\n ORDER BY order_id\n LIMIT 2;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "               order_id               | customer | amount\n--------------------------------------+----------+---------\n 01a16df4-d9f8-7dbd-bc4b-e41e474591d3 | Meena    | 3200.00\n 01a16df4-da03-7e77-a9a2-826a59637a80 | John     |   75.25\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the 1 million row table the same pattern uses the primary key index directly:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (COSTS OFF)\nSELECT order_id, amount\n  FROM orders_v7\n WHERE order_id > '01a16df4-d9ed-7aab-98a9-3bba5570015c'\n ORDER BY order_id\n LIMIT 20;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                  QUERY PLAN\n-------------------------------------------------------------------------------\n Limit\n   ->  Index Scan using orders_v7_pkey on orders_v7\n         Index Cond: (order_id > '01a16df4-d9ed-7aab-98a9-3bba5570015c'::uuid)\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Switch an existing table from gen_random_uuid() to uuidv7()",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you already use random UUID keys, you do not need to rewrite old rows. Changing the column default is enough: existing keys stay as they are, and new rows get UUIDv7 values. Both versions fit in the same uuid column."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE customers (\n    customer_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),\n    name        text\n);\nINSERT INTO customers (name) VALUES ('Asha'), ('Ravi');\n\nALTER TABLE customers ALTER COLUMN customer_id SET DEFAULT uuidv7();\n\nINSERT INTO customers (name) VALUES ('Meena');\n\nSELECT name, customer_id, uuid_extract_version(customer_id) AS version\n  FROM customers;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " name  |             customer_id              | version\n-------+--------------------------------------+---------\n Asha  | 7dff6674-427d-4728-be73-2b775216937d |       4\n Ravi  | a3cbd336-4979-4b8c-9eda-3708ab1216c7 |       4\n Meena | 01a16df5-acdc-7d58-962a-217fe9db0220 |       7\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">ALTER COLUMN ... SET DEFAULT</code> does not touch existing rows, so it does not rewrite the table. Confirm the new default with <code class=\"inline-code\">\\d customers</code> in psql:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "               Table \"public.customers\"\n   Column    | Type | Collation | Nullable | Default\n-------------+------+-----------+----------+----------\n customer_id | uuid |           | not null | uuidv7()\n name        | text |           |          |\nIndexes:\n    \"customers_pkey\" PRIMARY KEY, btree (customer_id)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice that the old version 4 keys still sit in random places in the index. The benefits grow as new UUIDv7 rows make up more of the table. Also remember that sorting such a table by customer_id puts the old rows in random order among themselves, so never rely on the key for ordering rows created before the switch."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Calling uuidv7() on PostgreSQL 17 or older",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The function only exists from PostgreSQL 18. On an older server (this output is from PostgreSQL 16) you get:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  function uuidv7() does not exist\nLINE 1: select uuidv7();\n               ^\nHINT:  No function matches the given name and argument types. You might need to add explicit type casts.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Check <code class=\"inline-code\">SELECT version();</code> first. On older versions, generate UUIDv7 values in the application or upgrade the server. Note that <code class=\"inline-code\">uuid_extract_version()</code> fails the same way on PostgreSQL 16 because it arrived in 17."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Storing UUIDs in a text or varchar column",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_column_size(uuidv7()) AS uuid_bytes,\n       pg_column_size(uuidv7()::text) AS text_bytes;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " uuid_bytes | text_bytes\n------------+------------\n         16 |         40\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The text form is 36 characters plus a length header, more than twice the size of the native type, and text comparisons are slower and depend on collation. Always use the uuid type. It accepts upper case, braces and missing hyphens on input and always prints the standard lower-case form:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT '{01A16DF4-D9E2-78A1-965F-EED50DD1BBD3}'::uuid;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                 uuid\n--------------------------------------\n 01a16df4-d9e2-78a1-965f-eed50dd1bbd3\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Exposing creation time without meaning to",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Anyone who sees a UUIDv7 can recover when it was created with <code class=\"inline-code\">uuid_extract_timestamp()</code>, as shown above. That is fine for order IDs inside your system, but think twice before using UUIDv7 in public URLs where the creation time is sensitive (for example, when an account was opened). Use a random UUIDv4 for those public tokens."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Filtering by uuid_extract_timestamp() and expecting the primary key index to help",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (COSTS OFF)\nSELECT count(*) FROM orders_v7\n WHERE uuid_extract_timestamp(order_id) >= now() - interval '1 hour';",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                            QUERY PLAN\n--------------------------------------------------------------------------------------------------\n Finalize Aggregate\n   ->  Gather\n         Workers Planned: 2\n         ->  Partial Aggregate\n               ->  Parallel Seq Scan on orders_v7\n                     Filter: (uuid_extract_timestamp(order_id) >= (now() - '01:00:00'::interval))\n(6 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The primary key index is ordered by the uuid value, not by the result of a function on it, so a condition wrapped in a function cannot use it. For date range reports, keep an indexed <code class=\"inline-code\">created_at timestamptz</code> column. It also gives you exact times instead of milliseconds."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Best practices",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Use <code class=\"inline-code\">uuid PRIMARY KEY DEFAULT uuidv7()</code> for new tables that need globally unique keys, for example IDs generated across several services or merged from several databases.",
+      "items": []
+     },
+     {
+      "content": "If keys never leave one database and you do not need them to be unguessable, a <code class=\"inline-code\">bigint GENERATED ALWAYS AS IDENTITY</code> column is still smaller (8 bytes against 16).",
+      "items": []
+     },
+     {
+      "content": "Return generated keys with <code class=\"inline-code\">INSERT ... RETURNING order_id</code> rather than querying for them afterwards.",
+      "items": []
+     },
+     {
+      "content": "Keep a real timestamp column for business dates and reporting. Use the key's embedded time only as a convenience.",
+      "items": []
+     },
+     {
+      "content": "Use random UUIDv4 for values that must not reveal anything, such as password reset tokens or public share links.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does PostgreSQL support UUIDv7 natively?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes, from PostgreSQL 18. The built-in <code class=\"inline-code\">uuidv7()</code> function needs no extension. Earlier versions need application code or a third-party extension."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is uuidv7 better than uuid v4 for a primary key?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For most tables, yes. In our 1 million row test the UUIDv7 primary key index was about 21% smaller, with 90% full leaf pages and no fragmentation, because new keys are added at the right end of the index. Choose v4 only when the creation time must stay hidden."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I get the timestamp from a uuidv7 in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">uuid_extract_timestamp(id)</code>. It returns a timestamp with time zone at millisecond precision, and NULL for UUID versions that contain no time (such as version 4)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I use uuidv7() as a column default?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes: <code class=\"inline-code\">id uuid PRIMARY KEY DEFAULT uuidv7()</code>. To change an existing table, run <code class=\"inline-code\">ALTER TABLE t ALTER COLUMN id SET DEFAULT uuidv7();</code>. Existing rows keep their old values."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is uuidv7 unique across servers?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each value combines the time with random bits, so collisions are extremely unlikely, which is why UUIDs suit distributed systems. Keep a primary key or unique constraint on the column anyway, so the database rejects any duplicate rather than storing it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">uuidv7()</code> is built into PostgreSQL 18 and returns a time-ordered version 7 UUID.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Define keys as <code class=\"inline-code\">uuid PRIMARY KEY DEFAULT uuidv7()</code> and store them in the native 16-byte uuid type, never in text.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Time-ordered keys keep B-tree inserts at the right end of the index: in our test the index was smaller, 90% packed and unfragmented.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">uuid_extract_timestamp()</code> and <code class=\"inline-code\">uuid_extract_version()</code> (PostgreSQL 17+) read the time and version from a UUID.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">uuidv7(interval)</code> shifts the embedded time, within 1970 to about year 10889.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Switch an existing table with <code class=\"inline-code\">ALTER COLUMN ... SET DEFAULT uuidv7()</code>. Old keys stay version 4.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Keep a created_at column for exact times and indexed date filters, and use UUIDv4 where creation time must stay private.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Random UUID primary keys quietly bloat your B-tree index. PostgreSQL 18 fixes that with one built-in function.\n\nuuidv7() returns a UUID that starts with the current Unix time in milliseconds. New keys sort after old ones, so inserts go to the right end of the index, much like a sequence, while IDs stay globally unique.\n\nWhat a test on PostgreSQL 18.6 shows:\n\n→ order_id uuid PRIMARY KEY DEFAULT uuidv7() is all you need. No extension.\n→ 1 million rows: the uuidv7 primary key index was 30 MB vs 38 MB for random uuidv4, with 90% full leaf pages and zero leaf fragmentation.\n→ uuid_extract_timestamp(order_id) gives the creation time back, to the millisecond.\n→ Existing table? ALTER COLUMN ... SET DEFAULT uuidv7(). Old keys stay v4, new ones are v7.\n→ The catch: anyone holding the ID can read when it was created. Keep uuidv4 for public tokens.\n\nAre you still using gen_random_uuid() for primary keys, or bigint identity columns?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #Database #DBA",
+  "slides": [
+   {
+    "title": "uuidv7() in PostgreSQL 18",
+    "body": "Time-ordered UUID primary keys, built in, with real test results"
+   },
+   {
+    "title": "What uuidv7 is",
+    "points": [
+     "A 128-bit UUID that starts with Unix time in milliseconds",
+     "Then a sub-millisecond part and random bits",
+     "New keys sort after old ones",
+     "Built in from PostgreSQL 18, no extension"
+    ]
+   },
+   {
+    "title": "Use it as a primary key",
+    "code": "CREATE TABLE orders (\n  order_id uuid PRIMARY KEY\n           DEFAULT uuidv7(),\n  customer text NOT NULL,\n  amount   numeric(10,2)\n);",
+    "lang": "postgresql"
+   },
+   {
+    "title": "1 million rows: v4 vs v7 index",
+    "points": [
+     "uuidv4 primary key index: 38 MB, 71.8% leaf density",
+     "uuidv7 primary key index: 30 MB, 90% leaf density",
+     "uuidv7 leaf fragmentation: 0",
+     "Inserts land at the right end of the B-tree"
+    ]
+   },
+   {
+    "title": "Read the time back",
+    "code": "SELECT uuid_extract_timestamp(order_id),\n       uuid_extract_version(order_id)\n  FROM orders;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Switch an existing table",
+    "code": "ALTER TABLE customers\n  ALTER COLUMN customer_id\n  SET DEFAULT uuidv7();",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Know the trade-offs",
+    "points": [
+     "The creation time is visible to anyone with the ID",
+     "Use uuidv4 for public tokens and share links",
+     "Keep a created_at column for exact times and filters"
+    ]
+   }
+  ]
+ }
+}
