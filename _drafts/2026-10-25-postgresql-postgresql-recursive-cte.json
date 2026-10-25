@@ -1,0 +1,917 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL Recursive CTE: Parent-Child Queries with Examples",
+ "slug": "postgresql-recursive-cte",
+ "category": "postgresql",
+ "description": "Learn the PostgreSQL recursive CTE with real examples: walk a parent-child tree up and down, order it with SEARCH, and stop loops with CYCLE.",
+ "focusKeyword": "postgresql recursive cte",
+ "tags": [
+  "postgresql",
+  "recursive-cte",
+  "hierarchical-queries",
+  "sql"
+ ],
+ "related": [
+  "/posts/sql/sql-query-design-patterns-writing-efficient-queries/",
+  "/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/",
+  "/posts/interview-questions/tricky-sql-queries-for-interview-preparation/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: WITH Queries (Common Table Expressions), 7.8.2 Recursive Queries",
+   "url": "https://www.postgresql.org/docs/current/queries-with.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: SELECT (WITH clause, SEARCH and CYCLE syntax)",
+   "url": "https://www.postgresql.org/docs/current/sql-select.html"
+  },
+  {
+   "title": "PostgreSQL 14 release notes (SEARCH and CYCLE clauses added)",
+   "url": "https://www.postgresql.org/docs/release/14.0/"
+  }
+ ],
+ "reviewNotes": "Regular Sunday article (not a series part; next series part is Part 6 on Monday). All examples run on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2, official PGDG packages) on Ubuntu 24.04.5 LTS; all outputs and error messages are real and copied from psql. Documentation followed: PostgreSQL 18 (docs/current, 18.6). Sandbox caveats: the Ubuntu archive was unreachable, so liburing2 was replaced by a local stub package (io_method=worker, the default, so io_uring is never used); the 18 cluster ran on port 5433 because a 16 cluster held 5432. The statement_timeout output was captured with psql -f, so the real output had a 'psql:file:line:' prefix that I removed. The claim that recursive CTEs ignore NOT MATERIALIZED comes from the SELECT reference page. Please check: the Oracle CONNECT BY mapping in the FAQ (conceptual, not tested on Oracle), and the 'expect to see the index used on a large table' sentence, which was not benchmarked. Topic check: no published article or earlier draft covers recursive CTEs or hierarchical queries.",
+ "generatedAt": "2026-10-25T00:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A <b>PostgreSQL recursive CTE</b> is a <code class=\"inline-code\">WITH RECURSIVE</code> query that refers to its own output, so it can walk a parent-child hierarchy of any depth in one SQL statement. You write a starting query (the anchor), then a second query that joins the table back to the rows found so far, and PostgreSQL repeats that second query until it finds no new rows."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial builds a small employee org chart and uses recursive CTEs to list everyone under a manager, find the chain of managers above an employee, print an indented tree, count team sizes, limit the depth, and stop safely when the data contains a loop. Every query was run on PostgreSQL 18 and the output shown is real. If you come from Oracle, this is the standard SQL replacement for <code class=\"inline-code\">CONNECT BY</code>, which PostgreSQL does not have."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How a recursive CTE works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A recursive CTE always has the same shape: a non-recursive term, then UNION ALL (or UNION), then a recursive term. Only the recursive term may refer to the CTE's own name."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE cte_name (columns) AS (\n    -- 1. non-recursive term (anchor): the starting rows\n    SELECT ...\n  UNION ALL\n    -- 2. recursive term: joins back to cte_name\n    SELECT ... FROM some_table JOIN cte_name ON ...\n)\nSELECT ... FROM cte_name;",
+    "caption": "General form of a recursive CTE"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Despite the name, PostgreSQL does not call the query recursively. It runs it as a loop:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Run the anchor query. Its rows go into the result and into a temporary <b>working table</b>.",
+      "items": []
+     },
+     {
+      "content": "Run the recursive term, using only the rows in the working table as the CTE's contents. The new rows go into the result and become the next working table.",
+      "items": []
+     },
+     {
+      "content": "Repeat step 2 until the recursive term returns no rows. Then the query ends.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With UNION instead of UNION ALL, PostgreSQL also throws away any new row that is an exact duplicate of a row already in the result. The simplest way to see the loop is a counter:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE counter(n) AS (\n    SELECT 1\n  UNION ALL\n    SELECT n + 1 FROM counter WHERE n < 5\n)\nSELECT n FROM counter;",
+    "caption": "Count from 1 to 5"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " n \n---\n 1\n 2\n 3\n 4\n 5\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The anchor produces 1. Each pass adds 1 to the single row in the working table. When the working table holds 5, the condition <code class=\"inline-code\">n &lt; 5</code> returns nothing, the working table becomes empty and the loop stops. That <code class=\"inline-code\">WHERE</code> condition is the exit: every recursive CTE needs a way to run out of new rows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup: an employees table",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The classic parent-child table stores each row's parent in the same table. Here <code class=\"inline-code\">manager_id</code> points to another employee, and the CEO has no manager (<code class=\"inline-code\">NULL</code>). Create it in a scratch database:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE employees (\n    employee_id  integer PRIMARY KEY,\n    full_name    varchar(50) NOT NULL,\n    job_title    varchar(40) NOT NULL,\n    manager_id   integer REFERENCES employees (employee_id)\n);\n\nINSERT INTO employees (employee_id, full_name, job_title, manager_id) VALUES\n    (1,  'Anita Rao',   'CEO',                 NULL),\n    (2,  'Vikram Shah', 'CTO',                 1),\n    (3,  'Meera Iyer',  'CFO',                 1),\n    (4,  'Rahul Verma', 'Engineering Manager', 2),\n    (5,  'Sara Khan',   'DBA Lead',            2),\n    (6,  'Arjun Nair',  'Developer',           4),\n    (7,  'Priya Menon', 'Developer',           4),\n    (8,  'Kiran Das',   'DBA',                 5),\n    (9,  'Neha Gupta',  'Accountant',          3),\n    (10, 'Rohan Mehta', 'Intern',              6);\n\nCREATE INDEX employees_manager_id_idx ON employees (manager_id);",
+    "caption": "Create and fill the employees table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLE\nINSERT 0 10\nCREATE INDEX",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The index on <code class=\"inline-code\">manager_id</code> matters later: every pass of a top-down recursive query looks up \"who reports to these people?\", which is a search on <code class=\"inline-code\">manager_id</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find all employees under a manager (walk down the tree)",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To list everyone who reports to the CTO, directly or indirectly, start with the CTO as the anchor and, on each pass, find the employees whose <code class=\"inline-code\">manager_id</code> is one of the people found in the previous pass. A <code class=\"inline-code\">level</code> column counts how deep each row is."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE reports AS (\n    SELECT employee_id, full_name, manager_id, 1 AS level\n      FROM employees\n     WHERE employee_id = 2\n  UNION ALL\n    SELECT e.employee_id, e.full_name, e.manager_id, r.level + 1\n      FROM employees e\n      JOIN reports r ON e.manager_id = r.employee_id\n)\nSELECT employee_id, full_name, manager_id, level\n  FROM reports\n ORDER BY level, employee_id;",
+    "caption": "All direct and indirect reports of employee 2"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " employee_id |  full_name  | manager_id | level \n-------------+-------------+------------+-------\n           2 | Vikram Shah |          1 |     1\n           4 | Rahul Verma |          2 |     2\n           5 | Sara Khan   |          2 |     2\n           6 | Arjun Nair  |          4 |     3\n           7 | Priya Menon |          4 |     3\n           8 | Kiran Das   |          5 |     3\n          10 | Rohan Mehta |          6 |     4\n(7 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Pass 1 found the CTO's two direct reports (level 2), pass 2 found their three reports (level 3), and pass 3 found the intern (level 4). Pass 4 found nobody, so the query stopped. The CFO's branch (Meera, Neha) is correctly missing. To exclude the CTO from the result, add <code class=\"inline-code\">WHERE level &gt; 1</code> to the final SELECT."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "The join direction decides the walk. <code class=\"inline-code\">e.manager_id = r.employee_id</code> means \"find the children of the rows I have\" and walks <b>down</b>. Swap it to <code class=\"inline-code\">e.employee_id = r.manager_id</code> and you walk <b>up</b>, as the next section shows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find the chain of managers above an employee (walk up the tree)",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To answer \"who is above the intern, all the way to the CEO?\", start from the intern and, on each pass, fetch the manager of the row found last."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE chain AS (\n    SELECT employee_id, full_name, manager_id, 0 AS steps_up\n      FROM employees\n     WHERE employee_id = 10\n  UNION ALL\n    SELECT m.employee_id, m.full_name, m.manager_id, c.steps_up + 1\n      FROM employees m\n      JOIN chain c ON m.employee_id = c.manager_id\n)\nSELECT employee_id, full_name, steps_up\n  FROM chain\n ORDER BY steps_up;",
+    "caption": "Management chain of employee 10"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " employee_id |  full_name  | steps_up \n-------------+-------------+----------\n          10 | Rohan Mehta |        0\n           6 | Arjun Nair  |        1\n           4 | Rahul Verma |        2\n           2 | Vikram Shah |        3\n           1 | Anita Rao   |        4\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each pass returns exactly one row, because every employee has one manager. When the query reaches the CEO, <code class=\"inline-code\">manager_id</code> is NULL, the join matches nothing, and the loop ends. This walk uses the primary key index, so it is fast even on large tables."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Print the org chart as an indented tree with a path",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Ordering by level gives you the tree one layer at a time. An org chart usually needs each manager followed by their whole team, which is called depth-first order. You get it by carrying a path along with every row and sorting by that path."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Option 1: build the path yourself",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE org AS (\n    SELECT employee_id, full_name, 1 AS level,\n           full_name::text AS path,\n           ARRAY[employee_id] AS sort_path\n      FROM employees\n     WHERE manager_id IS NULL\n  UNION ALL\n    SELECT e.employee_id, e.full_name, o.level + 1,\n           o.path || ' > ' || e.full_name,\n           o.sort_path || e.employee_id\n      FROM employees e\n      JOIN org o ON e.manager_id = o.employee_id\n)\nSELECT repeat('    ', level - 1) || full_name AS org_chart, path\n  FROM org\n ORDER BY sort_path;",
+    "caption": "Indented org chart with a readable path"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "          org_chart          |                               path                               \n-----------------------------+------------------------------------------------------------------\n Anita Rao                   | Anita Rao\n     Vikram Shah             | Anita Rao > Vikram Shah\n         Rahul Verma         | Anita Rao > Vikram Shah > Rahul Verma\n             Arjun Nair      | Anita Rao > Vikram Shah > Rahul Verma > Arjun Nair\n                 Rohan Mehta | Anita Rao > Vikram Shah > Rahul Verma > Arjun Nair > Rohan Mehta\n             Priya Menon     | Anita Rao > Vikram Shah > Rahul Verma > Priya Menon\n         Sara Khan           | Anita Rao > Vikram Shah > Sara Khan\n             Kiran Das       | Anita Rao > Vikram Shah > Sara Khan > Kiran Das\n     Meera Iyer              | Anita Rao > Meera Iyer\n         Neha Gupta          | Anita Rao > Meera Iyer > Neha Gupta\n(10 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two details make this work. First, <code class=\"inline-code\">sort_path</code> is an integer array such as <code class=\"inline-code\">{1,2,4,6}</code>; arrays compare element by element, so every employee sorts right after their manager. Sorting by the text <code class=\"inline-code\">path</code> would also group branches, but it orders siblings alphabetically and can break when names contain the separator. Second, <code class=\"inline-code\">full_name::text</code> in the anchor is required; without it you get a type error (see Common mistakes)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Option 2: the SEARCH clause (PostgreSQL 14 and later)",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Since PostgreSQL 14 you can let the database build the ordering column with the SQL-standard <code class=\"inline-code\">SEARCH</code> clause. You name the column that identifies a row and the name of the new column to add:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE org AS (\n    SELECT employee_id, full_name, manager_id\n      FROM employees\n     WHERE manager_id IS NULL\n  UNION ALL\n    SELECT e.employee_id, e.full_name, e.manager_id\n      FROM employees e\n      JOIN org o ON e.manager_id = o.employee_id\n) SEARCH DEPTH FIRST BY employee_id SET ordercol\nSELECT employee_id, full_name, ordercol\n  FROM org\n ORDER BY ordercol;",
+    "caption": "Depth-first order with SEARCH"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " employee_id |  full_name  |        ordercol        \n-------------+-------------+------------------------\n           1 | Anita Rao   | {(1)}\n           2 | Vikram Shah | {(1),(2)}\n           4 | Rahul Verma | {(1),(2),(4)}\n           6 | Arjun Nair  | {(1),(2),(4),(6)}\n          10 | Rohan Mehta | {(1),(2),(4),(6),(10)}\n           7 | Priya Menon | {(1),(2),(4),(7)}\n           5 | Sara Khan   | {(1),(2),(5)}\n           8 | Kiran Das   | {(1),(2),(5),(8)}\n           3 | Meera Iyer  | {(1),(3)}\n           9 | Neha Gupta  | {(1),(3),(9)}\n(10 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The order is the same as Option 1. The <code class=\"inline-code\">ordercol</code> column is added to the CTE output automatically; it is an array of row values, which is why each id appears in brackets. Change <code class=\"inline-code\">DEPTH</code> to <code class=\"inline-code\">BREADTH</code> to get one level at a time:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE org AS (\n    SELECT employee_id, full_name, manager_id\n      FROM employees\n     WHERE manager_id IS NULL\n  UNION ALL\n    SELECT e.employee_id, e.full_name, e.manager_id\n      FROM employees e\n      JOIN org o ON e.manager_id = o.employee_id\n) SEARCH BREADTH FIRST BY employee_id SET ordercol\nSELECT employee_id, full_name, ordercol\n  FROM org\n ORDER BY ordercol;",
+    "caption": "Breadth-first order with SEARCH"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " employee_id |  full_name  | ordercol \n-------------+-------------+----------\n           1 | Anita Rao   | (0,1)\n           2 | Vikram Shah | (1,2)\n           3 | Meera Iyer  | (1,3)\n           4 | Rahul Verma | (2,4)\n           5 | Sara Khan   | (2,5)\n           9 | Neha Gupta  | (2,9)\n           6 | Arjun Nair  | (3,6)\n           7 | Priya Menon | (3,7)\n           8 | Kiran Das   | (3,8)\n          10 | Rohan Mehta | (4,10)\n(10 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here <code class=\"inline-code\">ordercol</code> holds the depth (starting at 0) and the employee id. The documentation points out that <code class=\"inline-code\">SEARCH</code> only computes a column to sort by; it does not change the order in which PostgreSQL actually visits rows, so you still need the <code class=\"inline-code\">ORDER BY</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Count team sizes and limit the depth",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Total headcount under every manager",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A neat trick: use every employee as an anchor, and carry the anchor's id down the tree. Each row in the result then means \"this employee is in that manager's subtree\", and a GROUP BY counts them."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE tree AS (\n    SELECT employee_id AS manager_id, employee_id\n      FROM employees\n  UNION ALL\n    SELECT t.manager_id, e.employee_id\n      FROM employees e\n      JOIN tree t ON e.manager_id = t.employee_id\n)\nSELECT m.full_name, count(*) - 1 AS total_reports\n  FROM tree t\n  JOIN employees m ON m.employee_id = t.manager_id\n GROUP BY m.employee_id, m.full_name\nHAVING count(*) > 1\n ORDER BY total_reports DESC, m.full_name;",
+    "caption": "Direct and indirect reports per manager"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  full_name  | total_reports \n-------------+---------------\n Anita Rao   |             9\n Vikram Shah |             6\n Rahul Verma |             3\n Arjun Nair  |             1\n Meera Iyer  |             1\n Sara Khan   |             1\n(6 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">- 1</code> removes the manager's own row, and <code class=\"inline-code\">HAVING count(*) &gt; 1</code> hides people with no reports. The aggregate is allowed here because it is in the outer query, not inside the recursive term. On a big table this query touches every path in the tree, so run it for one manager when that is all you need."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Stop after a fixed number of levels",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To show only the CEO and their direct reports, put a depth check in the recursive term's <code class=\"inline-code\">WHERE</code> clause:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE reports AS (\n    SELECT employee_id, full_name, 1 AS level\n      FROM employees\n     WHERE employee_id = 1\n  UNION ALL\n    SELECT e.employee_id, e.full_name, r.level + 1\n      FROM employees e\n      JOIN reports r ON e.manager_id = r.employee_id\n     WHERE r.level < 2\n)\nSELECT employee_id, full_name, level\n  FROM reports\n ORDER BY level, employee_id;",
+    "caption": "Only two levels of the tree"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " employee_id |  full_name  | level \n-------------+-------------+-------\n           1 | Anita Rao   |     1\n           2 | Vikram Shah |     2\n           3 | Meera Iyer  |     2\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Filtering inside the recursive term is better than filtering in the outer query (<code class=\"inline-code\">WHERE level &lt;= 2</code>). In the outer query PostgreSQL would still walk the whole tree and discard rows afterwards; inside the recursive term it never fetches the deeper levels at all. A depth limit like this is also a simple safety net against loops."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Handle cycles: stop a recursive query that never ends",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Real hierarchy data is not always clean. Suppose someone makes the CTO report to the intern by mistake. Now 2 manages 4, 4 manages 6, 6 manages 10, and 10 manages 2 again: a cycle."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE employees SET manager_id = 10 WHERE employee_id = 2;",
+    "caption": "Create a cycle (for testing only)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The walk-down query from earlier now never runs out of rows. It keeps going around the loop until something stops it. With a 2-second <code class=\"inline-code\">statement_timeout</code> for the session, this is what happens:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET statement_timeout = '2s';\n\nWITH RECURSIVE reports AS (\n    SELECT employee_id, full_name, 1 AS level\n      FROM employees\n     WHERE employee_id = 2\n  UNION ALL\n    SELECT e.employee_id, e.full_name, r.level + 1\n      FROM employees e\n      JOIN reports r ON e.manager_id = r.employee_id\n)\nSELECT count(*) FROM reports;\n\nRESET statement_timeout;",
+    "caption": "The same query on data with a cycle"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "SET\nERROR:  canceling statement due to statement timeout\nRESET",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "Without a timeout, a looping recursive CTE runs until you cancel it, and it keeps using CPU and temporary disk while it does. When you test recursive queries on data you do not trust, set <code class=\"inline-code\">statement_timeout</code> for your session first, or cancel a runaway query with <code class=\"inline-code\">SELECT pg_cancel_backend(pid);</code> from another session."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The CYCLE clause",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL 14 added the SQL-standard <code class=\"inline-code\">CYCLE</code> clause. You list the column that identifies a row, a name for a cycle flag column, and a name for a path column. PostgreSQL records the visited ids on each path, sets the flag when a row is visited a second time, and stops following that path."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE reports AS (\n    SELECT employee_id, full_name, manager_id, 1 AS level\n      FROM employees\n     WHERE employee_id = 2\n  UNION ALL\n    SELECT e.employee_id, e.full_name, e.manager_id, r.level + 1\n      FROM employees e\n      JOIN reports r ON e.manager_id = r.employee_id\n) CYCLE employee_id SET is_cycle USING visited\nSELECT employee_id, full_name, level, is_cycle, visited\n  FROM reports;",
+    "caption": "Walk down safely with CYCLE"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " employee_id |  full_name  | level | is_cycle |        visited         \n-------------+-------------+-------+----------+------------------------\n           2 | Vikram Shah |     1 | f        | {(2)}\n           4 | Rahul Verma |     2 | f        | {(2),(4)}\n           5 | Sara Khan   |     2 | f        | {(2),(5)}\n           6 | Arjun Nair  |     3 | f        | {(2),(4),(6)}\n           7 | Priya Menon |     3 | f        | {(2),(4),(7)}\n           8 | Kiran Das   |     3 | f        | {(2),(5),(8)}\n          10 | Rohan Mehta |     4 | f        | {(2),(4),(6),(10)}\n           2 | Vikram Shah |     5 | t        | {(2),(4),(6),(10),(2)}\n(8 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The query finishes. The last row shows the cycle: Vikram Shah appears again at level 5 with <code class=\"inline-code\">is_cycle</code> = <code class=\"inline-code\">t</code>, and the <code class=\"inline-code\">visited</code> path shows exactly how the loop closes: 2, 4, 6, 10, 2. By default the flag is boolean (true/false); the syntax <code class=\"inline-code\">SET is_cycle TO 'Y' DEFAULT 'N'</code> lets you use other constants. Add <code class=\"inline-code\">WHERE NOT is_cycle</code> to the outer query to hide the repeated row, or <code class=\"inline-code\">WHERE is_cycle</code> to list only the broken paths so you can fix the data:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE reports AS (\n    SELECT employee_id, full_name, manager_id\n      FROM employees\n     WHERE employee_id = 2\n  UNION ALL\n    SELECT e.employee_id, e.full_name, e.manager_id\n      FROM employees e\n      JOIN reports r ON e.manager_id = r.employee_id\n) CYCLE employee_id SET is_cycle USING visited\nSELECT employee_id, full_name, visited\n  FROM reports\n WHERE is_cycle;",
+    "caption": "List only the cycles"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " employee_id |  full_name  |        visited         \n-------------+-------------+------------------------\n           2 | Vikram Shah | {(2),(4),(6),(10),(2)}\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On PostgreSQL 13 or older, build the same thing by hand: carry <code class=\"inline-code\">ARRAY[employee_id]</code> as a path, compute <code class=\"inline-code\">e.employee_id = ANY(path)</code> as the flag, and add <code class=\"inline-code\">AND NOT is_cycle</code> to the recursive term. Before moving on, put the data back:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE employees SET manager_id = 1 WHERE employee_id = 2;",
+    "caption": "Remove the cycle"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "UNION vs UNION ALL in a recursive CTE",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "UNION also stops some loops, because it discards a new row that exactly matches a row already found. On the cyclic data, this version without a level column returned a count of 7 and finished:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "WITH RECURSIVE reports AS (\n    SELECT employee_id, full_name, manager_id\n      FROM employees\n     WHERE employee_id = 2\n  UNION\n    SELECT e.employee_id, e.full_name, e.manager_id\n      FROM employees e\n      JOIN reports r ON e.manager_id = r.employee_id\n)\nSELECT count(*) FROM reports;",
+    "caption": "UNION removes exact duplicates (run on the cyclic data)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " count \n-------\n     7\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It worked only because the repeated Vikram Shah row was identical to the first one. Add a <code class=\"inline-code\">level</code> or path column and the repeated row is different every time (level 5, 9, 13...), so UNION no longer helps. The documentation makes the same point. Use these rules:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Choice",
+      "Removes duplicates",
+      "Stops cycles",
+      "Cost"
+     ],
+     [
+      "UNION ALL",
+      "No",
+      "No",
+      "Cheapest, the usual choice"
+     ],
+     [
+      "UNION",
+      "Exact duplicate rows only",
+      "Only when repeated rows are identical",
+      "Must remember and compare every row"
+     ],
+     [
+      "UNION ALL + CYCLE",
+      "No",
+      "Yes, per path",
+      "Keeps a path array per row"
+     ],
+     [
+      "UNION ALL + depth limit",
+      "No",
+      "Yes, after N levels",
+      "Very cheap"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Type mismatch between the anchor and the recursive term",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you build a path from <code class=\"inline-code\">full_name</code> without a cast, the anchor column is <code class=\"inline-code\">varchar(50)</code> but the concatenation in the recursive term produces plain <code class=\"inline-code\">varchar</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  recursive query \"org\" column 2 has type character varying(50) in non-recursive term but type character varying overall\nLINE 2:     SELECT employee_id, full_name AS path\n                                ^\nHINT:  Cast the output of the non-recursive term to the correct type.",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix: cast in the anchor, for example <code class=\"inline-code\">full_name::text AS path</code>. The same applies to numbers: <code class=\"inline-code\">1 AS level</code> is integer, so a recursive term that produces <code class=\"inline-code\">numeric</code> needs <code class=\"inline-code\">1::numeric</code> in the anchor."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Forgetting the RECURSIVE keyword",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  relation \"reports\" does not exist\nLINE 4:     SELECT e.employee_id FROM employees e JOIN reports r ON ...\n                                                       ^\nDETAIL:  There is a WITH item named \"reports\", but it cannot be referenced from this part of the query.\nHINT:  Use WITH RECURSIVE, or re-order the WITH items to remove forward references.",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix: write <code class=\"inline-code\">WITH RECURSIVE</code>. If you have several CTEs, the keyword goes once after <code class=\"inline-code\">WITH</code>, not before each CTE."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Using an aggregate or a subquery on the CTE in the recursive term",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  aggregate functions are not allowed in a recursive query's recursive term\n\nERROR:  recursive reference to query \"reports\" must not appear within a subquery",
+    "caption": "Errors"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The recursive term sees one batch of rows at a time, so totals over it do not make sense there. Fix: compute aggregates in the outer query (as in the headcount example), and use a JOIN to the CTE instead of <code class=\"inline-code\">IN (SELECT ... FROM reports)</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "No exit condition, or trusting LIMIT",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A <code class=\"inline-code\">LIMIT</code> on the outer query can stop a runaway recursive CTE in PostgreSQL, because PostgreSQL only computes as many rows as the outer query fetches. The documentation recommends this only for testing: as soon as the outer query sorts or joins the result, it reads the whole CTE and the loop is back. Put the real stop condition (depth limit or <code class=\"inline-code\">CYCLE</code>) inside the CTE."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Index the column the recursive term joins on. Walking down needs an index on <code class=\"inline-code\">manager_id</code>; walking up uses the primary key.",
+      "items": []
+     },
+     {
+      "content": "Start the anchor as narrow as possible. Starting from one manager is far cheaper than starting from every row.",
+      "items": []
+     },
+     {
+      "content": "Filter inside the recursive term (depth, status, date) so unwanted branches are never fetched.",
+      "items": []
+     },
+     {
+      "content": "Use UNION ALL unless you really need duplicate removal.",
+      "items": []
+     },
+     {
+      "content": "Check the plan with EXPLAIN. A recursive CTE shows up as a <code class=\"inline-code\">Recursive Union</code> node, with a <code class=\"inline-code\">WorkTable Scan</code> reading the rows from the previous pass.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (COSTS OFF)\nWITH RECURSIVE reports AS (\n    SELECT employee_id, full_name, manager_id, 1 AS level\n      FROM employees\n     WHERE employee_id = 2\n  UNION ALL\n    SELECT e.employee_id, e.full_name, e.manager_id, r.level + 1\n      FROM employees e\n      JOIN reports r ON e.manager_id = r.employee_id\n)\nSELECT * FROM reports;",
+    "caption": "Plan of the walk-down query"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                        QUERY PLAN                         \n-----------------------------------------------------------\n CTE Scan on reports\n   CTE reports\n     ->  Recursive Union\n           ->  Seq Scan on employees\n                 Filter: (employee_id = 2)\n           ->  Hash Join\n                 Hash Cond: (e.manager_id = r.employee_id)\n                 ->  Seq Scan on employees e\n                 ->  Hash\n                       ->  WorkTable Scan on reports r\n(10 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With only 10 rows the planner prefers sequential scans, which is correct for a tiny table. On a table with many rows and a narrow starting point, expect to see the <code class=\"inline-code\">employees_manager_id_idx</code> index used inside the recursive term. A recursive CTE is always computed as its own step (marking it <code class=\"inline-code\">NOT MATERIALIZED</code> is ignored), so put filters on the starting rows inside the anchor, not only in the outer query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does PostgreSQL support CONNECT BY like Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. PostgreSQL uses the SQL-standard <code class=\"inline-code\">WITH RECURSIVE</code>. <code class=\"inline-code\">START WITH</code> becomes the anchor's WHERE clause, <code class=\"inline-code\">CONNECT BY PRIOR</code> becomes the join in the recursive term, <code class=\"inline-code\">LEVEL</code> becomes a counter column you add, and <code class=\"inline-code\">NOCYCLE</code> becomes the <code class=\"inline-code\">CYCLE</code> clause."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is there a maximum recursion depth in a PostgreSQL recursive CTE?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There is no setting that limits the number of passes. The query runs until the recursive term returns no rows, so you set the limit yourself with a depth column in the recursive term's WHERE clause, a CYCLE clause, or a statement_timeout."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I get all child rows of a parent in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use the parent as the anchor and join <code class=\"inline-code\">child.parent_id = cte.id</code> in the recursive term, as in the walk-down example. For the parents of a child, reverse the join: <code class=\"inline-code\">parent.id = cte.parent_id</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I use a recursive CTE in UPDATE or DELETE?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The recursive CTE itself must be a SELECT, but a data-modifying statement can use its result, for example <code class=\"inline-code\">WITH RECURSIVE ... DELETE FROM employees WHERE employee_id IN (SELECT employee_id FROM reports);</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "A recursive CTE is an anchor query, UNION ALL, and a recursive term that joins back to the CTE name.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "PostgreSQL runs it as a loop over a working table and stops when a pass returns no rows.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Join <code class=\"inline-code\">child.manager_id = cte.employee_id</code> to walk down, <code class=\"inline-code\">parent.employee_id = cte.manager_id</code> to walk up.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Carry a level column and an id array path, or use <code class=\"inline-code\">SEARCH DEPTH FIRST</code> / <code class=\"inline-code\">BREADTH FIRST</code>, for ordering.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Protect against bad data with a depth limit in the recursive term or the <code class=\"inline-code\">CYCLE</code> clause (PostgreSQL 14+).",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Cast anchor columns (<code class=\"inline-code\">::text</code>) so their types match the recursive term.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Keep aggregates in the outer query and index the join column.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your org chart query works on test data, then runs forever in production. The cause is usually one bad manager_id.\n\nPostgreSQL has no CONNECT BY. Hierarchies use WITH RECURSIVE, and a few habits keep it safe:\n\n1. Shape: an anchor query, UNION ALL, then a recursive term that joins back to the CTE name.\n2. Direction: join on child manager_id = cte employee_id to walk down; reverse it to walk up.\n3. Order: carry an id array path, or add SEARCH DEPTH FIRST BY employee_id SET ordercol.\n4. Loops: if A reports to B and B reports to A, the query never ends. Add CYCLE employee_id SET is_cycle USING visited (PostgreSQL 14+) or a depth limit inside the recursive term.\n5. Types: build a text path from a varchar column without full_name::text in the anchor and you get \"recursive query column has type character varying(50) in non-recursive term\".\n\nUNION instead of UNION ALL only stops a loop when repeated rows are identical, so add a level column and it stops helping.\n\nHow do you handle bad parent-child data in your hierarchy tables?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #Database #DBA",
+  "slides": [
+   {
+    "title": "Recursive CTEs in PostgreSQL",
+    "body": "Walk any parent-child hierarchy in one query, safely"
+   },
+   {
+    "title": "The shape of every recursive CTE",
+    "points": [
+     "Anchor query: the starting rows",
+     "UNION ALL",
+     "Recursive term: joins back to the CTE",
+     "Stops when a pass returns no new rows"
+    ]
+   },
+   {
+    "title": "Walk down: all reports of a manager",
+    "code": "WITH RECURSIVE r AS (\n  SELECT employee_id FROM employees\n   WHERE employee_id = 2\n  UNION ALL\n  SELECT e.employee_id FROM employees e\n    JOIN r ON e.manager_id = r.employee_id\n)\nSELECT employee_id FROM r;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Tree order with SEARCH",
+    "code": "WITH RECURSIVE org AS (\n  SELECT employee_id FROM employees\n   WHERE manager_id IS NULL\n  UNION ALL\n  SELECT e.employee_id FROM employees e\n    JOIN org o ON e.manager_id = o.employee_id\n) SEARCH DEPTH FIRST BY employee_id SET ord\nSELECT * FROM org ORDER BY ord;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Stop infinite loops with CYCLE",
+    "points": [
+     "One bad manager_id can create a loop",
+     "Add: CYCLE employee_id SET is_cycle USING visited",
+     "is_cycle = true marks the repeated row",
+     "Or limit depth inside the recursive term"
+    ]
+   },
+   {
+    "title": "Mistakes to avoid",
+    "points": [
+     "Cast anchor columns: full_name::text",
+     "No aggregates in the recursive term",
+     "Join to the CTE, not IN (SELECT ...)",
+     "Index the join column, e.g. manager_id"
+    ]
+   }
+  ]
+ }
+}
