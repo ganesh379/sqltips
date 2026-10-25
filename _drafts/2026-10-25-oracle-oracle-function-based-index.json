@@ -1,0 +1,916 @@
+{
+ "schemaVersion": 1,
+ "title": "Oracle Function Based Index: Examples and Why It's Not Used",
+ "slug": "oracle-function-based-index",
+ "category": "plsql",
+ "description": "Create an Oracle function based index for UPPER, TRUNC and CASE, check it in the plan, and fix the common reasons Oracle ignores it.",
+ "focusKeyword": "oracle function based index",
+ "tags": [
+  "oracle",
+  "indexes",
+  "performance",
+  "sql tuning"
+ ],
+ "related": [
+  "/posts/plsql/how-to-read-explain-plan-in-oracle/",
+  "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/",
+  "/posts/sql/sql-query-design-patterns-writing-efficient-queries/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle 19c SQL Language Reference: CREATE INDEX",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/CREATE-INDEX.html"
+  },
+  {
+   "title": "Oracle 19c Concepts: Indexes and Index-Organized Tables",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/cncpt/indexes-and-index-organized-tables.html"
+  },
+  {
+   "title": "Oracle 19c Administrator's Guide: Managing Indexes",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/admin/managing-indexes.html"
+  },
+  {
+   "title": "Oracle 19c SQL Tuning Guide: Optimizer Access Paths",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/tgsql/optimizer-access-paths.html"
+  },
+  {
+   "title": "Oracle 19c Reference: ALL_IND_EXPRESSIONS",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/ALL_IND_EXPRESSIONS.html"
+  },
+  {
+   "title": "Oracle 19c PL/SQL Packages: DBMS_STATS",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_STATS.html"
+  },
+  {
+   "title": "Oracle Error Help: ORA-30553",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-30553/"
+  }
+ ],
+ "reviewNotes": "Examples written from the Oracle 19c docs; none were run, so all need a test run. Please verify: (1) exact COLUMN_EXPRESSION text in USER_IND_EXPRESSIONS, especially TRUNC(INTERNAL_FUNCTION(...)) for the DATE column, which is from memory, not the docs; (2) the DISPLAY_CURSOR plan shape and predicate text (needs a bigger table, see the note callout); (3) that creating ord_one_pending_ux while ord_pending_ix exists fails as the text implies, and that the ORA-00001 message format is right; (4) the hidden column naming SYS_NC... in USER_TAB_COLS; (5) FAQ claim that QUERY REWRITE privilege is not needed on current releases (based on its absence from the 19c CREATE INDEX prerequisites); (6) the FUNCIDX_STATUS column in USER_INDEXES. (7) the claim that a default GATHER_TABLE_STATS also gathers stats on the hidden SYS_NC virtual column.",
+ "generatedAt": "2026-10-25T01:45:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An Oracle function based index stores the result of an expression, such as <code class=\"inline-code\">UPPER(customer_email)</code> or <code class=\"inline-code\">TRUNC(order_date)</code>, instead of the raw column value. You create it with a normal <code class=\"inline-code\">CREATE INDEX</code> statement that names the expression: <code class=\"inline-code\">CREATE INDEX ord_email_ix ON orders (UPPER(customer_email));</code>. The optimizer can then use it for any query whose <code class=\"inline-code\">WHERE</code> clause contains the same expression."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial shows how to create one, how to check that Oracle actually uses it, how to index only some rows, how to enforce a conditional unique rule, and the reasons a function based index is ignored. All examples use one small orders table that you can build in your own schema."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is a function based index in Oracle?",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A normal B-tree index stores column values. If your query wraps that column in a function, for example <code class=\"inline-code\">WHERE UPPER(customer_email) = ...</code>, the stored values no longer match what you are searching for. Oracle cannot use the plain index for that predicate, so it usually reads the whole table."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A function based index fixes this by computing the expression once, when the row is inserted or updated, and storing the result in the index. Oracle's documentation describes it as an index that computes the value of a function or expression involving one or more columns and stores it. It can be a B-tree or a bitmap index."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The expression can be:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "A built-in SQL function, such as <code class=\"inline-code\">UPPER</code>, <code class=\"inline-code\">LOWER</code>, <code class=\"inline-code\">TRUNC</code> or <code class=\"inline-code\">SUBSTR</code>.",
+      "items": []
+     },
+     {
+      "content": "An arithmetic expression, such as <code class=\"inline-code\">quantity * unit_price</code>.",
+      "items": []
+     },
+     {
+      "content": "A <code class=\"inline-code\">CASE</code> expression.",
+      "items": []
+     },
+     {
+      "content": "Your own PL/SQL function, as long as it is declared <code class=\"inline-code\">DETERMINISTIC</code>.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Behind the scenes Oracle adds a hidden virtual column to the table to represent the expression, and the index is built on that column. You will see this hidden column later when we look at the data dictionary."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small orders table. Emails are stored in mixed case on purpose, and order dates include a time part, because those are the two situations where developers most often reach for a function based index."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE orders (\n  order_id        NUMBER        PRIMARY KEY,\n  customer_id     NUMBER        NOT NULL,\n  customer_email  VARCHAR2(100) NOT NULL,\n  order_date      DATE          NOT NULL,\n  status          VARCHAR2(10)  NOT NULL,\n  quantity        NUMBER        NOT NULL,\n  unit_price      NUMBER(10,2)  NOT NULL\n);\n\nINSERT INTO orders VALUES (1, 101, 'Ravi.Kumar@example.com',  TO_DATE('2026-10-20 09:15','YYYY-MM-DD HH24:MI'), 'SHIPPED', 2,  450.00);\nINSERT INTO orders VALUES (2, 102, 'priya.n@example.com',     TO_DATE('2026-10-20 18:40','YYYY-MM-DD HH24:MI'), 'PENDING', 1, 1200.00);\nINSERT INTO orders VALUES (3, 101, 'RAVI.KUMAR@EXAMPLE.COM',  TO_DATE('2026-10-21 11:05','YYYY-MM-DD HH24:MI'), 'SHIPPED', 5,   99.00);\nINSERT INTO orders VALUES (4, 103, 'anil.s@example.com',      TO_DATE('2026-10-21 23:55','YYYY-MM-DD HH24:MI'), 'CANCELLED', 1, 300.00);\nINSERT INTO orders VALUES (5, 104, 'Meena.R@Example.com',     TO_DATE('2026-10-22 08:00','YYYY-MM-DD HH24:MI'), 'SHIPPED', 3,  150.00);\nINSERT INTO orders VALUES (6, 102, 'priya.n@example.com',     TO_DATE('2026-10-22 14:30','YYYY-MM-DD HH24:MI'), 'SHIPPED', 2,  800.00);\nCOMMIT;",
+    "caption": "Sample orders table"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "With only six rows the optimizer will often prefer a full table scan, because reading one or two blocks is cheaper than any index. To see index access in the plans below, load more rows first, for example with an <code class=\"inline-code\">INSERT ... SELECT</code> that uses <code class=\"inline-code\">CONNECT BY LEVEL &lt;= 100000</code>, then gather statistics. The plan shapes shown here assume a table of that size."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 1: case-insensitive search with UPPER",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Users type emails in any case. The usual query converts both sides to upper case:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_email\n  FROM orders\n WHERE UPPER(customer_email) = 'RAVI.KUMAR@EXAMPLE.COM';",
+    "caption": "Case-insensitive lookup"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORDER_ID CUSTOMER_EMAIL\n-------- ------------------------\n       1 Ravi.Kumar@example.com\n       3 RAVI.KUMAR@EXAMPLE.COM",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The result is correct, but an ordinary index on <code class=\"inline-code\">customer_email</code> cannot help, because the index holds <code class=\"inline-code\">Ravi.Kumar@example.com</code> while the query looks for the upper-case form. Oracle has to apply <code class=\"inline-code\">UPPER</code> to every row."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: create the index",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE INDEX ord_email_upper_ix\n  ON orders (UPPER(customer_email));",
+    "caption": "Function based index on UPPER(customer_email)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: gather statistics",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The Oracle SQL reference says to collect statistics on both the index and its base table with DBMS_STATS after creating a function based index, so the optimizer can decide correctly when to use it. Gathering table statistics also collects statistics for the hidden virtual column."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "BEGIN\n  DBMS_STATS.GATHER_TABLE_STATS(\n    ownname => USER,\n    tabname => 'ORDERS',\n    cascade => TRUE);\nEND;\n/",
+    "caption": "Refresh table, column and index statistics"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: confirm the plan",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run the query again and display the plan of the last statement in your session. In SQL*Plus or SQLcl, run <code class=\"inline-code\">SET SERVEROUTPUT OFF</code> first, otherwise the last statement is the DBMS_OUTPUT call and not your query."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_email\n  FROM orders\n WHERE UPPER(customer_email) = 'RAVI.KUMAR@EXAMPLE.COM';\n\nSELECT * FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR);",
+    "caption": "Show the actual plan"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "| Id | Operation                           | Name               |\n|  0 | SELECT STATEMENT                    |                    |\n|  1 |  TABLE ACCESS BY INDEX ROWID BATCHED| ORDERS             |\n|* 2 |   INDEX RANGE SCAN                  | ORD_EMAIL_UPPER_IX |\n\nPredicate Information (identified by operation id):\n   2 - access(UPPER(\"CUSTOMER_EMAIL\")='RAVI.KUMAR@EXAMPLE.COM')",
+    "caption": "Output (expected output, cost columns removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">INDEX RANGE SCAN</code> on <code class=\"inline-code\">ORD_EMAIL_UPPER_IX</code> and the <code class=\"inline-code\">access</code> predicate tell you the index was used to find the rows. If you see <code class=\"inline-code\">TABLE ACCESS FULL</code> with a <code class=\"inline-code\">filter</code> predicate instead, the index was not used. If you are new to plans, read <a href=\"/posts/plsql/how-to-read-explain-plan-in-oracle/\">how to read an explain plan in Oracle</a> first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 2: search by day with TRUNC(order_date)",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A DATE column in Oracle always carries a time. A common report query asks for all orders placed on one day:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE INDEX ord_day_ix ON orders (TRUNC(order_date));\n\nSELECT order_id, order_date\n  FROM orders\n WHERE TRUNC(order_date) = DATE '2026-10-21';",
+    "caption": "Index and query on the day part of a DATE"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORDER_ID ORDER_DATE\n-------- -------------------\n       3 2026-10-21 11:05:00\n       4 2026-10-21 23:55:00",
+    "caption": "Output (expected output, NLS_DATE_FORMAT set to YYYY-MM-DD HH24:MI:SS)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both rows from 21 October are returned, including the one at 23:55. The index stores midnight of each date, so the equality search matches exactly."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "If you already have a plain index on <code class=\"inline-code\">order_date</code>, you often do not need a second one. Rewrite the filter as a range: <code class=\"inline-code\">WHERE order_date &gt;= DATE '2026-10-21' AND order_date &lt; DATE '2026-10-22'</code>. That uses the existing index and saves the cost of maintaining another one."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 3: index an expression across columns",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The expression can combine several columns. Suppose a dashboard often looks for large orders by line value:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE INDEX ord_value_ix ON orders (quantity * unit_price);\n\nSELECT order_id, quantity * unit_price AS order_value\n  FROM orders\n WHERE quantity * unit_price > 1000;",
+    "caption": "Index on an arithmetic expression"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORDER_ID ORDER_VALUE\n-------- -----------\n       2        1200\n       6        1600",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle matches the query to the index by comparing expression trees. According to the Oracle Concepts guide, this comparison is case-insensitive and ignores blank spaces, so <code class=\"inline-code\">QUANTITY*UNIT_PRICE</code> matches too. It is not a general algebra engine, though. Writing <code class=\"inline-code\">unit_price * quantity</code> is a different expression, so keep the query in the same form as the index definition."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 4: index only some rows",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle does not store a B-tree index entry when every key column is NULL. You can use that to build a small index that covers only the rows you care about. Here only pending orders get an entry:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE INDEX ord_pending_ix\n  ON orders (CASE status WHEN 'PENDING' THEN customer_id END);\n\nSELECT order_id, customer_id\n  FROM orders\n WHERE CASE status WHEN 'PENDING' THEN customer_id END = 102;",
+    "caption": "Partial index using CASE"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORDER_ID CUSTOMER_ID\n-------- -----------\n       2         102",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Shipped and cancelled orders map to NULL, so they never enter the index. If most orders are shipped, this index stays tiny and cheap to maintain, while the work queue query stays fast. The trade-off is that the query must repeat the exact CASE expression, which is easy to forget. A view or a virtual column (see below) hides that detail."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 5: enforce a conditional unique rule",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A unique function based index can enforce a rule that a normal constraint cannot express. For example: a customer may have many orders, but at most one PENDING order at a time."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE UNIQUE INDEX ord_one_pending_ux\n  ON orders (CASE status WHEN 'PENDING' THEN customer_id END);",
+    "caption": "At most one pending order per customer"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create this instead of <code class=\"inline-code\">ord_pending_ix</code> from Example 4, not as well. Oracle allows more than one index on the same expression only in limited cases, such as a different index type, and only one of them can be visible. Now try to add a second pending order for customer 102:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "INSERT INTO orders VALUES (7, 102, 'priya.n@example.com', SYSDATE, 'PENDING', 1, 500.00);",
+    "caption": "Second pending order for the same customer"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-00001: unique constraint (YOUR_SCHEMA.ORD_ONE_PENDING_UX) violated",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The insert fails because customer 102 already has order 2 in PENDING status. Inserting a SHIPPED order for the same customer works, because its index key is NULL and is not stored. Oracle's own CREATE INDEX documentation uses this same technique to allow a promotion only once per customer."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 6: a user-defined function in the index",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can index your own PL/SQL function, but Oracle requires it to be declared <code class=\"inline-code\">DETERMINISTIC</code>. That keyword is a promise that the same inputs always return the same output. Oracle relies on that promise, it does not verify it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "CREATE OR REPLACE FUNCTION email_domain (p_email IN VARCHAR2)\n  RETURN VARCHAR2\n  DETERMINISTIC\nIS\nBEGIN\n  RETURN LOWER(SUBSTR(p_email, INSTR(p_email, '@') + 1));\nEND email_domain;\n/\n\nCREATE INDEX ord_domain_ix ON orders (email_domain(customer_email));",
+    "caption": "Deterministic function and its index"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT COUNT(*) AS orders_from_domain\n  FROM orders\n WHERE email_domain(customer_email) = 'example.com';",
+    "caption": "Query that can use ord_domain_ix"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORDERS_FROM_DOMAIN\n------------------\n                 6",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you leave out <code class=\"inline-code\">DETERMINISTIC</code>, the CREATE INDEX fails with ORA-30553: The function is not deterministic. Two more rules from the Oracle docs: the index owner needs EXECUTE privilege on the function, and if the function becomes invalid or is dropped, Oracle marks the index DISABLED."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "Never mark a function DETERMINISTIC if its result depends on table data, <code class=\"inline-code\">SYSDATE</code>, session settings or package variables. Oracle will store whatever the function returned at insert time, and later queries through the index can return wrong results. After you change the logic of an indexed function, rebuild the index."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why is my function based index not being used?",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the most common question about function based indexes. Work through these checks in order."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "1. The query expression does not match the index",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The predicate must contain the same expression. An index on <code class=\"inline-code\">UPPER(customer_email)</code> does not help <code class=\"inline-code\">LOWER(customer_email) = ...</code>, <code class=\"inline-code\">customer_email = ...</code> or <code class=\"inline-code\">UPPER(TRIM(customer_email)) = ...</code>. To see exactly what Oracle stored, query the dictionary:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT index_name, column_expression\n  FROM user_ind_expressions\n WHERE table_name = 'ORDERS';",
+    "caption": "See the stored index expressions"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INDEX_NAME          COLUMN_EXPRESSION\n------------------- --------------------------------------------\nORD_EMAIL_UPPER_IX  UPPER(\"CUSTOMER_EMAIL\")\nORD_DAY_IX          TRUNC(INTERNAL_FUNCTION(\"ORDER_DATE\"))\nORD_VALUE_IX        \"QUANTITY\"*\"UNIT_PRICE\"\n...",
+    "caption": "Output (expected output, exact text can vary by version)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "2. Statistics are missing or stale",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The hidden virtual column has its own column statistics. If the table was analysed before the index existed, the optimizer has no idea how selective the expression is and may guess badly. Gather table statistics again, as in Example 1. You can see the hidden column like this:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT column_name, hidden_column, virtual_column, data_default\n  FROM user_tab_cols\n WHERE table_name = 'ORDERS'\n   AND hidden_column = 'YES';",
+    "caption": "List the hidden virtual columns"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each function based index appears as a row with a system-generated name that starts with <code class=\"inline-code\">SYS_NC</code> and <code class=\"inline-code\">VIRTUAL_COLUMN</code> = YES. You may also see that name in plan predicates."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "3. Data type conversion changes the expression",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you compare a VARCHAR2 expression with a number, Oracle adds an implicit <code class=\"inline-code\">TO_NUMBER</code> around the expression, and it no longer matches the index. The Oracle SQL Tuning Guide calls out this exact mistake with plain columns. Compare with a literal or bind of the same data type as the expression."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "4. The optimizer thinks a full scan is cheaper",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An index is only used when it is cheaper. If the predicate matches a large part of the table, or the table is tiny, a full scan wins and that is the right decision. Check the row estimate in the plan against the real count before assuming something is broken."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "5. The index is disabled, unusable or invisible",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT index_name, status, funcidx_status, visibility\n  FROM user_indexes\n WHERE table_name = 'ORDERS';",
+    "caption": "Check index state"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">FUNCIDX_STATUS</code> shows DISABLED when the underlying function is invalid or was dropped. Recompile the function, then run <code class=\"inline-code\">ALTER INDEX ord_domain_ix ENABLE;</code>. An INVISIBLE index is ignored unless <code class=\"inline-code\">OPTIMIZER_USE_INVISIBLE_INDEXES</code> is TRUE for your session."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "6. Queries that need every row",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The Oracle docs note that the database will not use a function based index unless the query filters out nulls, for example an <code class=\"inline-code\">ORDER BY UPPER(customer_email)</code> with no <code class=\"inline-code\">WHERE</code> clause. Rows whose expression is NULL are missing from the index, so the index cannot return them. Adding a filter such as <code class=\"inline-code\">WHERE UPPER(customer_email) IS NOT NULL</code>, or making sure the expression cannot be NULL, gives the optimizer that option."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Virtual column or function based index?",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle 11g and later let you add a virtual column and index it. The Oracle Administrator's Guide says an index on a virtual column is equivalent to a function based index. The difference is how you query it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ALTER TABLE orders ADD (\n  email_upper VARCHAR2(100) GENERATED ALWAYS AS (UPPER(customer_email)) VIRTUAL\n);\n\nCREATE INDEX ord_email_upper_vx ON orders (email_upper);\n\nSELECT order_id FROM orders WHERE email_upper = 'PRIYA.N@EXAMPLE.COM';",
+    "caption": "The same idea as a named virtual column"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run this on a fresh copy of the table, or drop ord_email_upper_ix first, since both indexes cover the same expression."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Point",
+      "Function based index",
+      "Virtual column + index"
+     ],
+     [
+      "How you query it",
+      "Repeat the exact expression",
+      "Use the column name"
+     ],
+     [
+      "Visible in DESCRIBE",
+      "No (hidden column)",
+      "Yes"
+     ],
+     [
+      "Can add constraints on it",
+      "No",
+      "Yes, such as CHECK"
+     ],
+     [
+      "Change to application code",
+      "None if queries already use the expression",
+      "Queries must use the new column name"
+     ],
+     [
+      "Risk of expression mismatch",
+      "Higher",
+      "Lower"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Pick a function based index when you cannot change the SQL, for example a packaged application that already searches with UPPER. Pick a virtual column when you write the queries yourself and want one clear name for the derived value."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Indexing one form and querying another.</b> <code class=\"inline-code\">UPPER</code> in the index, <code class=\"inline-code\">LOWER</code> in the query. Agree on one form across the team and in your ORM settings.",
+      "items": []
+     },
+     {
+      "content": "<b>Forgetting to gather statistics</b> after creating the index on a table that already has data.",
+      "items": []
+     },
+     {
+      "content": "<b>Marking a function DETERMINISTIC when it is not</b>, which can give wrong query results.",
+      "items": []
+     },
+     {
+      "content": "<b>Using SYSDATE, USER or ROWNUM</b> in the expression. Oracle rejects them because they do not return a repeatable value.",
+      "items": []
+     },
+     {
+      "content": "<b>Creating many expression indexes on a busy table.</b> Every INSERT and every UPDATE of the involved columns must evaluate each expression and maintain each index.",
+      "items": []
+     },
+     {
+      "content": "<b>Adding TRUNC indexes when a range predicate would do.</b> See the tip in Example 2.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Index an expression only when queries filter on it often and the filter is selective. Check real plans with DBMS_XPLAN.DISPLAY_CURSOR before and after.",
+      "items": []
+     },
+     {
+      "content": "Use CASE expressions that return NULL for uninteresting rows to keep the index small.",
+      "items": []
+     },
+     {
+      "content": "Keep user-defined functions in indexes simple and fast, because they run on every insert and on updates to their input columns.",
+      "items": []
+     },
+     {
+      "content": "On a busy production table, consider <code class=\"inline-code\">CREATE INDEX ... ONLINE</code> so DML can continue while the index builds.",
+      "items": []
+     },
+     {
+      "content": "Use an invisible index to test a new function based index before the whole application sees it.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is a function based index in Oracle with example?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It is an index on the result of an expression rather than on a raw column. Example: <code class=\"inline-code\">CREATE INDEX emp_upper_ix ON employees (UPPER(last_name));</code> lets <code class=\"inline-code\">WHERE UPPER(last_name) = 'KING'</code> use an index range scan."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can a function based index have multiple columns?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes. The expression can use several columns, such as <code class=\"inline-code\">quantity * unit_price</code>, and the index can mix expressions and plain columns, such as <code class=\"inline-code\">(UPPER(last_name), department_id)</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does a function based index store NULL values?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A B-tree function based index does not store rows where all key values are NULL. That is why queries that must return every row, including NULL results, cannot rely on it, and why the CASE trick in Example 4 works."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why is my function based index disabled?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle marks it DISABLED when the function it depends on becomes invalid or is dropped. Fix and recompile the function, then run ALTER INDEX ... ENABLE."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Do I need the QUERY REWRITE privilege for a function based index?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Not in current releases. The Oracle 19c CREATE INDEX prerequisites list only the normal index privileges, DETERMINISTIC for user-defined functions, and EXECUTE on those functions for the index owner. Very old releases had extra requirements."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "A function based index stores the result of an expression, so queries filtering on that expression can use an index.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Create it with CREATE INDEX ... ON table (expression) and gather statistics afterwards.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "The query must use the same expression as the index; check USER_IND_EXPRESSIONS.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "User-defined functions must be DETERMINISTIC and really be deterministic.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use CASE expressions that return NULL to index only some rows or to enforce conditional uniqueness.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Confirm usage with DBMS_XPLAN.DISPLAY_CURSOR, and consider a virtual column when you control the SQL.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your index on customer_email exists, yet WHERE UPPER(customer_email) = '...' still does a full table scan.\n\nThe reason: a normal index stores the raw value, not UPPER of it. Oracle cannot use it once you wrap the column in a function.\n\nThe fix is a function based index:\n→ CREATE INDEX ord_email_ix ON orders (UPPER(customer_email));\n→ Gather table stats afterwards so the optimizer knows about the hidden virtual column behind it.\n→ The query must use the same expression. An UPPER index does nothing for LOWER(customer_email).\n→ A CASE expression that returns NULL for most rows gives you a small index on just the rows you need, such as pending orders.\n→ A UNIQUE index on CASE status WHEN 'PENDING' THEN customer_id END allows only one pending order per customer.\n\nYour own PL/SQL function can be indexed too, but it must be DETERMINISTIC, and it must really return the same output for the same input.\n\nWhich do you prefer for case-insensitive search in Oracle: a function based index or a virtual column?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #SQLPerformance",
+  "slides": [
+   {
+    "title": "Oracle Function Based Index, Explained",
+    "body": "Why UPPER(col) skips your index, and how to fix it"
+   },
+   {
+    "title": "Why the normal index is ignored",
+    "points": [
+     "A B-tree index stores the raw column value",
+     "WHERE UPPER(col) = ... searches a different value",
+     "So Oracle falls back to a full table scan"
+    ]
+   },
+   {
+    "title": "Create the index on the expression",
+    "code": "CREATE INDEX ord_email_ix\n  ON orders (UPPER(customer_email));\n\nSELECT order_id\n  FROM orders\n WHERE UPPER(customer_email)\n       = 'RAVI@EXAMPLE.COM';",
+    "lang": "sql"
+   },
+   {
+    "title": "Index only the rows you need",
+    "body": "B-tree indexes skip rows where every key is NULL. A CASE expression that returns NULL for shipped orders keeps the index small and fast.",
+    "code": "CREATE INDEX ord_pending_ix\n  ON orders (\n    CASE status\n      WHEN 'PENDING' THEN customer_id\n    END);",
+    "lang": "sql"
+   },
+   {
+    "title": "Index your own PL/SQL function",
+    "points": [
+     "The function must be declared DETERMINISTIC",
+     "Without it: ORA-30553 The function is not deterministic",
+     "Never use it for functions that read tables or SYSDATE"
+    ]
+   },
+   {
+    "title": "Still not used? Check these",
+    "points": [
+     "Query expression differs from the index expression",
+     "Stats not gathered after creating the index",
+     "Implicit conversion adds TO_NUMBER around it",
+     "Index is DISABLED or INVISIBLE"
+    ]
+   }
+  ]
+ }
+}
