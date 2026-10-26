@@ -1,0 +1,1291 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 6: pg_hba.conf and Client Authentication",
+ "slug": "postgresql-dba-part-6-pg-hba-conf-authentication",
+ "category": "postgresql",
+ "description": "Learn pg_hba.conf on PostgreSQL 18 for Ubuntu: rule order, peer vs scram-sha-256, allowing remote connections, testing rules and fixing login errors.",
+ "focusKeyword": "postgresql pg_hba.conf allow remote connections",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "pg-hba-conf",
+  "authentication",
+  "security"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/",
+  "/posts/postgresql/postgresql-dba-part-4-psql-commands/",
+  "/posts/postgresql/postgresql-dba-part-2-install-postgresql-18-ubuntu/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 20.1 The pg_hba.conf File",
+   "url": "https://www.postgresql.org/docs/current/auth-pg-hba-conf.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 20.5 Password Authentication",
+   "url": "https://www.postgresql.org/docs/current/auth-password.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 20.9 Peer Authentication",
+   "url": "https://www.postgresql.org/docs/current/auth-peer.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 20.16 Authentication Problems",
+   "url": "https://www.postgresql.org/docs/current/client-authentication-problems.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_hba_file_rules",
+   "url": "https://www.postgresql.org/docs/current/view-pg-hba-file-rules.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.3 Connections and Authentication (listen_addresses, password_encryption, md5_password_warnings)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-connection.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes (MD5 deprecation, oauth method)",
+   "url": "https://www.postgresql.org/docs/current/release-18.html"
+  }
+ ],
+ "reviewNotes": "Series part 6. Part 5 is live and linked in the intro and related. Followed the PostgreSQL 18 documentation (docs/current). TESTING CAVEAT, same as Parts 4 and 5: the postgresql-18 server package still cannot be installed in this sandbox (its dependency liburing2 comes from archive.ubuntu.com, which the network policy blocks). Commands were run with psql 18.6 (postgresql-client-18 18.6-1.pgdg24.04+2) against the preinstalled PostgreSQL 16.15 server on Ubuntu 24.04.5 LTS, cluster 16 main, with paths rewritten from 16 to 18. Why the outputs should match 18: I extracted the postgresql-18 18.6 .deb; its pg_hba.conf.sample is 122 lines, identical to 16's except the comment listing methods now includes \"oauth\", so the Ubuntu-generated file has the same rule lines and line numbers (118, 123, 125, 127, 130-132). I grepped the 18.6 postgres binary for every server message quoted: no pg_hba.conf entry for host ... %s; pg_hba.conf rejects connection ...; password authentication failed; Peer authentication failed; invalid authentication method; Connection matched file ... line; and the 18-only MD5 warning texts (setting an MD5-encrypted password / MD5 password support is deprecated... / Refer to the PostgreSQL documentation...). Blocks captioned plain 'Output' are real and path-free. Blocks captioned '(expected output)' had 16->18 in paths, and for the network tests the sandbox address 192.0.2.2 / rule 192.0.2.0/24 was replaced with the article's example 10.0.0.11 / 10.0.0.0/24; the editor should confirm on a real 18 server with a 10.0.0.x network. The MD5 CREATE ROLE warning block is not tested (16 has no warning): I assumed WARNING/DETAIL/HINT levels for the three strings; please confirm the exact layout on 18. The 'does not have a valid SCRAM secret' DETAIL text was taken from the 18.6 binary strings, not from a live test. The md5 hash prefix 'md55804793cdf4' is real and deterministic (md5 of password+username). The practice-exercise answer (10.0.0.30/24 loads with no error and shows netmask 255.255.255.0) was tested on 16 with these exact values. The sandbox has no systemd, so reloads/restarts were done with pg_ctlcluster / pg_reload_conf(); systemctl commands are shown per the series platform. On a host with IPv6, listen_addresses='*' also logs a '::' line (not seen in sandbox). The LinkedIn listen_addresses slide uses ALTER SYSTEM instead of the article's conf.d file, for brevity.",
+ "generatedAt": "2026-10-26T13:20:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 6 of the PostgreSQL DBA series. <b>pg_hba.conf</b> is the file that decides who may connect to your PostgreSQL server, to which database, from which address, and how they must prove who they are. To allow remote connections you change two things: <code class=\"inline-code\">listen_addresses</code> in postgresql.conf (so the server listens on the network) and a <code class=\"inline-code\">host</code> line in pg_hba.conf (so the server accepts that client). By the end of this part you will be able to read every line of the default file, add a rule for an application server, test it before you reload, and fix the error messages people hit most often."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In <a href=\"/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/\">Part 5 we covered postgresql.conf</a>, including the difference between a reload and a restart. You will use both here: pg_hba.conf changes need only a reload, while <code class=\"inline-code\">listen_addresses</code> needs a restart."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "What each column of a pg_hba.conf line means, and the first-match rule",
+      "items": []
+     },
+     {
+      "content": "What the Ubuntu default rules do, and why <code class=\"inline-code\">sudo -u postgres psql</code> needs no password",
+      "items": []
+     },
+     {
+      "content": "How to let an application server connect with <code class=\"inline-code\">scram-sha-256</code> passwords",
+      "items": []
+     },
+     {
+      "content": "How to test the file with the <code class=\"inline-code\">pg_hba_file_rules</code> view before you reload",
+      "items": []
+     },
+     {
+      "content": "How to find and convert old MD5 passwords, which PostgreSQL 18 deprecates",
+      "items": []
+     },
+     {
+      "content": "How to read the real authentication errors and fix each one",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 2 to 5 of this series: installing PostgreSQL 18, the data directory, psql, and postgresql.conf with reload vs restart.",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server with PostgreSQL 18 from the PGDG repository and cluster 18 main running (check with <code class=\"inline-code\">pg_lsclusters</code>). In this part the server is called <b>db1</b> with address <b>10.0.0.11</b>.",
+      "items": []
+     },
+     {
+      "content": "Optional: a second machine (the application server <b>app1</b>, 10.0.0.21) with the PostgreSQL client installed (<code class=\"inline-code\">sudo apt-get install -y postgresql-client-18</code>). If you have only one machine, you can test from db1 itself, as shown below.",
+      "items": []
+     },
+     {
+      "content": "A Linux user with sudo rights, and a test server. A wrong pg_hba.conf can lock everyone out, so practise away from production.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of pg_hba.conf as the guest list at the door of a building. Before anyone reaches a database, the server reads the list from the top. It looks for the first line that matches the visitor: how they arrived, which database they want, which user name they gave and where they came from. That line says how the visitor must prove their identity, or that they must be turned away."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "HBA stands for <b>host-based authentication</b>. <b>Authentication</b> means proving who you are (for example with a password). It is different from <b>authorization</b>, which decides what you may do once you are in (GRANT and REVOKE, covered in Part 7)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each rule is one line with these columns:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# TYPE  DATABASE        USER            ADDRESS                 METHOD\nhost    shop            app_user        10.0.0.0/24             scram-sha-256",
+    "caption": "The columns of one pg_hba.conf rule"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Column",
+      "What it means",
+      "Common values"
+     ],
+     [
+      "TYPE",
+      "How the client connects",
+      "local (Unix socket on the same machine), host (TCP/IP, with or without SSL), hostssl (TCP/IP with SSL only), hostnossl (TCP/IP without SSL only)"
+     ],
+     [
+      "DATABASE",
+      "Which database the client asks for",
+      "all, a name, a comma list, sameuser, replication (physical replication connections)"
+     ],
+     [
+      "USER",
+      "Which database role the client gives",
+      "all, a role name, +groupname (any member of that role)"
+     ],
+     [
+      "ADDRESS",
+      "Where the client comes from (not used for local)",
+      "127.0.0.1/32 (one host), 10.0.0.0/24 (a network), all, samehost, samenet"
+     ],
+     [
+      "METHOD",
+      "How the client proves who it is",
+      "peer, scram-sha-256, reject, trust, md5 (deprecated), cert, ldap and others"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The address uses <b>CIDR notation</b>: an IP address, a slash and the number of fixed bits. <code class=\"inline-code\">10.0.0.0/24</code> means every address from 10.0.0.0 to 10.0.0.255, and <code class=\"inline-code\">/32</code> means exactly one IPv4 address. Do not put spaces around the slash."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The methods you will use most:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">peer</code>: for local socket connections only. The server asks the Linux kernel which operating system user opened the connection and allows it only if that name equals the database user name. No password is involved.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">scram-sha-256</code>: password check using a challenge and response, so the password itself never travels over the network, and the server stores only a salted hash. This is the method to use for passwords.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">reject</code>: always refuse. Useful to block one host or user above a broader rule.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">trust</code>: allow anyone who matches, with no password, as any user they name. Avoid it outside a throwaway test machine.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">md5</code>: an older password method. It is deprecated in PostgreSQL 18 and will be removed in a future release.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two rules decide everything:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>First match wins.</b> The server uses the first line whose type, database, user and address all match. If authentication on that line fails, it does not try the next line. If no line matches, the connection is refused.",
+      "items": []
+     },
+     {
+      "content": "<b>The file is read at start and on reload.</b> On Linux, editing the file does nothing until you reload the server. A reload does not disconnect anyone; existing sessions keep running.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "pg_hba.conf only controls the door. A user must also have the CONNECT privilege on the database. The documentation suggests that limiting who may connect to which database is often easier with GRANT and REVOKE CONNECT than with many pg_hba.conf lines."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reading the Ubuntu default rules",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Find the file the server is using",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as your sudo user.</b> On Ubuntu the file is not inside the data directory. Ask the server where it is, so you never edit the wrong copy:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SHOW hba_file;\"",
+    "caption": "Show the path of pg_hba.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "              hba_file               \n-------------------------------------\n /etc/postgresql/18/main/pg_hba.conf\n(1 row)",
+    "caption": "Output (expected output: the path shows 18 on a PostgreSQL 18 server)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The file belongs to the postgres Linux user with permissions <code class=\"inline-code\">-rw-r-----</code>, so you need sudo to read or edit it. Next to it is pg_ident.conf, which holds optional user name maps for peer and ident; you do not need it in this part."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: List the active lines",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as your sudo user.</b> The file is about 130 lines, most of them comments. Show only the real rules:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo grep -vE '^\\s*(#|$)' /etc/postgresql/18/main/pg_hba.conf",
+    "caption": "Show pg_hba.conf without comments and blank lines"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Part",
+      "What it does"
+     ],
+     [
+      "grep -v",
+      "Print lines that do NOT match the pattern"
+     ],
+     [
+      "-E",
+      "Use extended regular expressions"
+     ],
+     [
+      "'^\\s*(#|$)'",
+      "A line that starts (after optional spaces) with # or is empty"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "local   all             postgres                                peer\nlocal   all             all                                     peer\nhost    all             all             127.0.0.1/32            scram-sha-256\nhost    all             all             ::1/128                 scram-sha-256\nlocal   replication     all                                     peer\nhost    replication     all             127.0.0.1/32            scram-sha-256\nhost    replication     all             ::1/128                 scram-sha-256",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it top to bottom. Local socket connections use peer, so the Linux user postgres can log in as the database user postgres without a password. TCP connections to 127.0.0.1 (IPv4) or ::1 (IPv6), that is, from the server to itself, need a scram-sha-256 password. The three replication lines do the same for physical replication, which you will use in Part 33. Nothing allows a connection from another machine yet."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "Above the first line Ubuntu writes \"DO NOT DISABLE!\". Keep <b>local all postgres peer</b> as the first rule. The packaging scripts and maintenance jobs log in as postgres through the socket without a password; if you change that line you must give the superuser another way in."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: See the same rules from SQL",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as the postgres user through psql.</b> The <code class=\"inline-code\">pg_hba_file_rules</code> view parses the file and shows one row per rule. Only superusers can read it by default."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT rule_number, line_number, type, database, user_name, address, auth_method\n  FROM pg_hba_file_rules;",
+    "caption": "Parse pg_hba.conf from SQL"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " rule_number | line_number | type  |   database    | user_name  |  address  |  auth_method  \n-------------+-------------+-------+---------------+------------+-----------+---------------\n           1 |         118 | local | {all}         | {postgres} |           | peer\n           2 |         123 | local | {all}         | {all}      |           | peer\n           3 |         125 | host  | {all}         | {all}      | 127.0.0.1 | scram-sha-256\n           4 |         127 | host  | {all}         | {all}      | ::1       | scram-sha-256\n           5 |         130 | local | {replication} | {all}      |           | peer\n           6 |         131 | host  | {replication} | {all}      | 127.0.0.1 | scram-sha-256\n           7 |         132 | host  | {replication} | {all}      | ::1       | scram-sha-256\n(7 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">rule_number</code> is the order the server checks rules in, and <code class=\"inline-code\">line_number</code> tells you where to look in the file. This view reads the file <b>as it is on disk now</b>, not what the server last loaded. That makes it the perfect test before a reload, as you will see in Step 7."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: See peer authentication in action",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as root or any Linux user that is not postgres.</b> Try to connect as the database user postgres:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql -U postgres -d postgres -c \"SELECT 1;\"",
+    "caption": "Connect as postgres from another Linux user"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: FATAL:  Peer authentication failed for user \"postgres\"",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Rule 1 matched (local, any database, user postgres) and its method is peer. The kernel reported the Linux user root, which is not postgres, so the server refused. This is why the series always uses <code class=\"inline-code\">sudo -u postgres psql</code>: it runs psql as the Linux user postgres, and peer lets it in."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Letting an application server connect",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A common job: the application on app1 (10.0.0.21) must reach database shop on db1 as user app_user with a password. The connection path looks like this:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "app1 (10.0.0.21)  --TCP 5432, scram-sha-256-->  db1 (10.0.0.11:5432)  database shop, role app_user",
+    "caption": "Connection path for this part"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Create the role and database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as the postgres user.</b> A rule is useless if the role has no password: password methods always fail for a role whose stored password is null."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql <<'EOF'\nCREATE ROLE app_user LOGIN PASSWORD 'Str0ng#Pass';\nCREATE DATABASE shop OWNER app_user;\nSHOW password_encryption;\nSELECT rolname, left(rolpassword, 14) AS hash_start\n  FROM pg_authid WHERE rolname = 'app_user';\nEOF",
+    "caption": "Create a login role with a password and its database"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE ROLE\nCREATE DATABASE\n password_encryption \n---------------------\n scram-sha-256\n(1 row)\n\n rolname  |   hash_start   \n----------+----------------\n app_user | SCRAM-SHA-256$\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">password_encryption</code> (default <code class=\"inline-code\">scram-sha-256</code>) decides how a new password is hashed at the moment it is set. The stored value starts with <code class=\"inline-code\">SCRAM-SHA-256$</code>, so this role can use scram-sha-256 authentication. In real life, set passwords with the psql meta-command <code class=\"inline-code\">\\password app_user</code> so the plain password never appears in your shell history or the server log."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify</b> through the loopback rule (rule 3), from db1 itself:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "PGPASSWORD='Str0ng#Pass' psql -h 127.0.0.1 -U app_user -d shop \\\n  -c \"SELECT current_user, inet_client_addr(), inet_server_addr();\"",
+    "caption": "Test a password login over TCP"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-h 127.0.0.1",
+      "Connect over TCP/IP to this host instead of the Unix socket, so a host rule is used"
+     ],
+     [
+      "-U app_user",
+      "Database user name to connect as"
+     ],
+     [
+      "-d shop",
+      "Database to connect to"
+     ],
+     [
+      "-c",
+      "Run one command and exit"
+     ],
+     [
+      "PGPASSWORD",
+      "Environment variable with the password, used here only to make the test non-interactive"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " current_user | inet_client_addr | inet_server_addr \n--------------+------------------+------------------\n app_user     | 127.0.0.1        | 127.0.0.1\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Make the server listen on the network",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as your sudo user.</b> By default <code class=\"inline-code\">listen_addresses</code> is <code class=\"inline-code\">localhost</code>, so the server does not even accept TCP connections from other machines. This setting can only be set at server start, so it needs a restart. Using a conf.d file, as in Part 5:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# /etc/postgresql/18/main/conf.d/10-listen.conf\n# before: not set (default listen_addresses = 'localhost')\n# after:\nlisten_addresses = '*'",
+    "caption": "New file /etc/postgresql/18/main/conf.d/10-listen.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "echo \"listen_addresses = '*'\" | sudo -u postgres tee /etc/postgresql/18/main/conf.d/10-listen.conf\nsudo systemctl restart postgresql@18-main\nsudo -u postgres psql -c \"SHOW listen_addresses;\"",
+    "caption": "Listen on all interfaces and restart"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "listen_addresses = '*'\n listen_addresses \n------------------\n *\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">*</code> means all available IP interfaces. You can instead list specific addresses, for example <code class=\"inline-code\">'localhost, 10.0.0.11'</code>, to listen only on the private network. <b>Verify</b> in the server log:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo grep 'listening on' /var/log/postgresql/postgresql-18-main.log | tail -2",
+    "caption": "Check which addresses the server listens on"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-10-26 12:58:42.807 UTC [1485] LOG:  listening on IPv4 address \"0.0.0.0\", port 5432\n2026-10-26 12:58:42.811 UTC [1485] LOG:  listening on Unix socket \"/var/run/postgresql/.s.PGSQL.5432\"",
+    "caption": "Output (expected output: log file name for cluster 18 main; on a host with IPv6 you also see a line for \"::\")"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you only reload instead of restarting, the log says <code class=\"inline-code\">parameter \"listen_addresses\" cannot be changed without restarting the server</code> and nothing changes. <b>Undo:</b> <code class=\"inline-code\">sudo rm /etc/postgresql/18/main/conf.d/10-listen.conf</code> and restart again. Also allow port 5432 in any firewall (for example ufw) between app1 and db1, only from the app network."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now try to connect to db1 through its network address. From db1 itself this uses the 10.0.0.11 interface, so the loopback rules do not match:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "PGPASSWORD='Str0ng#Pass' psql -h 10.0.0.11 -U app_user -d shop -c \"SELECT 1;\"",
+    "caption": "Connect through the network address"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server at \"10.0.0.11\", port 5432 failed: FATAL:  no pg_hba.conf entry for host \"10.0.0.11\", user \"app_user\", database \"shop\", SSL encryption\nconnection to server at \"10.0.0.11\", port 5432 failed: FATAL:  no pg_hba.conf entry for host \"10.0.0.11\", user \"app_user\", database \"shop\", no encryption",
+    "caption": "Output (expected output: the address is your server's)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The server now listens, but no rule matches this address. psql tried twice because Ubuntu enables SSL by default: first with SSL encryption, then without. Neither matched any line, so the server refused both."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Add the rule and test it before reloading",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as your sudo user.</b> Back up the file, then add the new rule at the end with an editor such as nano:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo cp -p /etc/postgresql/18/main/pg_hba.conf /etc/postgresql/18/main/pg_hba.conf.bak\nsudo nano /etc/postgresql/18/main/pg_hba.conf",
+    "caption": "Back up and edit pg_hba.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before: the file ends with the \"host replication all ::1/128 scram-sha-256\" line\n# after: these lines added at the end\n\n# Application servers on the app network\nhost    shop            app_user        10.0.0.0/24             scram-sha-256",
+    "caption": "Lines added to /etc/postgresql/18/main/pg_hba.conf"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This rule allows only TCP connections, only to database shop, only as app_user, only from 10.0.0.0 to 10.0.0.255, and only with a SCRAM password. Keep rules this narrow; avoid <b>host all all 0.0.0.0/0</b>, which opens every database to the whole internet if the port is reachable."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before you reload, ask the server to parse the file. Here is what you see if you made a typo, writing <b>scram-sha256</b> without the second hyphen:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT line_number, auth_method, error\n  FROM pg_hba_file_rules\n WHERE error IS NOT NULL;",
+    "caption": "Look for errors in pg_hba.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " line_number | auth_method |                    error                     \n-------------+-------------+----------------------------------------------\n         135 |             | invalid authentication method \"scram-sha256\"\n(1 row)",
+    "caption": "Output (with the typo)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you reload with this error, the server logs the problem and <b>keeps using the old rules</b>. The connection still fails and only the log tells you why:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  received SIGHUP, reloading configuration files\nLOG:  invalid authentication method \"scram-sha256\"\nCONTEXT:  line 135 of configuration file \"/etc/postgresql/18/main/pg_hba.conf\"\nLOG:  /etc/postgresql/18/main/pg_hba.conf was not reloaded",
+    "caption": "Server log after reloading a broken file (expected output: path for 18; timestamps removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix the typo and run the check again. When the query returns no rows, look at the new rule:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT rule_number, line_number, type, database, user_name, address, netmask, auth_method\n  FROM pg_hba_file_rules\n WHERE line_number > 132;",
+    "caption": "Check the new rule"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " rule_number | line_number | type | database | user_name  | address  |    netmask    |  auth_method  \n-------------+-------------+------+----------+------------+----------+---------------+---------------\n           8 |         135 | host | {shop}   | {app_user} | 10.0.0.0 | 255.255.255.0 | scram-sha-256\n(1 row)",
+    "caption": "Output (expected output: address from the example network)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Reload and verify",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as your sudo user.</b> pg_hba.conf needs only a reload:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main\nsudo tail -1 /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Reload the configuration"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-10-26 12:59:10.926 UTC [1485] LOG:  received SIGHUP, reloading configuration files",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No \"was not reloaded\" line follows, so the new rules are active. <code class=\"inline-code\">SELECT pg_reload_conf();</code> as a superuser does the same thing. <b>Verify</b> from app1 (or from db1 with <code class=\"inline-code\">-h 10.0.0.11</code>):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "PGPASSWORD='Str0ng#Pass' psql -h 10.0.0.11 -U app_user -d shop \\\n  -c \"SELECT current_user, current_database(), inet_client_addr();\"",
+    "caption": "Connect through the new rule"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " current_user | current_database | inet_client_addr \n--------------+------------------+------------------\n app_user     | shop             | 10.0.0.11\n(1 row)",
+    "caption": "Output (expected output: from app1 the client address is 10.0.0.21)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now prove the rule is as narrow as you meant. The same user asking for another database is refused, because no line matches database postgres from this address:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server at \"10.0.0.11\", port 5432 failed: FATAL:  no pg_hba.conf entry for host \"10.0.0.11\", user \"app_user\", database \"postgres\", SSL encryption",
+    "caption": "Output of the same command with -d postgres (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> delete the two added lines (or <code class=\"inline-code\">sudo cp -p /etc/postgresql/18/main/pg_hba.conf.bak /etc/postgresql/18/main/pg_hba.conf</code>) and reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Rule order: first match wins",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Block one user with a reject rule",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as your sudo user.</b> To see first-match in action, add a reject line <b>above</b> the IPv4 loopback rule, so it is checked first:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before:\n# IPv4 local connections:\nhost    all             all             127.0.0.1/32            scram-sha-256\n\n# after:\nhost    shop            app_user        127.0.0.1/32            reject\n# IPv4 local connections:\nhost    all             all             127.0.0.1/32            scram-sha-256",
+    "caption": "Edit in /etc/postgresql/18/main/pg_hba.conf"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Check the order, then reload:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT rule_number, line_number, database, user_name, address, auth_method\n  FROM pg_hba_file_rules\n WHERE type = 'host' AND rule_number <= 4;\nSELECT pg_reload_conf();",
+    "caption": "Check rule order and reload"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " rule_number | line_number | database | user_name  |  address  |  auth_method  \n-------------+-------------+----------+------------+-----------+---------------\n           3 |         124 | {shop}   | {app_user} | 127.0.0.1 | reject\n           4 |         126 | {all}    | {all}      | 127.0.0.1 | scram-sha-256\n(2 rows)\n\n pg_reload_conf \n----------------\n t\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify</b> with two connections from db1:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "PGPASSWORD='Str0ng#Pass' psql -h 127.0.0.1 -U app_user -d shop -c \"SELECT 1;\"\nPGPASSWORD='Str0ng#Pass' psql -h 127.0.0.1 -U app_user -d postgres -c \"SELECT current_user, current_database();\"",
+    "caption": "Test both databases"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server at \"127.0.0.1\", port 5432 failed: FATAL:  pg_hba.conf rejects connection for host \"127.0.0.1\", user \"app_user\", database \"shop\", SSL encryption\nconnection to server at \"127.0.0.1\", port 5432 failed: FATAL:  pg_hba.conf rejects connection for host \"127.0.0.1\", user \"app_user\", database \"shop\", no encryption\n current_user | current_database \n--------------+------------------\n app_user     | postgres\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The correct password did not help for shop: rule 3 matched first and its method is reject, so the server never looked at rule 4. For database postgres, rule 3 does not match, so rule 4 applies and the password works. The lesson: put narrow rules first and broad rules last. A broad rule high in the file silently hides every rule below it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> delete the reject line and reload. Rule numbers return to what you saw in Step 3."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Moving from MD5 to SCRAM",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL 18 deprecates MD5 passwords: support will be removed in a future major release. Servers upgraded from old versions often still have roles with MD5 hashes. An MD5 hash cannot be used with scram-sha-256, so those users fail to log in the day you switch the rules."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Find roles with MD5 passwords",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as the postgres user.</b> To have something to find, create an old-style role. The <code class=\"inline-code\">SET</code> changes <code class=\"inline-code\">password_encryption</code> for this session only:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET password_encryption = 'md5';\nCREATE ROLE legacy_user LOGIN PASSWORD 'Old#Pass1';\nRESET password_encryption;",
+    "caption": "Create a role with an MD5 password (test only)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On PostgreSQL 18 the CREATE ROLE prints a deprecation warning:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "WARNING:  setting an MD5-encrypted password\nDETAIL:  MD5 password support is deprecated and will be removed in a future release of PostgreSQL.\nHINT:  Refer to the PostgreSQL documentation for details about migrating to another password type.\nCREATE ROLE",
+    "caption": "Output (expected output on PostgreSQL 18)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can turn this warning off with <code class=\"inline-code\">md5_password_warnings = off</code> (new in PostgreSQL 18, default on), but it is better to fix the passwords. List every role whose stored hash is MD5:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT rolname, left(rolpassword, 14) AS hash_start\n  FROM pg_authid\n WHERE rolpassword LIKE 'md5%';",
+    "caption": "Find MD5 password hashes"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "   rolname   |   hash_start   \n-------------+----------------\n legacy_user | md55804793cdf4\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Re-set the password and switch the rule",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documented order is: make sure every client library supports SCRAM, keep <code class=\"inline-code\">password_encryption = scram-sha-256</code> (the default), have each user set a new password, then change the method in pg_hba.conf from md5 to scram-sha-256. Re-set the password:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER ROLE legacy_user PASSWORD 'New#Pass2';\nSELECT rolname, left(rolpassword, 14) AS hash_start\n  FROM pg_authid\n WHERE rolname IN ('app_user', 'legacy_user')\n ORDER BY rolname;",
+    "caption": "Re-hash the password with SCRAM and verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER ROLE\n   rolname   |   hash_start   \n-------------+----------------\n app_user    | SCRAM-SHA-256$\n legacy_user | SCRAM-SHA-256$\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "While you migrate, a line with method md5 still works for users who already have SCRAM hashes: the server automatically uses SCRAM for them. That lets you convert users one by one and change md5 to scram-sha-256 in pg_hba.conf at the end, followed by a reload. <b>Cleanup:</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"DROP ROLE legacy_user;\"",
+    "caption": "Remove the test role"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: no pg_hba.conf entry for host \"...\", user \"...\", database \"...\", no encryption",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No line matches this combination of type, address, database and user. Copy the three values from the message and compare them with <code class=\"inline-code\">pg_hba_file_rules</code>. Usual causes: the client address is outside the CIDR range, the database name is different (if the client gives no database, it defaults to the user name), or you edited the file but did not reload. The words \"SSL encryption\" or \"no encryption\" tell you which attempt was refused; a <code class=\"inline-code\">hostssl</code> line never matches a non-SSL attempt."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: pg_hba.conf rejects connection for host \"...\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A reject line matched first. Find it in pg_hba_file_rules, then move your allow rule above it or narrow the reject rule."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: password authentication failed for user \"...\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A line matched and asked for a password, but the check failed. The client sees the same message for a wrong password, a role with no password and a role that does not exist. The server log has the real reason and the matching line:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "FATAL:  password authentication failed for user \"no_pw_user\"\nDETAIL:  User \"no_pw_user\" has no password assigned.\n\tConnection matched file \"/etc/postgresql/18/main/pg_hba.conf\" line 125: \"host    all             all             127.0.0.1/32            scram-sha-256\"",
+    "caption": "Server log (expected output: path for 18)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Other DETAIL lines you will see are <code class=\"inline-code\">Role \"ghost\" does not exist.</code> and, for a role that still has an MD5 hash on a scram-sha-256 line, <code class=\"inline-code\">User \"legacy_user\" does not have a valid SCRAM secret.</code>. Fix: <code class=\"inline-code\">\\password username</code> in psql as a superuser. Find login roles without a password with <code class=\"inline-code\">SELECT rolname FROM pg_authid WHERE rolcanlogin AND rolpassword IS NULL;</code> (postgres appears there by design: it logs in with peer)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: Peer authentication failed for user \"postgres\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You ran <code class=\"inline-code\">psql -U postgres</code> as a Linux user that is not postgres. Use <code class=\"inline-code\">sudo -u postgres psql</code>. Do not \"fix\" this by changing peer to trust."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Connection refused or timeout from another machine",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the error says connection refused or times out instead of a FATAL message, the client never reached the server. Check <code class=\"inline-code\">listen_addresses</code> (and that you restarted), and the firewall. pg_hba.conf is checked only after the TCP connection succeeds."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Edited the file but nothing changed",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You did not reload, or the reload failed. Search the log for <code class=\"inline-code\">was not reloaded</code> and query pg_hba_file_rules for errors."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "",
+    "text": "Never put <b>trust</b> on a host line in production, even \"just for a minute\" to recover a password. Anyone who can reach the port can then connect as any user, including postgres. To reset a lost password, use <b>sudo -u postgres psql</b> through the existing peer rule and run \\password."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Create a role report_user with a password and allow it to connect only to database shop, only from the single address 10.0.0.30, with scram-sha-256. Check the rule with pg_hba_file_rules before you reload.",
+      "items": []
+     },
+     {
+      "content": "Write the same rule by mistake as 10.0.0.30/24, query pg_hba_file_rules, and look at the error, address and netmask columns. Which clients does this line really allow? Then fix it.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "Answer: <b>CREATE ROLE report_user LOGIN PASSWORD '...';</b> then add <b>host shop report_user 10.0.0.30/32 scram-sha-256</b> and run <b>SELECT pg_reload_conf();</b>. For task 2, the error column is empty: the file loads without complaint, and the view shows address 10.0.0.30 with netmask 255.255.255.0. The server compares only the first 24 bits, so the line allows the whole 10.0.0.x network. Always use /32 for one IPv4 host and check the netmask column."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Where is pg_hba.conf?\nsudo -u postgres psql -c \"SHOW hba_file;\"\n\n# Show the active rules without comments\nsudo grep -vE '^\\s*(#|$)' /etc/postgresql/18/main/pg_hba.conf\n\n# Parse the file from SQL (on-disk contents, before reload)\nsudo -u postgres psql -c \"SELECT rule_number, line_number, type, database, user_name, address, auth_method, error FROM pg_hba_file_rules;\"\n\n# Create a role with a SCRAM password and its database\nsudo -u postgres psql -c \"CREATE ROLE app_user LOGIN PASSWORD 'Str0ng#Pass';\"\nsudo -u postgres psql -c \"CREATE DATABASE shop OWNER app_user;\"\n\n# Listen on the network (restart needed)\necho \"listen_addresses = '*'\" | sudo -u postgres tee /etc/postgresql/18/main/conf.d/10-listen.conf\nsudo systemctl restart postgresql@18-main\n\n# Back up and edit pg_hba.conf, add:\n#   host  shop  app_user  10.0.0.0/24  scram-sha-256\nsudo cp -p /etc/postgresql/18/main/pg_hba.conf /etc/postgresql/18/main/pg_hba.conf.bak\nsudo nano /etc/postgresql/18/main/pg_hba.conf\n\n# Check for errors before reloading\nsudo -u postgres psql -c \"SELECT line_number, error FROM pg_hba_file_rules WHERE error IS NOT NULL;\"\n\n# Reload and check the log\nsudo systemctl reload postgresql@18-main\nsudo tail -3 /var/log/postgresql/postgresql-18-main.log\n\n# Test a connection over TCP\npsql -h 10.0.0.11 -U app_user -d shop -c \"SELECT current_user, inet_client_addr();\"\n\n# Find roles still using MD5 hashes\nsudo -u postgres psql -c \"SELECT rolname FROM pg_authid WHERE rolpassword LIKE 'md5%';\"",
+    "caption": "Every command from this part"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "pg_hba.conf decides who may connect, to which database, from where, and with which method; on Ubuntu it is /etc/postgresql/18/main/pg_hba.conf",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "The first matching line wins, and there is no fall-through: narrow rules go first",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use peer for local admin access and scram-sha-256 for passwords; never trust on network lines",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Remote access needs listen_addresses (restart) plus a host rule (reload)",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Test with pg_hba_file_rules before every reload; a broken file is not loaded",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Find MD5 hashes in pg_authid and re-set those passwords, since PostgreSQL 18 deprecates MD5",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "When a login fails, read the server log: it names the reason and the matching line",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 7 you will learn roles, users, groups and privileges: GRANT, REVOKE and default privileges."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "A correct password can still be refused by PostgreSQL. The reason is almost always one line in pg_hba.conf.\n\nPart 6 of my PostgreSQL DBA series is about client authentication. What to know:\n\n→ The first matching line wins. If it fails, PostgreSQL does not try the next one. Put narrow rules first.\n→ Remote access needs two changes: listen_addresses = '*' (restart) and a host line in pg_hba.conf (reload).\n→ Test before you reload: SELECT line_number, error FROM pg_hba_file_rules WHERE error IS NOT NULL;\n→ A broken file is not loaded at all. The log says \"pg_hba.conf was not reloaded\" and the old rules stay.\n→ PostgreSQL 18 deprecates MD5 passwords. Find them with WHERE rolpassword LIKE 'md5%' and re-set them so they are stored as SCRAM.\n\nEvery step is tested on Ubuntu with PostgreSQL 18, with real output and the exact error messages.\n\nWhich authentication error has cost you the most time: \"no pg_hba.conf entry\" or \"password authentication failed\"?\n\nFollow along for Part 7: roles and privileges.\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "pg_hba.conf, step by step",
+    "body": "PostgreSQL DBA Part 6: who may connect, from where, and how"
+   },
+   {
+    "title": "One rule, five columns",
+    "points": [
+     "TYPE: local (socket) or host (TCP)",
+     "DATABASE and USER: who asks for what",
+     "ADDRESS: where they come from, in CIDR",
+     "METHOD: peer, scram-sha-256, reject"
+    ]
+   },
+   {
+    "title": "First match wins",
+    "body": "PostgreSQL reads the file top to bottom and uses the first matching line. If that line fails, it never tries the next one. Narrow rules go first, broad rules last."
+   },
+   {
+    "title": "Step 1: listen on the network",
+    "points": [
+     "Default listen_addresses is localhost",
+     "Set it in conf.d and restart the cluster",
+     "Then add a host rule and reload"
+    ],
+    "code": "ALTER SYSTEM SET\n  listen_addresses = '*';\n-- then restart postgresql@18-main",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 2: test before you reload",
+    "body": "pg_hba_file_rules parses the file as it is on disk. A row with an error means the reload would be refused and the old rules would stay.",
+    "code": "SELECT line_number, error\n  FROM pg_hba_file_rules\n WHERE error IS NOT NULL;\nSELECT pg_reload_conf();",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 3: move off MD5",
+    "points": [
+     "PostgreSQL 18 deprecates MD5 passwords",
+     "Find them, then re-set each password",
+     "Then change md5 to scram-sha-256"
+    ],
+    "code": "SELECT rolname\n  FROM pg_authid\n WHERE rolpassword LIKE 'md5%';",
+    "lang": "postgresql"
+   }
+  ]
+ }
+}

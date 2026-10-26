@@ -4,3 +4,4 @@
 - Part 3 | postgresql-dba-part-3-data-directory-pgdata | 2026-10-21
 - Part 4 | postgresql-dba-part-4-psql-commands | 2026-10-22
 - Part 5 | postgresql-dba-part-5-postgresql-conf-basics | 2026-10-23
+- Part 6 | postgresql-dba-part-6-pg-hba-conf-authentication | 2026-10-26

@@ -21,3 +21,4 @@
 - 2026-10-25 [Oracle] oracle function based index -> _drafts/2026-10-25-oracle-oracle-function-based-index.json
 - 2026-10-25 [PostgreSQL] postgresql recursive cte -> _drafts/2026-10-25-postgresql-postgresql-recursive-cte.json
 - 2026-10-26 [Oracle] pragma autonomous_transaction in oracle -> _drafts/2026-10-26-oracle-pragma-autonomous-transaction-in-oracle.json
+- 2026-10-26 [PostgreSQL] postgresql pg_hba.conf allow remote connections -> _drafts/2026-10-26-postgresql-postgresql-dba-part-6-pg-hba-conf-authentication.json
