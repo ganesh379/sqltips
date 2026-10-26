@@ -20,3 +20,4 @@
 - 2026-10-24 [PostgreSQL] postgresql uuidv7 -> _drafts/2026-10-24-postgresql-postgresql-uuidv7.json
 - 2026-10-25 [Oracle] oracle function based index -> _drafts/2026-10-25-oracle-oracle-function-based-index.json
 - 2026-10-25 [PostgreSQL] postgresql recursive cte -> _drafts/2026-10-25-postgresql-postgresql-recursive-cte.json
+- 2026-10-26 [Oracle] pragma autonomous_transaction in oracle -> _drafts/2026-10-26-oracle-pragma-autonomous-transaction-in-oracle.json

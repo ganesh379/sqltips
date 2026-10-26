@@ -1,0 +1,765 @@
+{
+  "schemaVersion": 1,
+  "title": "PRAGMA AUTONOMOUS_TRANSACTION in Oracle: Examples and Pitfalls",
+  "slug": "pragma-autonomous-transaction-in-oracle",
+  "category": "plsql",
+  "description": "Learn PRAGMA AUTONOMOUS_TRANSACTION in Oracle with examples: error logging that survives rollback, audit triggers, and fixes for ORA-06519.",
+  "focusKeyword": "pragma autonomous_transaction in oracle",
+  "tags": [
+    "oracle",
+    "plsql",
+    "transactions",
+    "triggers",
+    "error-handling"
+  ],
+  "related": [
+    "/posts/plsql/understanding-oracle-triggers-a-comprehensive-guide-with-examples/",
+    "/posts/plsql/oracle-blocking-sessions-query/",
+    "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: Autonomous Transactions",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/autonomous-transactions.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: AUTONOMOUS_TRANSACTION Pragma",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/AUTONOMOUS_TRANSACTION-pragma.html"
+    },
+    {
+      "title": "Oracle error help: ORA-06519",
+      "url": "https://docs.oracle.com/en/error-help/db/ora-06519/"
+    }
+  ],
+  "reviewNotes": "Examples written from the Oracle 19c PL/SQL Language Reference; none were run, so all outputs need a test run (SQL*Plus column widths will differ). Please verify: (1) the self-deadlock example raises ORA-00060 (docs only say 'a deadlock can occur' and an exception is raised in the autonomous transaction); (2) the ORA-14551 message text on your version; (3) the claim that an autonomous row trigger avoids ORA-04091 but does not see the triggering statement's changes (widely documented, not stated on the cited pages); (4) the PostgreSQL dblink workaround mention. Identity column in the setup needs 12c+.",
+  "generatedAt": "2026-10-26T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">PRAGMA AUTONOMOUS_TRANSACTION</code> tells Oracle to run a procedure, function, trigger or top-level anonymous block in its own separate transaction. That routine can <code class=\"inline-code\">COMMIT</code> or <code class=\"inline-code\">ROLLBACK</code> its own work without committing or rolling back the work of the code that called it. The classic use is an error log: the business change rolls back, but the log row stays."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This tutorial shows how the pragma works, with runnable examples for a logging procedure, an audit trigger and a function called from a query. It also covers the errors you will hit (ORA-06519, ORA-14551, ORA-00060) and the cases where you should not use an autonomous transaction at all."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How an autonomous transaction works",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Normally, everything your session does between two commits is one transaction. If a procedure you call commits, it commits everything, including the half-finished work of the caller. That is usually not what you want."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "An autonomous transaction is different. When execution enters the body of a routine marked with <code class=\"inline-code\">PRAGMA AUTONOMOUS_TRANSACTION</code>, Oracle suspends the main transaction and starts a new, independent one. When the routine returns, the main transaction resumes exactly where it was. The two transactions share no locks and have no commit dependency on each other."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The Oracle documentation lists the differences from a normal (nested) call:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Behaviour",
+            "Normal procedure call",
+            "Autonomous routine"
+          ],
+          [
+            "Transaction",
+            "Same as the caller",
+            "New, independent transaction"
+          ],
+          [
+            "COMMIT inside it",
+            "Commits the caller's work too",
+            "Commits only its own work"
+          ],
+          [
+            "Caller rolls back later",
+            "Its changes are rolled back",
+            "Its committed changes stay"
+          ],
+          [
+            "Sees caller's uncommitted changes",
+            "Yes",
+            "No"
+          ],
+          [
+            "Shares caller's locks",
+            "Yes",
+            "No (it can block on them)"
+          ],
+          [
+            "Unhandled exception",
+            "Statement-level rollback",
+            "Transaction-level rollback"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Where you can use the pragma",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "According to the PL/SQL Language Reference (19c), the pragma can mark these routines:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "A schema-level (not nested) anonymous PL/SQL block",
+            "items": []
+          },
+          {
+            "content": "A standalone procedure or function, a package subprogram, or a nested subprogram",
+            "items": []
+          },
+          {
+            "content": "A method of an object type (ADT)",
+            "items": []
+          },
+          {
+            "content": "A simple (noncompound) trigger",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You cannot mark a whole package as autonomous. You put the pragma in each subprogram that needs it. The pragma can appear anywhere in the declarative section, but Oracle recommends putting it first so readers see it immediately."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "We will use a small <code class=\"inline-code\">orders</code> table and an <code class=\"inline-code\">error_log</code> table. Run this in a test schema to follow along."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE orders (\n  order_id     NUMBER PRIMARY KEY,\n  customer_id  NUMBER       NOT NULL,\n  amount       NUMBER(10,2) NOT NULL,\n  status       VARCHAR2(20) NOT NULL\n);\n\nCREATE TABLE error_log (\n  log_id     NUMBER GENERATED ALWAYS AS IDENTITY,\n  logged_at  TIMESTAMP DEFAULT SYSTIMESTAMP,\n  source     VARCHAR2(60),\n  message    VARCHAR2(4000)\n);\n\nINSERT INTO orders VALUES (101, 1, 2500.00, 'NEW');\nINSERT INTO orders VALUES (102, 2,  800.00, 'NEW');\nINSERT INTO orders VALUES (103, 1, 1200.00, 'SHIPPED');\nCOMMIT;",
+        "caption": "Sample tables and data"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Identity columns need Oracle 12c or later. On 11g, use a sequence for <code class=\"inline-code\">log_id</code> instead."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 1: an error log that survives a rollback",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: see the problem with a normal procedure",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Here is a logging procedure without the pragma, and a block that updates an order, hits an error, logs it and rolls back."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE PROCEDURE log_error_plain (\n  p_source  IN VARCHAR2,\n  p_message IN VARCHAR2\n) AS\nBEGIN\n  INSERT INTO error_log (source, message)\n  VALUES (p_source, p_message);\nEND;\n/\n\nBEGIN\n  UPDATE orders SET status = 'PAID' WHERE order_id = 101;\n  RAISE_APPLICATION_ERROR(-20001, 'Payment gateway timeout');\nEXCEPTION\n  WHEN OTHERS THEN\n    log_error_plain('pay_order', SQLERRM);\n    ROLLBACK;\nEND;\n/\n\nSELECT COUNT(*) FROM error_log;",
+        "caption": "Logging without an autonomous transaction"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "  COUNT(*)\n----------\n         0",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The log row is gone. The <code class=\"inline-code\">INSERT</code> into <code class=\"inline-code\">error_log</code> was part of the same transaction as the <code class=\"inline-code\">UPDATE</code>, so the <code class=\"inline-code\">ROLLBACK</code> removed both. Adding a <code class=\"inline-code\">COMMIT</code> inside <code class=\"inline-code\">log_error_plain</code> would be worse: it would also commit the half-done <code class=\"inline-code\">UPDATE</code> on order 101."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: make the logger autonomous",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE PROCEDURE log_error (\n  p_source  IN VARCHAR2,\n  p_message IN VARCHAR2\n) AS\n  PRAGMA AUTONOMOUS_TRANSACTION;\nBEGIN\n  INSERT INTO error_log (source, message)\n  VALUES (p_source, p_message);\n  COMMIT;  -- commits only this INSERT\nEND;\n/",
+        "caption": "Autonomous logging procedure"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now run the same failing block, calling the new procedure:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  UPDATE orders SET status = 'PAID' WHERE order_id = 101;\n  RAISE_APPLICATION_ERROR(-20001, 'Payment gateway timeout');\nEXCEPTION\n  WHEN OTHERS THEN\n    log_error('pay_order', SQLERRM);\n    ROLLBACK;\nEND;\n/\n\nSELECT source, message FROM error_log;\nSELECT order_id, status FROM orders WHERE order_id = 101;",
+        "caption": "The log row is kept, the order change is not"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "SOURCE      MESSAGE\n----------- ------------------------------------\npay_order   ORA-20001: Payment gateway timeout\n\n  ORDER_ID STATUS\n---------- --------------------\n       101 NEW",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is exactly the result you want. The error is recorded and committed, while the <code class=\"inline-code\">UPDATE</code> on order 101 was rolled back and its status is still <code class=\"inline-code\">NEW</code>. The <code class=\"inline-code\">COMMIT</code> inside <code class=\"inline-code\">log_error</code> touched only the log row because it ran in its own transaction."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "",
+        "text": "Put the logger in a package (for example <code class=\"inline-code\">app_log.error</code>) and call it from every exception handler. Callers do not need to know it commits, and you get one place to add extra columns such as <code class=\"inline-code\">DBMS_UTILITY.FORMAT_ERROR_BACKTRACE</code> later."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 2: an audit trigger that logs even rolled-back changes",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A normal trigger cannot run <code class=\"inline-code\">COMMIT</code> or <code class=\"inline-code\">ROLLBACK</code>. The Oracle docs state that a trigger must be autonomous to run transaction control (TCL) or DDL statements, and DDL must go through native dynamic SQL (<code class=\"inline-code\">EXECUTE IMMEDIATE</code>)."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A common use is to record every attempted change, including ones the application later rolls back. That is useful when you are investigating who tried to change sensitive data."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE TABLE order_audit (\n  order_id    NUMBER,\n  old_amount  NUMBER(10,2),\n  new_amount  NUMBER(10,2),\n  changed_by  VARCHAR2(128),\n  changed_at  DATE\n);\n\nCREATE OR REPLACE TRIGGER trg_orders_amount_audit\n  BEFORE UPDATE OF amount ON orders\n  FOR EACH ROW\nDECLARE\n  PRAGMA AUTONOMOUS_TRANSACTION;\nBEGIN\n  INSERT INTO order_audit\n  VALUES (:OLD.order_id, :OLD.amount, :NEW.amount, USER, SYSDATE);\n  COMMIT;\nEND;\n/",
+        "caption": "Autonomous audit trigger"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now commit one change and roll back another:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "UPDATE orders SET amount = 2600 WHERE order_id = 101;\nCOMMIT;\n\nUPDATE orders SET amount = 50 WHERE order_id = 102;\nROLLBACK;\n\nSELECT order_id, old_amount, new_amount FROM order_audit;\nSELECT order_id, amount FROM orders WHERE order_id IN (101, 102);",
+        "caption": "Committed and rolled-back updates"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "  ORDER_ID OLD_AMOUNT NEW_AMOUNT\n---------- ---------- ----------\n       101       2500       2600\n       102        800         50\n\n  ORDER_ID     AMOUNT\n---------- ----------\n       101       2600\n       102        800",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Both attempts appear in <code class=\"inline-code\">order_audit</code>, but order 102 still has its original amount of 800. The audit table tells you someone tried to change it to 50, even though that change never became permanent."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "",
+        "text": "Use this only when you really want rolled-back attempts in the log. For a normal audit trail of committed changes, use an ordinary (non-autonomous) trigger so the audit row commits or rolls back together with the data. Otherwise your audit table will report changes that never happened, and readers may trust it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 3: calling a function that writes data from a SELECT",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle stops a function from changing data when you call it inside a query. Here is a function that logs and returns a value:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE FUNCTION tag_order_plain (p_order_id NUMBER)\n  RETURN VARCHAR2\nAS\nBEGIN\n  INSERT INTO error_log (source, message)\n  VALUES ('report', 'Viewed order ' || p_order_id);\n  RETURN 'ORDER-' || p_order_id;\nEND;\n/\n\nSELECT tag_order_plain(order_id) FROM orders;",
+        "caption": "DML inside a function called from SQL"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-14551: cannot perform a DML operation inside a query",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The same function with the pragma and a <code class=\"inline-code\">COMMIT</code> runs, because the insert happens in a separate transaction and does not affect the query's read consistency:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE FUNCTION tag_order (p_order_id NUMBER)\n  RETURN VARCHAR2\nAS\n  PRAGMA AUTONOMOUS_TRANSACTION;\nBEGIN\n  INSERT INTO error_log (source, message)\n  VALUES ('report', 'Viewed order ' || p_order_id);\n  COMMIT;\n  RETURN 'ORDER-' || p_order_id;\nEND;\n/\n\nSELECT order_id, tag_order(order_id) AS tag\n  FROM orders\n ORDER BY order_id;",
+        "caption": "Autonomous function called from a query"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "  ORDER_ID TAG\n---------- ----------------\n       101 ORDER-101\n       102 ORDER-102\n       103 ORDER-103",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Be careful with this pattern. The function runs once per row the query evaluates (and the optimizer decides how often that is), and every call is a separate commit. On a large result set that means many small transactions and a lot of redo. It is fine for debugging, not for production reports."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What the autonomous transaction can and cannot see",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Because it is a separate transaction, an autonomous routine does not see the caller's uncommitted changes. This surprises many developers, so it is worth a test:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE PROCEDURE count_new_orders AS\n  PRAGMA AUTONOMOUS_TRANSACTION;\n  l_cnt NUMBER;\nBEGIN\n  SELECT COUNT(*) INTO l_cnt FROM orders WHERE status = 'NEW';\n  DBMS_OUTPUT.PUT_LINE('Autonomous sees NEW: ' || l_cnt);\n  COMMIT;\nEND;\n/\n\nSET SERVEROUTPUT ON\nDECLARE\n  l_cnt NUMBER;\nBEGIN\n  UPDATE orders SET status = 'NEW' WHERE order_id = 103;\n  SELECT COUNT(*) INTO l_cnt FROM orders WHERE status = 'NEW';\n  DBMS_OUTPUT.PUT_LINE('Main sees NEW: ' || l_cnt);\n  count_new_orders;\n  ROLLBACK;\nEND;\n/",
+        "caption": "Visibility test"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Main sees NEW: 3\nAutonomous sees NEW: 2",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The main transaction sees its own uncommitted update on order 103, so it counts 3. The autonomous procedure sees only committed data, so it counts 2. The other direction works too: when an autonomous routine commits, the main transaction sees those changes after it resumes, as long as it uses the default <code class=\"inline-code\">READ COMMITTED</code> isolation level. Under <code class=\"inline-code\">SERIALIZABLE</code>, it does not."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Forgetting to commit or roll back: ORA-06519",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "An autonomous routine must end its transaction before it returns. If you leave out the commit, Oracle rolls back the autonomous work and raises:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-06519: active autonomous transaction detected and rolled back",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Fix it by ending every path through the routine with <code class=\"inline-code\">COMMIT</code> or <code class=\"inline-code\">ROLLBACK</code>, including the exception handler. A routine that only reads data and starts no transaction does not need one, but adding <code class=\"inline-code\">COMMIT</code> after DML is the rule to remember."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Updating a row the caller has locked: deadlock",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The autonomous transaction does not share the caller's locks. If the caller has updated a row and the autonomous routine tries to update the same row, the autonomous transaction waits for a lock held by a transaction that is suspended until it finishes. It can never get that lock."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE PROCEDURE mark_order_checked (p_id NUMBER) AS\n  PRAGMA AUTONOMOUS_TRANSACTION;\nBEGIN\n  UPDATE orders SET status = 'CHECKED' WHERE order_id = p_id;\n  COMMIT;\nEND;\n/\n\nBEGIN\n  UPDATE orders SET status = 'PAID' WHERE order_id = 101;\n  mark_order_checked(101);   -- same row, locked by the caller\nEND;\n/",
+        "caption": "Self-deadlock between main and autonomous transaction"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-00060: deadlock detected while waiting for resource",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle detects the deadlock and raises the error inside the autonomous transaction. The fix is design, not tuning: never let an autonomous routine touch rows the calling transaction has changed. If the work belongs with the caller's change, it should be part of the caller's transaction."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Using it to hide the mutating table error",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Developers sometimes add the pragma to a row-level trigger to get around <code class=\"inline-code\">ORA-04091: table is mutating</code>. The error goes away, but the trigger now queries the table as a separate transaction. It does not see the rows changed by the statement that fired it, so any check or total it calculates can be wrong. Use a compound trigger or move the logic into the calling procedure instead."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Committing business data in an autonomous routine",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If an autonomous procedure inserts an order line and commits, and the caller then fails and rolls back the order header, you are left with an orphan line. Autonomous transactions break the all-or-nothing rule on purpose. Use them only for data that must survive independently, such as logs, audit attempts and retry counters."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Trying to make a nested block or a whole package autonomous",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The pragma is allowed only in a top-level anonymous block, not in a <code class=\"inline-code\">DECLARE ... BEGIN ... END</code> block nested inside another block. It also cannot be placed in a package specification to cover all subprograms. Put it in the declaration section of each subprogram that needs it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Best practices",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Keep autonomous routines small and focused: one insert and one <code class=\"inline-code\">COMMIT</code> is the ideal logging procedure.",
+            "items": []
+          },
+          {
+            "content": "Handle errors inside the routine. A logger that raises an exception can hide the original error, so consider a <code class=\"inline-code\">WHEN OTHERS</code> handler that rolls back and stays quiet, but only in the logger itself.",
+            "items": []
+          },
+          {
+            "content": "Never update rows the caller may have locked.",
+            "items": []
+          },
+          {
+            "content": "Remember each autonomous call is a real commit, with its own redo and log file sync wait. Calling one inside a loop over many rows is slow. Collect messages and log once where you can.",
+            "items": []
+          },
+          {
+            "content": "The <code class=\"inline-code\">TRANSACTIONS</code> initialization parameter limits concurrent transactions, and each autonomous transaction counts in addition to the main one. This rarely matters, but keep it in mind for deep call chains.",
+            "items": []
+          },
+          {
+            "content": "Name and document autonomous routines clearly so other developers know a commit happens inside.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can we use COMMIT inside a trigger in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Only in an autonomous trigger. A normal trigger that runs <code class=\"inline-code\">COMMIT</code> fails at run time. With <code class=\"inline-code\">PRAGMA AUTONOMOUS_TRANSACTION</code> in the trigger's declaration section, the commit applies only to the trigger's own work, not to the statement that fired it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can I use PRAGMA AUTONOMOUS_TRANSACTION in a function?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Yes. Standalone functions, package functions and nested functions can all be autonomous. This is also the only way to call a function that performs DML from a SELECT statement without getting ORA-14551."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between a nested transaction and an autonomous transaction?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A nested (normal) call is part of the caller's transaction: it shares locks, sees uncommitted changes and is rolled back with the caller. An autonomous transaction is independent: it has its own locks, sees only committed data, and its committed changes stay even if the caller rolls back."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Is COMMIT mandatory in an autonomous transaction?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If the routine runs any DML, yes. You must end it with <code class=\"inline-code\">COMMIT</code> or <code class=\"inline-code\">ROLLBACK</code> before returning, or Oracle raises ORA-06519 and rolls the work back."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Does PostgreSQL have PRAGMA AUTONOMOUS_TRANSACTION?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "No. PostgreSQL has no built-in autonomous transactions. A common workaround is to run the logging statement over a separate connection, for example with the <code class=\"inline-code\">dblink</code> extension. If you migrate Oracle code, plan for this early."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "<code class=\"inline-code\">PRAGMA AUTONOMOUS_TRANSACTION</code> runs a routine in its own independent transaction.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Its COMMIT and ROLLBACK affect only its own work, and its committed changes survive a caller rollback.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use it for error logs, audit of attempted changes and debug output from queries.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Always end the routine with COMMIT or ROLLBACK to avoid ORA-06519.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Never touch rows the caller has locked, or you get ORA-00060.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "It does not see the caller's uncommitted changes, so do not use it to dodge the mutating table error.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Keep business data in the caller's transaction.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your error log row vanished after ROLLBACK, so you have no idea why the payment failed.\n\nThe log INSERT ran in the same transaction as the failed UPDATE, so the rollback removed both.\n\nPRAGMA AUTONOMOUS_TRANSACTION fixes this in Oracle:\n→ Add it to the declaration section of your logging procedure. It now runs in its own transaction.\n→ Its COMMIT saves only the log row. The caller's half-done UPDATE is untouched and can still roll back.\n→ Always end it with COMMIT or ROLLBACK, or you get ORA-06519 and the log is rolled back.\n→ It does not share the caller's locks. Updating a row the caller already changed gives ORA-00060, a deadlock with yourself.\n→ It sees only committed data, so adding it to a trigger to dodge the mutating table error gives wrong results.\n\nKeep business data in the main transaction. Use autonomous routines for logs, audit attempts and retry counters.\n\nWhere do you use autonomous transactions in your projects, and have they ever caused a bug?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #PLSQL #OracleSQL #SQLInterview",
+    "slides": [
+      {
+        "title": "PRAGMA AUTONOMOUS_TRANSACTION in Oracle",
+        "body": "Keep your error logs when everything else rolls back"
+      },
+      {
+        "title": "The problem",
+        "points": [
+          "Your logger inserts into error_log",
+          "The caller then runs ROLLBACK",
+          "The log row is rolled back too",
+          "A COMMIT in the logger would commit the caller's work"
+        ]
+      },
+      {
+        "title": "The fix: an autonomous logger",
+        "code": "CREATE OR REPLACE PROCEDURE log_error (\n  p_msg IN VARCHAR2\n) AS\n  PRAGMA AUTONOMOUS_TRANSACTION;\nBEGIN\n  INSERT INTO error_log (message)\n  VALUES (p_msg);\n  COMMIT;\nEND;",
+        "lang": "plsql"
+      },
+      {
+        "title": "How it behaves",
+        "points": [
+          "The caller's transaction is suspended while it runs",
+          "Its COMMIT saves only its own rows",
+          "It does not see the caller's uncommitted changes",
+          "Its committed rows stay after the caller rolls back"
+        ]
+      },
+      {
+        "title": "Use it from a query",
+        "body": "A function that does DML fails in a SELECT with ORA-14551. Mark it autonomous and commit inside, and it works. Each call is a commit, so keep it for debugging.",
+        "code": "SELECT order_id,\n       tag_order(order_id) AS tag\n  FROM orders;",
+        "lang": "sql"
+      },
+      {
+        "title": "Three traps",
+        "points": [
+          "No COMMIT or ROLLBACK before return: ORA-06519",
+          "Updating a row the caller locked: ORA-00060",
+          "Hiding ORA-04091 in a trigger gives wrong results"
+        ]
+      }
+    ]
+  }
+}
