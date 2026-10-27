@@ -23,3 +23,4 @@
 - 2026-10-26 [Oracle] pragma autonomous_transaction in oracle -> _drafts/2026-10-26-oracle-pragma-autonomous-transaction-in-oracle.json
 - 2026-10-26 [PostgreSQL] postgresql pg_hba.conf allow remote connections -> _drafts/2026-10-26-postgresql-postgresql-dba-part-6-pg-hba-conf-authentication.json
 - 2026-10-27 [Oracle] oracle global temporary table -> _drafts/2026-10-27-oracle-oracle-global-temporary-table.json
+- 2026-10-27 [PostgreSQL] postgresql create user and grant privileges -> _drafts/2026-10-27-postgresql-postgresql-dba-part-7-roles-and-privileges.json

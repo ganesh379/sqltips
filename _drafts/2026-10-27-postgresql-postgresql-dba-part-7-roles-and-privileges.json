@@ -1,0 +1,1560 @@
+{
+  "schemaVersion": 1,
+  "title": "PostgreSQL DBA Part 7: Roles, Users and Privileges (GRANT)",
+  "slug": "postgresql-dba-part-7-roles-and-privileges",
+  "category": "postgresql",
+  "description": "Create users and group roles in PostgreSQL 18, grant database, schema and table privileges, set default privileges and drop roles safely. Tested steps.",
+  "focusKeyword": "postgresql create user and grant privileges",
+  "tags": [
+    "postgresql-dba-series",
+    "postgresql",
+    "roles",
+    "privileges",
+    "security"
+  ],
+  "related": [
+    "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/",
+    "/posts/postgresql/postgresql-dba-part-4-psql-commands/"
+  ],
+  "sources": [
+    {
+      "title": "PostgreSQL 18 docs: Chapter 21 Database Roles",
+      "url": "https://www.postgresql.org/docs/current/user-manag.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: 21.2 Role Attributes",
+      "url": "https://www.postgresql.org/docs/current/role-attributes.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: 21.3 Role Membership",
+      "url": "https://www.postgresql.org/docs/current/role-membership.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: 21.4 Dropping Roles",
+      "url": "https://www.postgresql.org/docs/current/role-removal.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: 21.5 Predefined Roles",
+      "url": "https://www.postgresql.org/docs/current/predefined-roles.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: 5.8 Privileges",
+      "url": "https://www.postgresql.org/docs/current/ddl-priv.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: 5.10 Schemas",
+      "url": "https://www.postgresql.org/docs/current/ddl-schemas.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: GRANT",
+      "url": "https://www.postgresql.org/docs/current/sql-grant.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: ALTER DEFAULT PRIVILEGES",
+      "url": "https://www.postgresql.org/docs/current/sql-alterdefaultprivileges.html"
+    },
+    {
+      "title": "PostgreSQL 18 release notes",
+      "url": "https://www.postgresql.org/docs/18/release-18.html"
+    }
+  ],
+  "reviewNotes": "Series part 7. Publish Part 6 first (Part 6 is not live yet, so the intro names it without a link and related lists Parts 5 and 4). Followed the PostgreSQL 18 documentation (docs/current, 18.6) and the 18 release notes. TESTING CAVEAT, same as Parts 4-6: the postgresql-18 server package still cannot be installed in this sandbox (dependency liburing2 comes from archive.ubuntu.com, blocked by the network policy). All commands were run with psql 18.6 (postgresql-client-18 18.6-1.pgdg24.04+2) against the preinstalled PostgreSQL 16.15 server on Ubuntu 24.04.5 LTS, cluster 16 main. Outputs captioned 'Output' are real and contain no version-specific text. Role, GRANT, default-privilege and REASSIGN/DROP OWNED behaviour and the error texts are unchanged between 16 and 18 per the docs. Differences handled: (1) the Step 7 \\dp block is captioned '(expected output on PostgreSQL 18)': on 16 the owner ACL was arwdDxt; I added m (MAINTAIN, new in 17) per the ddl-priv page's arwdDxtm example. Please confirm the layout on a real 18 server. (2) The predefined-roles table includes pg_maintain (17) and pg_signal_autovacuum_worker (18), which do not exist on 16 and were not tested. (3) ALTER DEFAULT PRIVILEGES ... ON LARGE OBJECTS (new in 18) is mentioned only, not tested. Timestamps in \\du are UTC (sandbox time zone). The 'Password for user ravi:' line is psql's standard prompt; in testing, passwords were supplied with PGPASSWORD. The pg_stat_activity comparison used a real pg_sleep(20) session by asha. The 'missing FOR ROLE' \\ddp block is real (the extra postgres row was created on purpose, then revoked). The practice-exercise answer was tested (t, f).",
+  "generatedAt": "2026-10-27T13:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is Part 7 of the PostgreSQL DBA series. In PostgreSQL there are no separate users and groups: there are only <b>roles</b>. A role that can log in is what other databases call a user, and a role that cannot log in is usually used as a group. To create a user and grant privileges you run <code class=\"inline-code\">CREATE ROLE ... LOGIN PASSWORD</code>, then grant <code class=\"inline-code\">CONNECT</code> on the database, <code class=\"inline-code\">USAGE</code> on the schema and <code class=\"inline-code\">SELECT</code> (or more) on the tables. By the end of this part you will be able to build a clean read-only and read-write setup for an application, make it work for tables created in the future, check who can do what, and remove a user safely."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In Part 6 we covered pg_hba.conf, which decides who may <i>connect</i>. This part covers what a role may <i>do</i> once it is connected. You will use the psql meta-commands from <a href=\"/posts/postgresql/postgresql-dba-part-4-psql-commands/\">Part 4</a>, such as <code class=\"inline-code\">\\du</code> and <code class=\"inline-code\">\\dp</code>, all the way through."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What you will learn",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "The difference between role attributes, object privileges and role membership",
+            "items": []
+          },
+          {
+            "content": "How to create login roles (users) and group roles, and add users to groups",
+            "items": []
+          },
+          {
+            "content": "Why a user needs three grants (database, schema, table) before a simple <code class=\"inline-code\">SELECT</code> works",
+            "items": []
+          },
+          {
+            "content": "How <code class=\"inline-code\">ALTER DEFAULT PRIVILEGES</code> makes grants apply to tables created later",
+            "items": []
+          },
+          {
+            "content": "How to use predefined roles such as <code class=\"inline-code\">pg_monitor</code> instead of superuser",
+            "items": []
+          },
+          {
+            "content": "How to drop a role that owns objects with <code class=\"inline-code\">REASSIGN OWNED</code> and <code class=\"inline-code\">DROP OWNED</code>",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Prerequisites",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Parts 1 to 6 of this series, especially Part 4 (psql) and Part 6 (pg_hba.conf)",
+            "items": []
+          },
+          {
+            "content": "One Ubuntu server with PostgreSQL 18 from the PGDG repository, cluster 18 main running on port 5432",
+            "items": []
+          },
+          {
+            "content": "Shell access with sudo, so you can run <code class=\"inline-code\">sudo -u postgres psql</code>",
+            "items": []
+          },
+          {
+            "content": "The default Ubuntu pg_hba.conf, which allows password logins from <code class=\"inline-code\">localhost</code> with scram-sha-256 (Part 6)",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How it works",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A <b>role</b> is a named identity inside the PostgreSQL cluster. Roles are shared by all databases in the cluster: you create a role once and it exists in every database, while tables and schemas belong to one database only."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Think of a role as a staff ID card. Some cards open the front door of the building (the LOGIN attribute). Some cards are never given to a person and only describe a team, such as \"accounts team\"; when you add a person to that team, their own card opens every door the team's card opens. That team card is a <b>group role</b>."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Three separate ideas control what a role can do:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Idea",
+            "What it means",
+            "Set with"
+          ],
+          [
+            "Role attributes",
+            "Cluster-wide abilities: LOGIN, SUPERUSER, CREATEDB, CREATEROLE, REPLICATION, BYPASSRLS, CONNECTION LIMIT, PASSWORD, VALID UNTIL",
+            "CREATE ROLE, ALTER ROLE"
+          ],
+          [
+            "Object privileges",
+            "What a role may do with one object: SELECT on a table, USAGE on a schema, CONNECT on a database",
+            "GRANT, REVOKE"
+          ],
+          [
+            "Role membership",
+            "A role is a member of another role and can use its privileges",
+            "GRANT role TO role"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Every object has an <b>owner</b>, normally the role that created it. The owner holds all privileges on it, and only the owner (or a superuser) can drop or alter the object or grant privileges on it. There is also a special name, <b>PUBLIC</b>, which means \"every role, including roles created later\"."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To read a row from a table, a role must pass three checks, in this order:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "connect to database shop   -> needs CONNECT on the database\nlook inside schema sales   -> needs USAGE on the schema\nread table sales.orders    -> needs SELECT on the table",
+        "caption": "The three privilege checks for one SELECT"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "By default PUBLIC already has <code class=\"inline-code\">CONNECT</code> and <code class=\"inline-code\">TEMPORARY</code> on every new database, so the first check usually passes. Tables and schemas get no privileges for PUBLIC by default, which is why a new user who can connect still sees \"permission denied\". The public schema is an exception: everyone has USAGE on it, but since PostgreSQL 15 ordinary users can no longer create objects in it (in PostgreSQL 14 and earlier, and in databases upgraded from those versions, everyone could)."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The plan for this part is the pattern most teams use in production: one owner role that owns the tables, one group role per access level, and personal login roles that are only members of groups. Privileges are granted to groups, never to people, so adding or removing a person is one command."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "app_owner (LOGIN)   owns database shop, schema sales, all tables\napp_readonly  (NOLOGIN group)  -> SELECT\napp_readwrite (NOLOGIN group)  -> SELECT, INSERT, UPDATE, DELETE\nravi (LOGIN) member of app_readonly\nasha (LOGIN) member of app_readwrite",
+        "caption": "Roles used in this part"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Creating login roles and group roles",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: List the roles that exist",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On the database server, as your sudo user, open psql as the postgres operating system user and run <code class=\"inline-code\">\\du</code> (\"describe users\")."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo -u postgres psql -c '\\du'",
+        "caption": "List roles"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "                             List of roles\n Role name |                         Attributes\n-----------+------------------------------------------------------------\n postgres  | Superuser, Create role, Create DB, Replication, Bypass RLS",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A fresh cluster has one login role, <code class=\"inline-code\">postgres</code>, the superuser created at install time. A superuser bypasses every permission check except the right to log in, so you should not give it to applications or people. The cluster also has predefined roles whose names start with <code class=\"inline-code\">pg_</code>; <code class=\"inline-code\">\\du</code> hides them, and <code class=\"inline-code\">\\duS</code> shows them."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: Create the owner and the group roles",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On the database server, in psql as the postgres user (run sudo -u postgres psql), create the owner role and two group roles."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE ROLE app_owner LOGIN PASSWORD 'Owner#2026';\nCREATE ROLE app_readonly NOLOGIN;\nCREATE ROLE app_readwrite NOLOGIN;",
+        "caption": "Create the owner and two groups"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Option",
+            "What it does"
+          ],
+          [
+            "LOGIN",
+            "The role can be used as the user name when connecting. Without it the role cannot connect."
+          ],
+          [
+            "NOLOGIN",
+            "The default for CREATE ROLE. Typical for group roles."
+          ],
+          [
+            "PASSWORD 'string'",
+            "Sets the password. It only matters when pg_hba.conf asks for a password; it is stored as a scram-sha-256 hash because password_encryption defaults to scram-sha-256."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE ROLE\nCREATE ROLE\nCREATE ROLE",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Each statement prints CREATE ROLE. The groups have no password because nobody will ever log in as them."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 3: Create personal login roles",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In the same psql session, create two people. <code class=\"inline-code\">CREATE USER</code> is the same command as <code class=\"inline-code\">CREATE ROLE</code>, except that it adds <code class=\"inline-code\">LOGIN</code> by default."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE ROLE ravi LOGIN PASSWORD 'Ravi#2026';\nCREATE USER asha PASSWORD 'Asha#2026';\n\\du",
+        "caption": "Two ways to create a login role"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE ROLE\nCREATE ROLE\n                               List of roles\n   Role name   |                         Attributes\n---------------+------------------------------------------------------------\n app_owner     |\n app_readonly  | Cannot login\n app_readwrite | Cannot login\n asha          |\n postgres      | Superuser, Create role, Create DB, Replication, Bypass RLS\n ravi          |",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Both forms print CREATE ROLE, which shows they are the same command. An empty Attributes column means an ordinary login role with no special abilities, which is exactly what you want for people and applications."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "Keep passwords out of history",
+        "text": "A password typed inside CREATE ROLE can end up in the psql history file and, if statement logging is on, in the server log. For real passwords, create the role without one and then run <code class=\"inline-code\">\\password ravi</code> in psql: it prompts twice and sends only the hashed value to the server."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 4: Add the users to the groups",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "GRANT app_readonly TO ravi;\nGRANT app_readwrite TO asha;\n\\drg",
+        "caption": "Grant membership and list memberships"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "GRANT ROLE\nGRANT ROLE\n                 List of role grants\n Role name |   Member of   |   Options    | Grantor\n-----------+---------------+--------------+----------\n asha      | app_readwrite | INHERIT, SET | postgres\n ravi      | app_readonly  | INHERIT, SET | postgres\n(2 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">\\drg</code> (added in psql 16) lists role grants. The Options column shows the two membership options from the documentation:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Option",
+            "What it does"
+          ],
+          [
+            "INHERIT",
+            "The member automatically has the privileges of the group. If not given, it follows the member's own INHERIT attribute, which is on by default."
+          ],
+          [
+            "SET",
+            "The member may run SET ROLE to become the group. Defaults to TRUE."
+          ],
+          [
+            "ADMIN",
+            "The member may grant and revoke membership in the group to others. Defaults to FALSE."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To undo a membership later, run <code class=\"inline-code\">REVOKE app_readonly FROM ravi;</code>. Note that the attributes LOGIN, SUPERUSER, CREATEDB and CREATEROLE are never inherited through membership; a member only gets them after SET ROLE to a role that has them."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Granting privileges on the database, schema and tables",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 5: Create the database and sample table as the owner",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "As the postgres user, create the database with <code class=\"inline-code\">app_owner</code> as its owner. Then, as <code class=\"inline-code\">app_owner</code>, create the schema and table, so that <code class=\"inline-code\">app_owner</code> owns them too."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo -u postgres psql -c \"CREATE DATABASE shop OWNER app_owner;\"\npsql -h localhost -U app_owner -d shop",
+        "caption": "On the database server, as your sudo user"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE SCHEMA sales;\nCREATE TABLE sales.orders (\n    order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer    text    NOT NULL,\n    amount      numeric(10,2) NOT NULL,\n    created_at  timestamptz NOT NULL DEFAULT now()\n);\nINSERT INTO sales.orders (customer, amount) VALUES\n    ('Meena Traders', 1250.00),\n    ('Kumar Stores',   480.50),\n    ('Fresh Mart',    2999.00);",
+        "caption": "In psql, connected to shop as app_owner"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE SCHEMA\nCREATE TABLE\nINSERT 0 3",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The <code class=\"inline-code\">-h localhost</code> option makes psql connect over TCP, so the Ubuntu rule <code class=\"inline-code\">host all all 127.0.0.1/32 scram-sha-256</code> applies and psql prompts for the password. The orders table now has three rows and app_owner owns the database, the schema and the table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 6: See the permission errors a new user gets",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On the database server, as your sudo user, connect as ravi and try to read the table."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "psql -h localhost -U ravi -d shop -c 'SELECT order_id, customer, amount FROM sales.orders;'",
+        "caption": "Connect as ravi"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Password for user ravi:\nERROR:  permission denied for schema sales\nLINE 1: SELECT order_id, customer, amount FROM sales.orders;\n                                               ^",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The connection worked, because PUBLIC has CONNECT on the new database. The query failed at the second check: ravi has no USAGE on schema sales. Being a member of <code class=\"inline-code\">app_readonly</code> does not help yet, because the group has no privileges either."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 7: Grant USAGE on the schema and SELECT on the tables",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "As the postgres user, connected to shop (sudo -u postgres psql -d shop), grant the read privileges to the group. A superuser's GRANT is performed as if the owner issued it, so the grantor shown later is app_owner."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "GRANT USAGE ON SCHEMA sales TO app_readonly;\nGRANT SELECT ON ALL TABLES IN SCHEMA sales TO app_readonly;",
+        "caption": "Read access for the read-only group"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Part",
+            "What it does"
+          ],
+          [
+            "USAGE ON SCHEMA",
+            "Lets the role look up objects in the schema. It does not give access to the objects themselves."
+          ],
+          [
+            "SELECT ON ALL TABLES IN SCHEMA",
+            "Grants SELECT on every table, view and foreign table that exists in the schema right now."
+          ],
+          [
+            "TO app_readonly",
+            "The grantee. Every member of the group gets the privilege through inheritance."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "GRANT\nGRANT",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Verify as ravi. The SELECT now works and an INSERT is still refused:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "psql -h localhost -U ravi -d shop -c 'SELECT order_id, customer, amount FROM sales.orders;'\npsql -h localhost -U ravi -d shop -c \"INSERT INTO sales.orders (customer, amount) VALUES ('Test', 1);\"",
+        "caption": "Test read and write as ravi"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " order_id |   customer    | amount\n----------+---------------+---------\n        1 | Meena Traders | 1250.00\n        2 | Kumar Stores  |  480.50\n        3 | Fresh Mart    | 2999.00\n(3 rows)\n\nERROR:  permission denied for table orders",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To see the privileges on a table, run <code class=\"inline-code\">\\dp</code> in psql as the postgres user:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "\\dp sales.orders",
+        "caption": "Show table privileges"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "                                   Access privileges\n Schema |  Name  | Type  |      Access privileges       | Column privileges | Policies\n--------+--------+-------+------------------------------+-------------------+----------\n sales  | orders | table | app_owner=arwdDxtm/app_owner+|                   |\n        |        |       | app_readonly=r/app_owner     |                   |\n(1 row)",
+        "caption": "Output (expected output on PostgreSQL 18)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Each line reads <code class=\"inline-code\">grantee=privileges/grantor</code>. The letters are: r SELECT, a INSERT, w UPDATE, d DELETE, D TRUNCATE, x REFERENCES, t TRIGGER and m MAINTAIN (new in PostgreSQL 17; on PostgreSQL 16 the owner line ends in arwdDxt). An asterisk after a letter means the privilege was granted WITH GRANT OPTION. An empty Access privileges column means the object still has its default privileges: everything for the owner, nothing for anyone else."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 8: Give the read-write group its privileges",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "As the postgres user, connected to shop:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "GRANT USAGE ON SCHEMA sales TO app_readwrite;\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA sales TO app_readwrite;",
+        "caption": "Read-write access for the application group"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "GRANT\nGRANT",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Verify as asha:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "psql -h localhost -U asha -d shop -c \"INSERT INTO sales.orders (customer, amount) VALUES ('Sri Balaji Agencies', 760.00) RETURNING order_id, customer;\"\npsql -h localhost -U asha -d shop -c 'TRUNCATE sales.orders;'",
+        "caption": "Insert works, TRUNCATE does not"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " order_id |      customer\n----------+---------------------\n        4 | Sri Balaji Agencies\n(1 row)\n\nINSERT 0 1\nERROR:  permission denied for table orders",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The insert works, and the identity column produced order_id 4 without any extra grant on its sequence. TRUNCATE is refused because it is a separate privilege that we did not grant; this is how you keep an application from emptying a table by mistake. Avoid <code class=\"inline-code\">GRANT ALL</code> for applications for the same reason."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To undo any grant, use REVOKE with the same shape, for example <code class=\"inline-code\">REVOKE INSERT, UPDATE, DELETE ON sales.orders FROM app_readwrite;</code>. After that statement asha's UPDATE fails with <code class=\"inline-code\">ERROR:  permission denied for table orders</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Default privileges for tables created later",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 9: See why ALL TABLES is not enough",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">GRANT ... ON ALL TABLES IN SCHEMA</code> only touches tables that exist when you run it. As app_owner, create a new table that uses the older <code class=\"inline-code\">serial</code> type, then test it as ravi and asha."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE TABLE sales.refunds (\n    refund_id  serial PRIMARY KEY,\n    order_id   bigint NOT NULL,\n    amount     numeric(10,2) NOT NULL\n);",
+        "caption": "In psql, connected to shop as app_owner"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "psql -h localhost -U ravi -d shop -c 'SELECT * FROM sales.refunds;'",
+        "caption": "Test as ravi"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ERROR:  permission denied for table refunds",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The group has SELECT on orders but not on refunds, because refunds did not exist when we ran the grant. Re-running the grant after every deployment is easy to forget, so PostgreSQL has default privileges."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 10: Set default privileges for the owner role",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">ALTER DEFAULT PRIVILEGES</code> stores privileges that PostgreSQL applies automatically to objects <i>created later</i> by a given role. It does not change existing objects. As the postgres user, connected to shop:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA sales\n    GRANT SELECT ON TABLES TO app_readonly;\nALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA sales\n    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_readwrite;\nALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA sales\n    GRANT USAGE ON SEQUENCES TO app_readwrite;",
+        "caption": "Default privileges for future tables and sequences"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Clause",
+            "What it does"
+          ],
+          [
+            "FOR ROLE app_owner",
+            "Applies to objects created by app_owner. If omitted, it applies to objects created by the role running the command."
+          ],
+          [
+            "IN SCHEMA sales",
+            "Applies only to objects created in schema sales. Without it, the defaults apply in the whole current database."
+          ],
+          [
+            "ON TABLES",
+            "Tables, views and foreign tables. Other targets: SEQUENCES, FUNCTIONS (or ROUTINES), TYPES, SCHEMAS and, new in PostgreSQL 18, LARGE OBJECTS."
+          ],
+          [
+            "GRANT ... TO",
+            "The privileges and grantee, as in a normal GRANT."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ALTER DEFAULT PRIVILEGES\nALTER DEFAULT PRIVILEGES\nALTER DEFAULT PRIVILEGES",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "USAGE on sequences matters for <code class=\"inline-code\">serial</code> columns: inserting calls nextval() on the sequence, and without USAGE asha gets <code class=\"inline-code\">ERROR:  permission denied for sequence refunds_refund_id_seq</code>. Identity columns, like order_id, do not need it."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Default privileges only help future objects, so fix the tables that already exist with the grants from Steps 7 and 8, plus the sequences:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "GRANT SELECT ON ALL TABLES IN SCHEMA sales TO app_readonly;\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA sales TO app_readwrite;\nGRANT USAGE ON ALL SEQUENCES IN SCHEMA sales TO app_readwrite;\n\\ddp",
+        "caption": "Catch up existing objects and list default privileges"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "GRANT\nGRANT\nGRANT\n                  Default access privileges\n   Owner   | Schema |   Type   |      Access privileges\n-----------+--------+----------+------------------------------\n app_owner | sales  | sequence | app_readwrite=U/app_owner\n app_owner | sales  | table    | app_readonly=r/app_owner    +\n           |        |          | app_readwrite=arwd/app_owner\n(2 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">\\ddp</code> lists the stored defaults. The Owner column is the role whose new objects will receive them: here app_owner, which is what we want, because app_owner creates the tables."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Verify with a brand-new table. As app_owner, create sales.payments; then, without running any GRANT, read it as ravi and insert as asha:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE TABLE sales.payments (\n    payment_id  serial PRIMARY KEY,\n    order_id    bigint NOT NULL,\n    paid        numeric(10,2) NOT NULL\n);",
+        "caption": "In psql, connected to shop as app_owner"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "psql -h localhost -U asha -d shop -c 'INSERT INTO sales.payments (order_id, paid) VALUES (1, 1250.00);'\npsql -h localhost -U ravi -d shop -c 'SELECT count(*) FROM sales.payments;'",
+        "caption": "Test the new table"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "INSERT 0 1\n count\n-------\n     1\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Both work with no extra grant. To remove a default privilege later, run the same statement with REVOKE, for example <code class=\"inline-code\">ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA sales REVOKE SELECT ON TABLES FROM app_readonly;</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Locking down PUBLIC and checking access",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 11: Remove the default CONNECT for everyone",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Any login role can connect to shop, because PUBLIC has CONNECT. pg_hba.conf can restrict this too (Part 6), but a database privilege keeps the rule inside the database. As the postgres user, connected to shop:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "REVOKE CONNECT ON DATABASE shop FROM PUBLIC;\nGRANT CONNECT ON DATABASE shop TO app_readonly, app_readwrite;\nSELECT unnest(datacl) AS acl FROM pg_database WHERE datname = 'shop';",
+        "caption": "Allow only the two groups (and the owner) to connect"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "REVOKE\nGRANT\n            acl\n---------------------------\n =T/app_owner\n app_owner=CTc/app_owner\n app_readonly=c/app_owner\n app_readwrite=c/app_owner\n(4 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "An empty grantee means PUBLIC, so <code class=\"inline-code\">=T/app_owner</code> says everyone keeps TEMPORARY (c is CONNECT, T is TEMPORARY, C is CREATE). The owner keeps all three. Test with a role that is in no group:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo -u postgres psql -c \"CREATE ROLE guest LOGIN PASSWORD 'Guest#2026';\"\npsql -h localhost -U guest -d shop -c 'SELECT 1;'",
+        "caption": "A role outside both groups"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE ROLE\npsql: error: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: FATAL:  permission denied for database \"shop\"\nDETAIL:  User does not have CONNECT privilege.",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To undo, run <code class=\"inline-code\">GRANT CONNECT ON DATABASE shop TO PUBLIC;</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 12: Check privileges without logging in as the user",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You do not need each user's password to test their access. The <code class=\"inline-code\">has_table_privilege</code> function answers for any role, including privileges it gets through groups. As the postgres user, connected to shop:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT r.rolname,\n       has_table_privilege(r.rolname, 'sales.orders', 'SELECT') AS can_select,\n       has_table_privilege(r.rolname, 'sales.orders', 'INSERT') AS can_insert\n  FROM pg_roles r\n WHERE r.rolname IN ('ravi', 'asha', 'guest')\n ORDER BY 1;",
+        "caption": "Who can read and write sales.orders?"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " rolname | can_select | can_insert\n---------+------------+------------\n asha    | t          | t\n guest   | f          | f\n ravi    | t          | f\n(3 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is the answer to the question auditors ask most. Similar functions exist for other objects: <code class=\"inline-code\">has_schema_privilege</code>, <code class=\"inline-code\">has_database_privilege</code>, <code class=\"inline-code\">has_sequence_privilege</code> and <code class=\"inline-code\">has_function_privilege</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Role attributes, SET ROLE and predefined roles",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 13: Limit connections and set an expiry date",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "As the postgres user, change attributes of an existing role with ALTER ROLE:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "ALTER ROLE ravi CONNECTION LIMIT 5 VALID UNTIL '2027-03-31';\n\\du ravi",
+        "caption": "Limit ravi to 5 sessions and expire the password"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ALTER ROLE\n                      List of roles\n Role name |                 Attributes\n-----------+---------------------------------------------\n ravi      | 5 connections                              +\n           | Password valid until 2027-03-31 00:00:00+00",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Option",
+            "What it does"
+          ],
+          [
+            "CONNECTION LIMIT n",
+            "Maximum concurrent connections for this role. -1, the default, means no limit."
+          ],
+          [
+            "VALID UNTIL 'timestamp'",
+            "The time after which the role's password stops being valid. It only applies to password authentication, not to methods such as peer."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The time is shown in the server's time zone, UTC here. To undo, run <code class=\"inline-code\">ALTER ROLE ravi CONNECTION LIMIT -1 VALID UNTIL 'infinity';</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 14: Become a group role with SET ROLE",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "SET ROLE switches the current session to another role the user is a member of (with the SET option). Objects created after it are owned by that role. As ravi:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT current_user, session_user;\nSET ROLE app_readonly;\nSELECT current_user, session_user;\nRESET ROLE;\nSET ROLE app_readwrite;",
+        "caption": "In psql, connected to shop as ravi"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " current_user | session_user\n--------------+--------------\n ravi         | ravi\n(1 row)\n\nSET\n current_user | session_user\n--------------+--------------\n app_readonly | ravi\n(1 row)\n\nRESET\nERROR:  permission denied to set role \"app_readwrite\"",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">session_user</code> is who logged in and <code class=\"inline-code\">current_user</code> is whose privileges are being checked. ravi can become app_readonly but not app_readwrite, because ravi is not a member of it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 15: Give monitoring access with pg_monitor, not superuser",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Predefined roles bundle common administrative abilities. Grant them like any group. The ones a DBA uses most:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Predefined role",
+            "What it allows"
+          ],
+          [
+            "pg_monitor",
+            "Read monitoring views and functions; member of pg_read_all_settings, pg_read_all_stats and pg_stat_scan_tables"
+          ],
+          [
+            "pg_read_all_data",
+            "SELECT on all tables, views and sequences, and USAGE on all schemas (does not bypass row-level security)"
+          ],
+          [
+            "pg_write_all_data",
+            "INSERT, UPDATE and DELETE on all of them (does not bypass row-level security)"
+          ],
+          [
+            "pg_signal_backend",
+            "Cancel queries and terminate sessions of other roles, but not of superusers"
+          ],
+          [
+            "pg_maintain",
+            "VACUUM, ANALYZE, CLUSTER, REFRESH MATERIALIZED VIEW, REINDEX and LOCK TABLE on all tables (new in PostgreSQL 17)"
+          ],
+          [
+            "pg_signal_autovacuum_worker",
+            "Cancel or terminate autovacuum workers (new in PostgreSQL 18)"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "As the postgres user, create a role for a monitoring tool:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE ROLE monitor_user LOGIN PASSWORD 'Mon#2026';\nGRANT pg_monitor TO monitor_user;",
+        "caption": "A login role for monitoring"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE ROLE\nGRANT ROLE",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "While asha runs a long query, compare what guest and monitor_user see in pg_stat_activity (both connected to the postgres database):"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT usename, state, query FROM pg_stat_activity WHERE usename = 'asha';",
+        "caption": "Run as guest, then as monitor_user"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " usename | state |          query\n---------+-------+--------------------------\n asha    |       | <insufficient privilege>\n(1 row)\n\n usename | state  |        query\n---------+--------+----------------------\n asha    | active | SELECT pg_sleep(20);\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "guest sees that asha is connected but not what the session is running; monitor_user sees the query text. monitor_user can also run <code class=\"inline-code\">SHOW data_directory;</code>, which an ordinary role cannot, and still cannot connect to shop or read its tables. That is the point: monitoring without data access and without superuser."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "Server file roles",
+        "text": "pg_read_server_files, pg_write_server_files and pg_execute_server_program bypass database permission checks for files and programs on the server, and the documentation warns they could be used to gain superuser-level access. Treat a grant of these roles like a grant of superuser."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Dropping a role safely",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 16: Reassign or drop what the role owns",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A role cannot be dropped while it owns objects or holds privileges. Suppose kiran, a developer who is leaving, created a table. Here is what happens if you try DROP ROLE directly, as the postgres user connected to shop:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "DROP ROLE kiran;",
+        "caption": "First attempt"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ERROR:  role \"kiran\" cannot be dropped because some objects depend on it\nDETAIL:  privileges for schema sales\nowner of table sales.import_jan",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "For this test, kiran was created as a member of app_readwrite and given CREATE on schema sales (GRANT CREATE ON SCHEMA sales TO kiran;), then created the table sales.import_jan."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The DETAIL lists what is in the way, but only for the current database; other databases can hold more. The documented procedure is: reassign ownership of what you want to keep, drop the rest, and repeat in every database of the cluster before DROP ROLE."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "danger",
+        "title": "DROP OWNED deletes objects",
+        "text": "DROP OWNED BY drops every object the role still owns in the current database, not only its privileges. Always run REASSIGN OWNED first for anything you want to keep, check the result, and do not run DROP OWNED on a production database without a recent backup."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "REASSIGN OWNED BY kiran TO app_owner;\nDROP OWNED BY kiran;\n-- repeat both commands in every other database: \\c postgres, \\c shop2, ...\nDROP ROLE kiran;",
+        "caption": "In psql as postgres, connected to shop"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Command",
+            "What it does"
+          ],
+          [
+            "REASSIGN OWNED BY old TO new",
+            "Changes the owner of every object old owns in the current database to new. The first run also transfers databases and tablespaces owned by old."
+          ],
+          [
+            "DROP OWNED BY old",
+            "Drops the objects old still owns in the current database and revokes privileges granted to old, including default privileges. It does not drop databases or tablespaces."
+          ],
+          [
+            "DROP ROLE old",
+            "Removes the role. Its memberships in groups are removed automatically."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "REASSIGN OWNED\nDROP OWNED\nDROP ROLE",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Verify with <code class=\"inline-code\">\\dt sales.*</code>: sales.import_jan is still there, now owned by app_owner. If DROP ROLE still fails, the DETAIL names the database or object that remains."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes and how to fix them",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "ERROR: permission denied for schema sales",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The role has table privileges but no USAGE on the schema. Fix: GRANT USAGE ON SCHEMA sales TO the_group;"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "ERROR: permission denied for table orders, right after a deployment",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The table was created after your GRANT ... ON ALL TABLES. Fix the existing table with the grant again, and add ALTER DEFAULT PRIVILEGES FOR ROLE set to the role that really creates the tables."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Default privileges are set but new tables still have none",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The most common cause is a missing FOR ROLE. If you run ALTER DEFAULT PRIVILEGES as postgres without it, the defaults apply only to tables created by postgres. <code class=\"inline-code\">\\ddp</code> shows this clearly:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "                  Default access privileges\n   Owner   | Schema |   Type   |      Access privileges\n-----------+--------+----------+------------------------------\n app_owner | sales  | sequence | app_readwrite=U/app_owner\n app_owner | sales  | table    | app_readonly=r/app_owner    +\n           |        |          | app_readwrite=arwd/app_owner\n postgres  | sales  | table    | app_readonly=r/postgres\n(3 rows)",
+        "caption": "Output: the last row only affects tables created by postgres"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Remove the wrong row with the same statement and REVOKE (<code class=\"inline-code\">ALTER DEFAULT PRIVILEGES IN SCHEMA sales REVOKE SELECT ON TABLES FROM app_readonly;</code>) and run it again with FOR ROLE. Default privileges are also not inherited: they apply to the role that actually runs CREATE TABLE, not to the groups it belongs to."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "ERROR: permission denied for sequence refunds_refund_id_seq",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The table uses serial and the inserting role has no USAGE on its sequence. Fix: GRANT USAGE ON ALL SEQUENCES IN SCHEMA sales TO app_readwrite; plus a default privilege ON SEQUENCES. Identity columns avoid this."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "FATAL: role \"app_readonly\" is not permitted to log in",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Someone used a group role in a connection string. Connect as a member login role instead. If the role really should log in, <code class=\"inline-code\">ALTER ROLE name LOGIN;</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "FATAL: permission denied for database \"shop\" (User does not have CONNECT privilege)",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "CONNECT was revoked from PUBLIC and the role is in no group that has it. Add the user to the right group. Removing a user from their only group (REVOKE app_readwrite FROM asha) produces this same error, which is a quick way to cut off access."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Revoking from a user changes nothing",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The user still has the privilege through a group or through PUBLIC. A REVOKE only removes a grant that was made to that exact grantee. Check with has_table_privilege and remove the user from the group instead."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Practice exercise",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "ordered",
+        "items": [
+          {
+            "content": "Create a login role <code class=\"inline-code\">report_user</code> for a reporting tool that must read every current and future table in schema sales but must not change data. Use the existing groups.",
+            "items": []
+          },
+          {
+            "content": "Check, without logging in as report_user, that it can SELECT but not DELETE from sales.payments.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "Answer",
+        "text": "Answer: <b>CREATE ROLE report_user LOGIN PASSWORD '...'; GRANT app_readonly TO report_user;</b> Nothing else is needed: app_readonly already has CONNECT, USAGE on the schema, SELECT on existing tables and default privileges for future ones. For task 2, run <b>SELECT has_table_privilege('report_user', 'sales.payments', 'SELECT'), has_table_privilege('report_user', 'sales.payments', 'DELETE');</b> and expect t and f."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Quick reference",
+        "level": 2
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "# List roles and memberships\nsudo -u postgres psql -c '\\du'\nsudo -u postgres psql -c '\\drg'\n\n# Create an owner, two groups and two login roles\nsudo -u postgres psql -c \"CREATE ROLE app_owner LOGIN PASSWORD 'Owner#2026';\"\nsudo -u postgres psql -c \"CREATE ROLE app_readonly NOLOGIN;\"\nsudo -u postgres psql -c \"CREATE ROLE app_readwrite NOLOGIN;\"\nsudo -u postgres psql -c \"CREATE ROLE ravi LOGIN PASSWORD 'Ravi#2026';\"\nsudo -u postgres psql -c \"CREATE USER asha PASSWORD 'Asha#2026';\"\n\n# Add users to groups\nsudo -u postgres psql -c \"GRANT app_readonly TO ravi;\"\nsudo -u postgres psql -c \"GRANT app_readwrite TO asha;\"\n\n# Database owned by app_owner\nsudo -u postgres psql -c \"CREATE DATABASE shop OWNER app_owner;\"\n\n# As app_owner: create schema sales and the tables (Step 5)\npsql -h localhost -U app_owner -d shop\n\n# Schema and table privileges for existing objects\nsudo -u postgres psql -d shop -c \"GRANT USAGE ON SCHEMA sales TO app_readonly, app_readwrite;\"\nsudo -u postgres psql -d shop -c \"GRANT SELECT ON ALL TABLES IN SCHEMA sales TO app_readonly;\"\nsudo -u postgres psql -d shop -c \"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA sales TO app_readwrite;\"\nsudo -u postgres psql -d shop -c \"GRANT USAGE ON ALL SEQUENCES IN SCHEMA sales TO app_readwrite;\"\n\n# Default privileges for objects app_owner creates later\nsudo -u postgres psql -d shop -c \"ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA sales GRANT SELECT ON TABLES TO app_readonly;\"\nsudo -u postgres psql -d shop -c \"ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA sales GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_readwrite;\"\nsudo -u postgres psql -d shop -c \"ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA sales GRANT USAGE ON SEQUENCES TO app_readwrite;\"\nsudo -u postgres psql -d shop -c '\\ddp'\n\n# Only the groups may connect\nsudo -u postgres psql -d shop -c \"REVOKE CONNECT ON DATABASE shop FROM PUBLIC;\"\nsudo -u postgres psql -d shop -c \"GRANT CONNECT ON DATABASE shop TO app_readonly, app_readwrite;\"\n\n# Check privileges and table ACLs\nsudo -u postgres psql -d shop -c \"SELECT has_table_privilege('ravi', 'sales.orders', 'SELECT');\"\nsudo -u postgres psql -d shop -c '\\dp sales.*'\n\n# Attributes and monitoring role\nsudo -u postgres psql -c \"ALTER ROLE ravi CONNECTION LIMIT 5 VALID UNTIL '2027-03-31';\"\nsudo -u postgres psql -c \"CREATE ROLE monitor_user LOGIN PASSWORD 'Mon#2026';\"\nsudo -u postgres psql -c \"GRANT pg_monitor TO monitor_user;\"\n\n# Remove a role (repeat the first two in every database)\nsudo -u postgres psql -d shop -c \"REASSIGN OWNED BY kiran TO app_owner;\"\nsudo -u postgres psql -d shop -c \"DROP OWNED BY kiran;\"\nsudo -u postgres psql -c \"DROP ROLE kiran;\"",
+        "caption": "Every command from this part"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary and what's next",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "A role with LOGIN is a user; a role without LOGIN used for grants is a group",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Grant privileges to group roles and make people members, never grant to individuals",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "A SELECT needs CONNECT on the database, USAGE on the schema and SELECT on the table",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "GRANT ... ON ALL TABLES covers only existing tables; ALTER DEFAULT PRIVILEGES FOR ROLE the_creator covers future ones",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Grant USAGE on sequences for serial columns; identity columns do not need it",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use predefined roles such as pg_monitor and pg_signal_backend instead of superuser",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Check access with has_table_privilege, \\dp, \\ddp and \\drg",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Drop a role with REASSIGN OWNED, then DROP OWNED in every database, then DROP ROLE",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In Part 8 we look at databases, schemas, search_path and template databases."
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your new PostgreSQL user can log in but every query says \"permission denied\". Here is why, and the fix.\n\nPart 7 of my PostgreSQL DBA series covers roles and privileges. The points that matter:\n\n→ Users and groups are both roles. LOGIN makes a role a user; a role without LOGIN works as a group.\n→ One SELECT needs three grants: CONNECT on the database, USAGE on the schema, SELECT on the table.\n→ GRANT SELECT ON ALL TABLES IN SCHEMA only covers tables that exist today. For future tables use ALTER DEFAULT PRIVILEGES FOR ROLE <the role that creates tables>.\n→ serial columns need USAGE on the sequence for INSERT. Identity columns do not.\n→ Give monitoring tools pg_monitor, not superuser.\n\nEvery step is tested with real output and the exact error messages, on Ubuntu with PostgreSQL 18.\n\nDo you grant privileges to people directly, or only to group roles?\n\nFollow the series: Part 8 covers databases, schemas and search_path.\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+    "slides": [
+      {
+        "title": "PostgreSQL roles and privileges",
+        "body": "DBA Part 7: users, groups, GRANT and default privileges"
+      },
+      {
+        "title": "Users and groups are roles",
+        "points": [
+          "LOGIN role = user",
+          "NOLOGIN role = group",
+          "Grant to groups, add people as members"
+        ],
+        "code": "CREATE ROLE app_readonly NOLOGIN;\nCREATE ROLE ravi LOGIN\n  PASSWORD 'secret';\nGRANT app_readonly TO ravi;",
+        "lang": "postgresql"
+      },
+      {
+        "title": "One SELECT, three grants",
+        "body": "CONNECT on the database, USAGE on the schema, SELECT on the table. Miss the schema grant and you get: permission denied for schema.",
+        "code": "GRANT USAGE ON SCHEMA sales\n  TO app_readonly;\nGRANT SELECT ON ALL TABLES\n  IN SCHEMA sales TO app_readonly;",
+        "lang": "postgresql"
+      },
+      {
+        "title": "Future tables need defaults",
+        "points": [
+          "ON ALL TABLES covers existing tables only",
+          "FOR ROLE must be the role that creates tables",
+          "Check with \\ddp"
+        ],
+        "code": "ALTER DEFAULT PRIVILEGES\n  FOR ROLE app_owner\n  IN SCHEMA sales\n  GRANT SELECT ON TABLES\n  TO app_readonly;",
+        "lang": "postgresql"
+      },
+      {
+        "title": "Check access without a password",
+        "code": "SELECT has_table_privilege(\n  'ravi', 'sales.orders',\n  'SELECT');",
+        "lang": "postgresql",
+        "body": "has_table_privilege answers for any role, including privileges that come through groups."
+      },
+      {
+        "title": "Drop a role safely",
+        "points": [
+          "REASSIGN OWNED BY old TO new",
+          "DROP OWNED BY old, in every database",
+          "Then DROP ROLE old"
+        ]
+      }
+    ]
+  }
+}
