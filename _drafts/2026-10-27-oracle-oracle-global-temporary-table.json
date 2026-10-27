@@ -1,0 +1,908 @@
+{
+  "schemaVersion": 1,
+  "title": "Oracle Global Temporary Table: Examples, Indexes and Stats",
+  "slug": "oracle-global-temporary-table",
+  "category": "plsql",
+  "description": "Learn how an Oracle global temporary table works, ON COMMIT DELETE vs PRESERVE ROWS, indexes, ORA-14452, statistics and private temporary tables.",
+  "focusKeyword": "oracle global temporary table",
+  "tags": [
+    "oracle",
+    "plsql",
+    "temporary-tables",
+    "performance"
+  ],
+  "related": [
+    "/posts/plsql/how-to-read-explain-plan-in-oracle/",
+    "/posts/plsql/oracle-bulk-collect-limit-example/",
+    "/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle 19c Administrator's Guide: Creating a Temporary Table",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/admin/managing-tables.html"
+    },
+    {
+      "title": "Oracle 19c SQL Language Reference: CREATE TABLE (GLOBAL TEMPORARY, ON COMMIT, restrictions)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/CREATE-TABLE.html"
+    },
+    {
+      "title": "Oracle 19c SQL Tuning Guide: Optimizer Statistics Concepts (temporary table statistics)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/tgsql/optimizer-statistics-concepts.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Packages: DBMS_STATS (GLOBAL_TEMP_TABLE_STATS)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_STATS.html"
+    },
+    {
+      "title": "Oracle 19c Reference: TEMP_UNDO_ENABLED",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/TEMP_UNDO_ENABLED.html"
+    },
+    {
+      "title": "Oracle 19c Concepts: Overview of Temporary Tables",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/cncpt/tables-and-table-clusters.html"
+    },
+    {
+      "title": "Oracle error help: ORA-14452",
+      "url": "https://docs.oracle.com/en/error-help/db/ora-14452/"
+    }
+  ],
+  "reviewNotes": "Examples written from the Oracle 19c docs and not executed; all output blocks need a test run. Please verify: (1) the GET_PREFS result shown as SESSION (I believe this is the 12c+ default but did not find it stated in the docs, so the text tells readers to check); (2) that USER_TAB_STATISTICS shows SCOPE = SESSION after the gather; (3) the claim that GTT DML undo generates redo without temp undo (based on the TEMP_UNDO_ENABLED doc wording about reducing undo and redo); (4) the V$TEMPSEG_USAGE suggestion for finding sessions bound to a GTT; (5) the 18c version for private temporary tables. ORA-14452 output was shown only for CREATE INDEX, which is the case the error text describes.",
+  "generatedAt": "2026-10-27T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "An <b>Oracle global temporary table</b> (GTT) is a table whose definition is permanent but whose rows are private to each session and disappear automatically. You create it once with <code class=\"inline-code\">CREATE GLOBAL TEMPORARY TABLE</code>, and then every session can insert into it, see only its own rows, and get an empty table back after a commit or at logout, depending on the <code class=\"inline-code\">ON COMMIT</code> clause."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This tutorial shows both kinds of global temporary table on a small orders table, explains what Oracle does behind the scenes, and covers the parts that trip people up: indexes, DDL errors, optimizer statistics and the newer private temporary tables."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is a global temporary table in Oracle?",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A normal table stores rows that every session can see once they are committed. A global temporary table keeps the table definition in the data dictionary like any other table, but the data belongs to the session that inserted it. Two sessions can use the same GTT at the same time and never see each other's rows."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The word \"global\" refers to the definition, not the data. The table, its columns, its indexes and its grants are shared by everyone. The rows are not."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle does not allocate any storage when you create the table. A temporary segment is allocated in a temporary tablespace when a session first inserts a row. By default that is the temporary tablespace of the user who created the table. When the transaction or session ends, Oracle releases the segment."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "ON COMMIT DELETE ROWS vs ON COMMIT PRESERVE ROWS",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The ON COMMIT clause decides how long the rows live:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Clause",
+            "Type",
+            "When rows disappear"
+          ],
+          [
+            "ON COMMIT DELETE ROWS (default)",
+            "Transaction-specific",
+            "After every COMMIT (and on ROLLBACK)"
+          ],
+          [
+            "ON COMMIT PRESERVE ROWS",
+            "Session-specific",
+            "When the session ends, or when the session runs TRUNCATE"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If you leave out the ON COMMIT clause, you get <code class=\"inline-code\">DELETE ROWS</code>. Many people forget this and are surprised when their data vanishes after the first commit."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Run this in any schema where you can create tables. The orders table is a normal permanent table. We will use global temporary tables to build a per-session report on top of it."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE orders (\n  order_id     NUMBER PRIMARY KEY,\n  customer_id  NUMBER       NOT NULL,\n  order_date   DATE         NOT NULL,\n  amount       NUMBER(10,2) NOT NULL,\n  status       VARCHAR2(10) NOT NULL\n);\n\nINSERT INTO orders VALUES (101, 1, DATE '2026-10-01', 2500.00, 'PAID');\nINSERT INTO orders VALUES (102, 2, DATE '2026-10-02', 1200.00, 'PAID');\nINSERT INTO orders VALUES (103, 1, DATE '2026-10-05',  800.00, 'PENDING');\nINSERT INTO orders VALUES (104, 3, DATE '2026-10-07', 4300.00, 'PAID');\nINSERT INTO orders VALUES (105, 2, DATE '2026-10-09',  650.00, 'CANCELLED');\nINSERT INTO orders VALUES (106, 3, DATE '2026-10-12', 1900.00, 'PAID');\nCOMMIT;",
+        "caption": "Sample orders table"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 1: transaction-specific GTT (ON COMMIT DELETE ROWS)",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This type is useful for scratch data you need only inside one transaction, for example staging rows before a single INSERT ... SELECT into a permanent table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: create the table",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE GLOBAL TEMPORARY TABLE gtt_order_stage (\n  order_id     NUMBER,\n  customer_id  NUMBER,\n  amount       NUMBER(10,2)\n) ON COMMIT DELETE ROWS;",
+        "caption": "Transaction-specific global temporary table"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: insert and query in the same transaction",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "INSERT INTO gtt_order_stage (order_id, customer_id, amount)\nSELECT order_id, customer_id, amount\n  FROM orders\n WHERE status = 'PAID';\n\nSELECT * FROM gtt_order_stage ORDER BY order_id;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "  ORDER_ID CUSTOMER_ID     AMOUNT\n---------- ----------- ----------\n       101           1       2500\n       102           2       1200\n       104           3       4300\n       106           3       1900",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The four PAID orders are visible because you are still inside the transaction that inserted them."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 3: commit and query again",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "COMMIT;\n\nSELECT COUNT(*) FROM gtt_order_stage;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "  COUNT(*)\n----------\n         0",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The commit ended the transaction, so Oracle truncated this session's rows. A ROLLBACK has the same effect. Nothing was deleted from the orders table, only the temporary rows are gone."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "",
+        "text": "Any statement that commits ends the transaction, and DDL statements commit implicitly. If you run a <code class=\"inline-code\">CREATE INDEX</code> or any other DDL in the middle of your work, the rows in an ON COMMIT DELETE ROWS table are gone after it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 2: session-specific GTT (ON COMMIT PRESERVE ROWS)",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This type keeps rows across commits until the session ends. Use it when a session builds intermediate results in several steps, such as a report that runs a few queries and commits in between."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: create and fill the table",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE GLOBAL TEMPORARY TABLE gtt_customer_totals (\n  customer_id  NUMBER,\n  order_count  NUMBER,\n  total_amount NUMBER(12,2)\n) ON COMMIT PRESERVE ROWS;\n\nINSERT INTO gtt_customer_totals (customer_id, order_count, total_amount)\nSELECT customer_id, COUNT(*), SUM(amount)\n  FROM orders\n WHERE status = 'PAID'\n GROUP BY customer_id;\n\nCOMMIT;\n\nSELECT * FROM gtt_customer_totals ORDER BY customer_id;",
+        "caption": "Session-specific global temporary table"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CUSTOMER_ID ORDER_COUNT TOTAL_AMOUNT\n----------- ----------- ------------\n          1           1         2500\n          2           1         1200\n          3           2         6200",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The rows survived the commit. They stay until this session logs out or runs TRUNCATE on the table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: query from a second session",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Open a second connection as the same user (or as another user with SELECT privilege on the table) and run the same query:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT COUNT(*) FROM gtt_customer_totals;",
+        "caption": "Run in session 2"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "  COUNT(*)\n----------\n         0",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Session 2 sees the table but none of session 1's rows. If session 2 inserts its own rows, session 1 will not see them either. Neither session can block the other on this data, because they never touch the same rows."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 3: clear the rows without logging out",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "TRUNCATE TABLE gtt_customer_totals;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On a global temporary table, TRUNCATE removes only the current session's rows. Other sessions keep theirs. It also releases the session's binding to the table, which matters for the DDL rules in the next section."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Check whether a table is temporary",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The <code class=\"inline-code\">TEMPORARY</code> and <code class=\"inline-code\">DURATION</code> columns of USER_TABLES tell you if a table is a GTT and which ON COMMIT setting it uses:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT table_name, temporary, duration\n  FROM user_tables\n WHERE table_name LIKE 'GTT%'\n ORDER BY table_name;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "TABLE_NAME            T DURATION\n--------------------- - ---------------\nGTT_CUSTOMER_TOTALS   Y SYS$SESSION\nGTT_ORDER_STAGE       Y SYS$TRANSACTION",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">SYS$TRANSACTION</code> means ON COMMIT DELETE ROWS and <code class=\"inline-code\">SYS$SESSION</code> means ON COMMIT PRESERVE ROWS."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Using a GTT inside PL/SQL",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A common pattern is a procedure that fills a GTT and then runs one or more queries against it. The table is created once, during deployment. The procedure only inserts and reads."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE PROCEDURE top_customers_report (p_min_total IN NUMBER) AS\nBEGIN\n  DELETE FROM gtt_customer_totals;  -- clear rows from an earlier call in this session\n\n  INSERT INTO gtt_customer_totals (customer_id, order_count, total_amount)\n  SELECT customer_id, COUNT(*), SUM(amount)\n    FROM orders\n   WHERE status = 'PAID'\n   GROUP BY customer_id;\n\n  FOR r IN (SELECT customer_id, total_amount\n              FROM gtt_customer_totals\n             WHERE total_amount >= p_min_total\n             ORDER BY total_amount DESC)\n  LOOP\n    DBMS_OUTPUT.PUT_LINE('Customer ' || r.customer_id || ': ' || r.total_amount);\n  END LOOP;\nEND;\n/\n\nSET SERVEROUTPUT ON\nEXEC top_customers_report(2000)",
+        "caption": "Procedure that uses a session-specific GTT"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Customer 3: 6200\nCustomer 1: 2500",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The <code class=\"inline-code\">DELETE</code> at the start matters. Because the table is ON COMMIT PRESERVE ROWS, rows from an earlier call in the same session would still be there. A DELETE is used here instead of TRUNCATE because TRUNCATE is DDL and would need EXECUTE IMMEDIATE and an implicit commit."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "",
+        "text": "Connection pools reuse sessions. With ON COMMIT PRESERVE ROWS, rows left by one request can still be there when the next request gets the same pooled session. Always clear the table at the start of the unit of work, as the procedure above does."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Indexes and DDL on global temporary tables",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You can create indexes on a global temporary table. The index is temporary too: its entries have the same session or transaction scope as the table rows."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The catch is when you can run DDL. Oracle allows ALTER TABLE, DROP TABLE and CREATE INDEX on a GTT only when no session is bound to it. A session becomes bound with its first INSERT. It is released by TRUNCATE, by ending the session, or, for an ON COMMIT DELETE ROWS table, by COMMIT or ROLLBACK."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Suppose session 1 from Example 2 still has rows in gtt_customer_totals. Another session tries to add an index:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE INDEX gtt_cust_tot_ix ON gtt_customer_totals (customer_id);",
+        "caption": "Run while session 1 still holds rows"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-14452: attempt to create, alter or drop an index on temporary table already in use",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The fix is in Oracle's action text for this error: every session using a session-specific GTT must truncate it (or disconnect), and every transaction using a transaction-specific GTT must end. In practice, create indexes during deployment, before the application starts using the table. To find the sessions holding the table, look for sessions with a temporary segment on it in <code class=\"inline-code\">V$TEMPSEG_USAGE</code>, or simply schedule the change in a maintenance window."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Optimizer statistics on global temporary tables",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The optimizer needs statistics to pick a good plan, and GTTs are tricky because each session can have very different data. Oracle Database 12c added the table preference GLOBAL_TEMP_TABLE_STATS, which has two values:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<code class=\"inline-code\">SESSION</code>: statistics gathered with DBMS_STATS.GATHER_TABLE_STATS are used only by the session that gathered them, and are deleted when that session ends.",
+            "items": []
+          },
+          {
+            "content": "<code class=\"inline-code\">SHARED</code>: all sessions see the same set of statistics, which is how releases before 12c worked.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "During optimization, Oracle first looks for session-specific statistics on the GTT and uses them if they exist. Otherwise it uses shared statistics if any exist. Here is how to check the preference and gather session statistics after loading rows:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "SELECT DBMS_STATS.GET_PREFS('GLOBAL_TEMP_TABLE_STATS', USER, 'GTT_CUSTOMER_TOTALS') AS pref\n  FROM dual;\n\nBEGIN\n  DBMS_STATS.GATHER_TABLE_STATS(ownname => USER, tabname => 'GTT_CUSTOMER_TOTALS');\nEND;\n/\n\nSELECT table_name, num_rows, scope\n  FROM user_tab_statistics\n WHERE table_name = 'GTT_CUSTOMER_TOTALS';",
+        "caption": "Gather and inspect GTT statistics"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "PREF\n--------\nSESSION\n\nTABLE_NAME            NUM_ROWS SCOPE\n--------------------- -------- -------\nGTT_CUSTOMER_TOTALS          3 SESSION",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The <code class=\"inline-code\">SCOPE</code> column of USER_TAB_STATISTICS shows whether a row of statistics is session-specific or shared. The first result depends on your database settings, so check it on your system rather than assuming."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Two more details from the Oracle SQL Tuning Guide are worth knowing. For a transaction-specific (DELETE ROWS) GTT, GATHER_TABLE_STATS does not commit, so your rows are not wiped by gathering statistics. For a session-specific (PRESERVE ROWS) GTT, it does commit. Also, CREATE GLOBAL TEMPORARY TABLE ... AS SELECT gathers statistics automatically."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Global temporary tables vs private temporary tables",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle Database 18c added private temporary tables. Both the definition and the data of a private temporary table are visible only to the session that created it, and the definition is stored in memory. Their names must start with the prefix set by PRIVATE_TEMP_TABLE_PREFIX, which is ORA$PTT_ by default."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE PRIVATE TEMPORARY TABLE ora$ptt_paid_orders (\n  order_id NUMBER,\n  amount   NUMBER(10,2)\n) ON COMMIT PRESERVE DEFINITION;",
+        "caption": "Private temporary table (Oracle 18c and later)"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Feature",
+            "Global temporary table",
+            "Private temporary table"
+          ],
+          [
+            "Definition visible to",
+            "All sessions",
+            "Only the creating session"
+          ],
+          [
+            "Definition stored",
+            "Data dictionary (disk)",
+            "Memory"
+          ],
+          [
+            "Name rule",
+            "Normal table names",
+            "Must use the ORA$PTT_ prefix (default)"
+          ],
+          [
+            "ON COMMIT options",
+            "DELETE ROWS / PRESERVE ROWS",
+            "DROP DEFINITION / PRESERVE DEFINITION"
+          ],
+          [
+            "Indexes",
+            "Allowed",
+            "Not allowed"
+          ],
+          [
+            "Optimizer statistics",
+            "Can be gathered",
+            "Cannot be gathered"
+          ],
+          [
+            "Used in views, triggers, stored code",
+            "Yes",
+            "Not in permanent objects"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Choose a global temporary table for application code that runs every day: you define it once, index it, and reference it from packages. A private temporary table suits ad hoc scripts and cases where you cannot or do not want to create a permanent dictionary object."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Creating the table inside a procedure on every run",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Developers coming from SQL Server often create a temp table at the start of a procedure and drop it at the end. In Oracle that means dynamic DDL, implicit commits and ORA-14452 when sessions overlap. Oracle's own guidance is that you create a temporary table for the database itself, not for every stored procedure. Create the GTT once and reuse it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Forgetting the default is DELETE ROWS",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Without an ON COMMIT clause the table is transaction-specific. If your code commits between filling the table and reading it, the table is empty. Pick the clause on purpose and write it out every time."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Expecting other sessions to see the data",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A GTT cannot be used to pass data between sessions, jobs or users. Each session has its own rows. Use a permanent table if another session must read the data."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Expecting the data to survive a failure",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Backup and recovery are not available for temporary table data. Anything you need to keep must be copied to a permanent table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Hitting a restriction at deployment time",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In Oracle 19c, temporary tables cannot be partitioned, clustered or index-organized, cannot have foreign key constraints, cannot contain nested table columns, cannot have INVISIBLE columns, and do not support parallel UPDATE, DELETE or MERGE or distributed transactions."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Performance tips",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Index the GTT columns you join or filter on, just like a permanent table. Create the indexes at deployment time.",
+            "items": []
+          },
+          {
+            "content": "After loading a large number of rows, gather statistics in the session (with the SESSION preference) so the optimizer does not guess the row count.",
+            "items": []
+          },
+          {
+            "content": "Consider setting <code class=\"inline-code\">TEMP_UNDO_ENABLED</code> to TRUE (Oracle 12c and later, COMPATIBLE 12.0.0 or higher). It stores undo for temporary objects separately from permanent undo, which Oracle documents as reducing the overall undo and redo the database generates. It must be set before the session first uses a temporary object, because it cannot be changed once that session has temporary objects using undo.",
+            "items": []
+          },
+          {
+            "content": "If many small GTT operations waste space in a temporary tablespace with a large extent size, the GTT can be placed in its own temporary tablespace with the TABLESPACE clause.",
+            "items": []
+          },
+          {
+            "content": "Do not use a GTT where a single SQL statement (a join, a WITH clause or an analytic function) can do the job. A GTT adds an extra write and read of the data.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "",
+        "text": "Because GTT data lives in a temporary tablespace, a session that loads a lot of rows uses TEMP space. Size the temporary tablespace with that in mind and monitor it during heavy batch runs."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between ON COMMIT DELETE ROWS and ON COMMIT PRESERVE ROWS?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "DELETE ROWS (the default) empties the session's rows at the end of every transaction. PRESERVE ROWS keeps them across commits until the session ends or truncates the table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can multiple sessions use the same global temporary table at the same time?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Yes. That is what the table is built for. Each session sees and changes only its own rows, so sessions do not block each other on the data."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can we create an index on a global temporary table in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Yes. The index is also temporary and has the same scope as the table data. You can only create it when no session is bound to the table, otherwise you get ORA-14452."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Does a global temporary table generate redo?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The table data itself is temporary, but DML on a GTT still generates undo, and with the default settings that undo is protected by redo. Setting TEMP_UNDO_ENABLED to TRUE keeps undo for temporary objects in the temporary tablespace and reduces this redo."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I drop a global temporary table that is in use?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "All sessions using it must first truncate it or disconnect, and transactions using a DELETE ROWS table must end. Then DROP TABLE works like it does for a normal table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "A GTT has a shared definition and session-private rows",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "ON COMMIT DELETE ROWS (default) clears rows at commit; PRESERVE ROWS clears them at session end",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Create the GTT once at deployment, never inside procedures",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Clear the table at the start of each unit of work when sessions are pooled",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Create indexes before sessions start using the table to avoid ORA-14452",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Gather session statistics after big loads; check the SCOPE column",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use private temporary tables (18c+) for ad hoc, session-only work",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your Oracle report procedure works in testing but returns an empty result in production. Check your temporary table.\n\nGlobal temporary tables (GTT) in Oracle have a shared definition but private rows for each session. A few rules that save hours of debugging:\n\n→ The default is ON COMMIT DELETE ROWS. One COMMIT, or any DDL, and your rows are gone.\n→ Use ON COMMIT PRESERVE ROWS when the data must survive commits within a session.\n→ Create the GTT once at deployment. Creating it inside a procedure, SQL Server style, leads to implicit commits and ORA-14452.\n→ Connection pools reuse sessions, so PRESERVE ROWS data can leak into the next request. Clear the table at the start of each call.\n→ Since 12c, statistics on a GTT can be session-specific (GLOBAL_TEMP_TABLE_STATS = SESSION). Gather them after a big load.\n\nBonus: Oracle 18c added private temporary tables (ORA$PTT_ prefix) for session-only, ad hoc work.\n\nDo you use GTTs in your PL/SQL code, or do you prefer a WITH clause?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #PLSQL #OracleSQL #SQLInterview",
+    "slides": [
+      {
+        "title": "Oracle Global Temporary Tables",
+        "body": "Shared definition, private rows: how GTTs work and where they bite"
+      },
+      {
+        "title": "What a GTT is",
+        "points": [
+          "Definition stored once, visible to all sessions",
+          "Rows visible only to the session that inserted them",
+          "No storage until the first INSERT in a session"
+        ]
+      },
+      {
+        "title": "Pick the ON COMMIT clause",
+        "points": [
+          "DELETE ROWS (default): rows gone after COMMIT",
+          "PRESERVE ROWS: rows stay until the session ends",
+          "Write the clause explicitly every time"
+        ],
+        "code": "CREATE GLOBAL TEMPORARY TABLE gtt_totals (\n  customer_id  NUMBER,\n  total_amount NUMBER(12,2)\n) ON COMMIT PRESERVE ROWS;",
+        "lang": "sql"
+      },
+      {
+        "title": "Clear it before each use",
+        "body": "With PRESERVE ROWS, rows from an earlier call stay in the session. Pooled connections reuse sessions, so delete old rows first.",
+        "code": "BEGIN\n  DELETE FROM gtt_totals;\n  INSERT INTO gtt_totals\n  SELECT customer_id, SUM(amount)\n    FROM orders\n   GROUP BY customer_id;\nEND;\n/",
+        "lang": "plsql"
+      },
+      {
+        "title": "ORA-14452: table already in use",
+        "points": [
+          "DDL is allowed only when no session is bound to the GTT",
+          "A session binds with its first INSERT",
+          "Create indexes at deployment, not at runtime"
+        ]
+      },
+      {
+        "title": "Statistics and private tables",
+        "points": [
+          "12c+: GLOBAL_TEMP_TABLE_STATS = SESSION or SHARED",
+          "Gather stats after big loads in the same session",
+          "18c+: private temp tables use the ORA$PTT_ prefix"
+        ]
+      }
+    ]
+  }
+}
