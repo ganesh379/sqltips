@@ -24,3 +24,4 @@
 - 2026-10-26 [PostgreSQL] postgresql pg_hba.conf allow remote connections -> _drafts/2026-10-26-postgresql-postgresql-dba-part-6-pg-hba-conf-authentication.json
 - 2026-10-27 [Oracle] oracle global temporary table -> _drafts/2026-10-27-oracle-oracle-global-temporary-table.json
 - 2026-10-27 [PostgreSQL] postgresql create user and grant privileges -> _drafts/2026-10-27-postgresql-postgresql-dba-part-7-roles-and-privileges.json
+- 2026-10-28 [Oracle] oracle connect by prior example -> _drafts/2026-10-28-oracle-oracle-connect-by-prior-example.json

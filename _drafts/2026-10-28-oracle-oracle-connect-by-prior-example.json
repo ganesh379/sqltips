@@ -1,0 +1,1073 @@
+{
+ "schemaVersion": 1,
+ "title": "Oracle CONNECT BY PRIOR Example: Hierarchical Queries Explained",
+ "slug": "oracle-connect-by-prior-example",
+ "category": "plsql",
+ "description": "Learn Oracle CONNECT BY PRIOR with a worked example: walk a tree up and down, use LEVEL and SYS_CONNECT_BY_PATH, and fix ORA-01436 loop errors.",
+ "focusKeyword": "oracle connect by prior example",
+ "tags": [
+  "oracle",
+  "oracle-sql",
+  "hierarchical-query",
+  "connect-by"
+ ],
+ "related": [
+  "/posts/plsql/how-to-read-explain-plan-in-oracle/",
+  "/posts/interview-questions/tricky-sql-queries-for-interview-preparation/",
+  "/posts/plsql/oracle-listagg-distinct/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle 19c SQL Reference: Hierarchical Queries",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Hierarchical-Queries.html"
+  },
+  {
+   "title": "Oracle 19c SQL Reference: Hierarchical Query Pseudocolumns",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Hierarchical-Query-Pseudocolumns.html"
+  },
+  {
+   "title": "Oracle 19c SQL Reference: Hierarchical Query Operators (PRIOR, CONNECT_BY_ROOT)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Hierarchical-Query-Operators.html"
+  },
+  {
+   "title": "Oracle 19c SQL Reference: SYS_CONNECT_BY_PATH",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/SYS_CONNECT_BY_PATH.html"
+  },
+  {
+   "title": "Oracle error help: ORA-01436",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-01436/"
+  },
+  {
+   "title": "Oracle error help: ORA-30004",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-30004/"
+  },
+  {
+   "title": "Oracle SQL blog: How to generate days, weeks or months between two dates",
+   "url": "https://blogs.oracle.com/sql/how-to-generate-days-weeks-or-months-between-two-dates-in-oracle-database"
+  }
+ ],
+ "reviewNotes": "All examples written from the Oracle 19c SQL Reference and not executed; please test-run every query on 19c/23ai and confirm the expected outputs (especially the NOCYCLE example, where Arjun should be the only row with CONNECT_BY_ISCYCLE = 1, and the WHERE vs CONNECT BY filtering outputs). The docs say a CONNECT BY condition needs PRIOR, yet the widely used CONNECT BY LEVEL <= n row generator on DUAL has none; it is presented as a common idiom (Oracle SQL blog), not as documented syntax. The recursive WITH 'since 11g Release 2' version claim and SEARCH DEPTH FIRST syntax should be checked. Output tables show NULL manager_id as an empty cell.",
+ "generatedAt": "2026-10-28T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To query a tree in Oracle, such as employees and their managers, you use <code class=\"inline-code\">START WITH</code> to pick the top row and <code class=\"inline-code\">CONNECT BY PRIOR</code> to tell Oracle how a parent row links to its children. A typical query is <code class=\"inline-code\">START WITH manager_id IS NULL CONNECT BY PRIOR employee_id = manager_id</code>, which walks from the boss down to every person below them."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial builds one small table and runs every common pattern on it: walking down and up the tree, indenting an org chart, showing the full path with <code class=\"inline-code\">SYS_CONNECT_BY_PATH</code>, finding leaf rows, totals per manager with <code class=\"inline-code\">CONNECT_BY_ROOT</code>, fixing ORA-01436 loops, and generating rows with <code class=\"inline-code\">CONNECT BY LEVEL</code>. Each query has its expected output and an explanation."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How a CONNECT BY hierarchical query works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Many tables store a tree inside themselves. Each row has its own key and a pointer to its parent row, like an employee row that holds the ID of its manager. A plain SELECT sees these as flat rows. A hierarchical query follows the pointers and returns the rows in tree order."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Three clauses do the work:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">START WITH condition</code>: which rows are the roots (the top of each tree). If you leave it out, every row is treated as a root.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">CONNECT BY condition</code>: how a child row relates to its parent row.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">PRIOR</code>: marks the expression that is read from the <b>parent</b> row. In <code class=\"inline-code\">PRIOR employee_id = manager_id</code>, the parent's employee_id must equal the child's manager_id.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle also gives you the <code class=\"inline-code\">LEVEL</code> pseudocolumn, which is 1 for a root row, 2 for its children, 3 for grandchildren, and so on. Results come back depth first: a parent, then its whole branch, then the next sibling."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The order of evaluation matters, and it explains many surprising results. Oracle first does any join, then builds the tree with CONNECT BY, and only then applies the remaining WHERE conditions. We will see why that matters in a later section."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small company table. Asha is the CEO with no manager. Ravi and Meera report to her, and the rest report further down."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE employees (\n  employee_id  NUMBER PRIMARY KEY,\n  emp_name     VARCHAR2(30) NOT NULL,\n  job_title    VARCHAR2(30),\n  manager_id   NUMBER REFERENCES employees (employee_id),\n  salary       NUMBER(10)\n);\n\nINSERT INTO employees VALUES (1, 'Asha',   'CEO',          NULL, 250000);\nINSERT INTO employees VALUES (2, 'Ravi',   'CTO',          1,    180000);\nINSERT INTO employees VALUES (3, 'Meera',  'CFO',          1,    170000);\nINSERT INTO employees VALUES (4, 'Karan',  'Dev Lead',     2,    120000);\nINSERT INTO employees VALUES (5, 'Priya',  'QA Lead',      2,    110000);\nINSERT INTO employees VALUES (6, 'Arjun',  'Developer',    4,     80000);\nINSERT INTO employees VALUES (7, 'Neha',   'Developer',    4,     75000);\nINSERT INTO employees VALUES (8, 'Vikram', 'Accountant',   3,     70000);\nCOMMIT;\n\nCREATE INDEX emp_manager_ix ON employees (manager_id);",
+    "caption": "Sample employees table"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The tree looks like this: Asha at the top, Ravi and Meera below her, Karan and Priya under Ravi, Arjun and Neha under Karan, and Vikram under Meera. The index on manager_id is there for performance, which is covered near the end."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 1: walk down the tree from the top",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: the basic CONNECT BY PRIOR query",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Start at the row with no manager and keep finding rows whose manager_id equals the employee_id of the row above."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT employee_id, emp_name, manager_id, LEVEL\n  FROM employees\n START WITH manager_id IS NULL\nCONNECT BY PRIOR employee_id = manager_id\n ORDER SIBLINGS BY emp_name;",
+    "caption": "Top-down hierarchy"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "EMPLOYEE_ID",
+      "EMP_NAME",
+      "MANAGER_ID",
+      "LEVEL"
+     ],
+     [
+      "1",
+      "Asha",
+      "",
+      "1"
+     ],
+     [
+      "3",
+      "Meera",
+      "1",
+      "2"
+     ],
+     [
+      "8",
+      "Vikram",
+      "3",
+      "3"
+     ],
+     [
+      "2",
+      "Ravi",
+      "1",
+      "2"
+     ],
+     [
+      "4",
+      "Karan",
+      "2",
+      "3"
+     ],
+     [
+      "6",
+      "Arjun",
+      "4",
+      "4"
+     ],
+     [
+      "7",
+      "Neha",
+      "4",
+      "4"
+     ],
+     [
+      "5",
+      "Priya",
+      "2",
+      "3"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it from the top. Asha is level 1. Meera comes next (alphabetically before Ravi), and her whole branch (Vikram) is listed before Oracle moves on to Ravi. Under Ravi you get Karan, then Karan's team, then Priya. That is depth-first order."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">ORDER SIBLINGS BY emp_name</code> sorts only rows that share the same parent. It keeps the tree shape. Without it, the order of siblings is not guaranteed."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Do not use a plain ORDER BY here",
+    "text": "A normal <code class=\"inline-code\">ORDER BY emp_name</code> sorts the whole result and throws away the tree order, so children no longer appear under their parents. Use <code class=\"inline-code\">ORDER SIBLINGS BY</code> when you want to keep the hierarchy."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: indent the output like an org chart",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">LEVEL</code> tells you how deep each row is, so you can pad the name with spaces."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT LPAD(' ', (LEVEL - 1) * 2) || emp_name AS org_chart,\n       job_title\n  FROM employees\n START WITH manager_id IS NULL\nCONNECT BY PRIOR employee_id = manager_id\n ORDER SIBLINGS BY emp_name;",
+    "caption": "Indented org chart"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORG_CHART          JOB_TITLE\n------------------ ----------\nAsha               CEO\n  Meera            CFO\n    Vikram         Accountant\n  Ravi             CTO\n    Karan          Dev Lead\n      Arjun        Developer\n      Neha         Developer\n    Priya          QA Lead",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For level 1, <code class=\"inline-code\">LPAD(' ', 0)</code> returns NULL, and in Oracle NULL concatenated with a string gives the string, so Asha has no indent. Each level below adds two spaces."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 2: walk up the tree (find all managers of an employee)",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Moving <code class=\"inline-code\">PRIOR</code> to the other side of the condition reverses the direction. To list Arjun and everyone above him, start at Arjun and look for the row whose employee_id equals the current row's manager_id."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT employee_id, emp_name, job_title, LEVEL\n  FROM employees\n START WITH employee_id = 6\nCONNECT BY employee_id = PRIOR manager_id;",
+    "caption": "Bottom-up: Arjun's chain of managers"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "EMPLOYEE_ID",
+      "EMP_NAME",
+      "JOB_TITLE",
+      "LEVEL"
+     ],
+     [
+      "6",
+      "Arjun",
+      "Developer",
+      "1"
+     ],
+     [
+      "4",
+      "Karan",
+      "Dev Lead",
+      "2"
+     ],
+     [
+      "2",
+      "Ravi",
+      "CTO",
+      "3"
+     ],
+     [
+      "1",
+      "Asha",
+      "CEO",
+      "4"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here level 1 is Arjun because he is where the walk started. A simple way to remember it: <code class=\"inline-code\">PRIOR</code> goes on the column of the row you came from. Going down, you came from the manager, so it is <code class=\"inline-code\">PRIOR employee_id = manager_id</code>. Going up, you came from the employee, so it is <code class=\"inline-code\">employee_id = PRIOR manager_id</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 3: show the full path, leaf rows and the root",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: SYS_CONNECT_BY_PATH and CONNECT_BY_ISLEAF",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">SYS_CONNECT_BY_PATH(column, separator)</code> builds the path from the root to the current row. <code class=\"inline-code\">CONNECT_BY_ISLEAF</code> returns 1 when a row has no children in the tree, and 0 otherwise."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT emp_name,\n       SYS_CONNECT_BY_PATH(emp_name, '/') AS path,\n       CONNECT_BY_ISLEAF AS is_leaf\n  FROM employees\n START WITH manager_id IS NULL\nCONNECT BY PRIOR employee_id = manager_id\n ORDER SIBLINGS BY emp_name;",
+    "caption": "Path from the root and leaf flag"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "EMP_NAME",
+      "PATH",
+      "IS_LEAF"
+     ],
+     [
+      "Asha",
+      "/Asha",
+      "0"
+     ],
+     [
+      "Meera",
+      "/Asha/Meera",
+      "0"
+     ],
+     [
+      "Vikram",
+      "/Asha/Meera/Vikram",
+      "1"
+     ],
+     [
+      "Ravi",
+      "/Asha/Ravi",
+      "0"
+     ],
+     [
+      "Karan",
+      "/Asha/Ravi/Karan",
+      "0"
+     ],
+     [
+      "Arjun",
+      "/Asha/Ravi/Karan/Arjun",
+      "1"
+     ],
+     [
+      "Neha",
+      "/Asha/Ravi/Karan/Neha",
+      "1"
+     ],
+     [
+      "Priya",
+      "/Asha/Ravi/Priya",
+      "1"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The path is useful for breadcrumbs (Home / Electronics / Phones), and the leaf flag answers a common question: \"who has no direct reports?\" Add <code class=\"inline-code\">WHERE CONNECT_BY_ISLEAF = 1</code> to get only Vikram, Arjun, Neha and Priya."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Choose a separator that never appears in the data",
+    "text": "If any value contains the separator, Oracle raises <b>ORA-30004: when using SYS_CONNECT_BY_PATH function, cannot have separator as part of column value</b>. Category names like \"Phones/Tablets\" will break a <code class=\"inline-code\">'/'</code> separator, so pick something like <code class=\"inline-code\">' > '</code> or <code class=\"inline-code\">'|'</code> instead."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: CONNECT_BY_ROOT for totals per manager",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">CONNECT_BY_ROOT column</code> returns the value from the root row of the current branch. If you leave out <code class=\"inline-code\">START WITH</code>, every row becomes a root once, so each manager gets their own subtree. Grouping by the root then gives team size and team salary cost for every manager."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT root_name,\n       COUNT(*) - 1 AS total_reports,\n       SUM(salary)  AS team_salary\n  FROM (SELECT CONNECT_BY_ROOT emp_name AS root_name,\n               salary\n          FROM employees\n       CONNECT BY PRIOR employee_id = manager_id)\n GROUP BY root_name\nHAVING COUNT(*) > 1\n ORDER BY total_reports DESC;",
+    "caption": "Direct and indirect reports per manager"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ROOT_NAME",
+      "TOTAL_REPORTS",
+      "TEAM_SALARY"
+     ],
+     [
+      "Asha",
+      "7",
+      "1055000"
+     ],
+     [
+      "Ravi",
+      "4",
+      "565000"
+     ],
+     [
+      "Karan",
+      "2",
+      "275000"
+     ],
+     [
+      "Meera",
+      "1",
+      "240000"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Ravi's subtree is Ravi, Karan, Priya, Arjun and Neha. That is 5 rows, so 4 reports, and the salary total includes Ravi himself. The HAVING clause drops people with no reports. Notice that the GROUP BY sits in an outer query: putting it directly on the hierarchical query would destroy the tree order, and here we want totals, not a tree."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You cannot use <code class=\"inline-code\">CONNECT_BY_ROOT</code> inside the START WITH or CONNECT BY condition. Use it in the select list, as here, or filter on it in an outer query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 4: WHERE vs CONNECT BY filtering (a common trap)",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Suppose you want to hide Karan. Where you put the condition changes the result completely."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Filter in WHERE: removes only the row",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT LPAD(' ', (LEVEL - 1) * 2) || emp_name AS org_chart, LEVEL\n  FROM employees\n WHERE emp_name <> 'Karan'\n START WITH manager_id IS NULL\nCONNECT BY PRIOR employee_id = manager_id\n ORDER SIBLINGS BY emp_name;",
+    "caption": "Condition in WHERE"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORG_CHART          LEVEL\n------------------ -----\nAsha                   1\n  Meera                2\n    Vikram             3\n  Ravi                 2\n      Arjun            4\n      Neha             4\n    Priya              3",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Karan is gone, but Arjun and Neha are still there at level 4. Oracle built the full tree first and then removed rows that fail the WHERE condition, one row at a time. Their parent simply vanished from the output."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Filter in CONNECT BY: prunes the whole branch",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT LPAD(' ', (LEVEL - 1) * 2) || emp_name AS org_chart, LEVEL\n  FROM employees\n START WITH manager_id IS NULL\nCONNECT BY PRIOR employee_id = manager_id\n       AND emp_name <> 'Karan'\n ORDER SIBLINGS BY emp_name;",
+    "caption": "Condition in CONNECT BY"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORG_CHART          LEVEL\n------------------ -----\nAsha                   1\n  Meera                2\n    Vikram             3\n  Ravi                 2\n    Priya              3",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now Karan is never connected to Ravi, so Oracle never visits Karan's children either. Use WHERE to hide individual rows and CONNECT BY to cut off a branch. Note that the CONNECT BY condition does not apply to the root rows, which are chosen by START WITH alone."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 5: fix ORA-01436 CONNECT BY loop in user data",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Bad data can make a tree loop back on itself. For example, someone sets the CEO's manager to Arjun, who is at the bottom of her own branch."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "UPDATE employees SET manager_id = 6 WHERE employee_id = 1;\n\nSELECT emp_name, LEVEL\n  FROM employees\n START WITH employee_id = 1\nCONNECT BY PRIOR employee_id = manager_id;",
+    "caption": "Creating a loop"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-01436: CONNECT BY loop in user data",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle stops because a row would become its own descendant, so the walk could never end. To see the data anyway and find the bad row, add <code class=\"inline-code\">NOCYCLE</code> and the <code class=\"inline-code\">CONNECT_BY_ISCYCLE</code> pseudocolumn. <code class=\"inline-code\">CONNECT_BY_ISCYCLE</code> is only allowed when NOCYCLE is present."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT emp_name, manager_id, LEVEL,\n       CONNECT_BY_ISCYCLE AS is_cycle\n  FROM employees\n START WITH employee_id = 1\nCONNECT BY NOCYCLE PRIOR employee_id = manager_id\n ORDER SIBLINGS BY emp_name;\n\nROLLBACK;",
+    "caption": "Finding the loop with NOCYCLE"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "EMP_NAME",
+      "MANAGER_ID",
+      "LEVEL",
+      "IS_CYCLE"
+     ],
+     [
+      "Asha",
+      "6",
+      "1",
+      "0"
+     ],
+     [
+      "Meera",
+      "1",
+      "2",
+      "0"
+     ],
+     [
+      "Vikram",
+      "3",
+      "3",
+      "0"
+     ],
+     [
+      "Ravi",
+      "1",
+      "2",
+      "0"
+     ],
+     [
+      "Karan",
+      "2",
+      "3",
+      "0"
+     ],
+     [
+      "Arjun",
+      "4",
+      "4",
+      "1"
+     ],
+     [
+      "Neha",
+      "4",
+      "4",
+      "0"
+     ],
+     [
+      "Priya",
+      "2",
+      "3",
+      "0"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Arjun is flagged with 1 because his child (Asha) is also his ancestor. That points you straight to the broken link. NOCYCLE is a diagnostic tool: the real fix is to correct the data, here by setting Asha's manager_id back to NULL (the ROLLBACK does that), and to add checks so it cannot happen again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Example 6: generate rows with CONNECT BY LEVEL",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A popular trick uses <code class=\"inline-code\">CONNECT BY LEVEL</code> on the one-row <code class=\"inline-code\">DUAL</code> table to produce a list of numbers or dates. There is no real tree here: Oracle keeps connecting the single row to itself until the LEVEL condition fails."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT TO_CHAR(DATE '2026-10-01' + LEVEL - 1, 'YYYY-MM-DD') AS report_day\n  FROM dual\nCONNECT BY LEVEL <= 5;",
+    "caption": "Generate five consecutive dates"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "REPORT_DAY\n----------\n2026-10-01\n2026-10-02\n2026-10-03\n2026-10-04\n2026-10-05",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is handy for reports that must show every day, even days with no orders: generate the days, then outer join your orders table to them. Keep the upper limit small and explicit. Running this pattern against a real table with many rows, instead of DUAL, multiplies rows very quickly."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "CONNECT BY vs recursive WITH",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Since Oracle 11g Release 2, you can also write hierarchies with recursive subquery factoring, which is the SQL standard way and is also how PostgreSQL does it (<code class=\"inline-code\">WITH RECURSIVE</code>). Here is Example 1 rewritten:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "WITH org (employee_id, emp_name, manager_id, lvl) AS (\n  SELECT employee_id, emp_name, manager_id, 1\n    FROM employees\n   WHERE manager_id IS NULL\n  UNION ALL\n  SELECT e.employee_id, e.emp_name, e.manager_id, o.lvl + 1\n    FROM employees e\n    JOIN org o ON e.manager_id = o.employee_id\n)\nSEARCH DEPTH FIRST BY emp_name SET sort_order\nSELECT LPAD(' ', (lvl - 1) * 2) || emp_name AS org_chart, lvl\n  FROM org\n ORDER BY sort_order;",
+    "caption": "Same org chart with recursive WITH"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It returns the same indented chart as Example 1. The two styles compare like this:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Point",
+      "CONNECT BY",
+      "Recursive WITH"
+     ],
+     [
+      "Syntax",
+      "Short, Oracle-specific",
+      "Longer, SQL standard"
+     ],
+     [
+      "Depth and path",
+      "LEVEL, SYS_CONNECT_BY_PATH built in",
+      "You compute them as columns"
+     ],
+     [
+      "Sibling order",
+      "ORDER SIBLINGS BY",
+      "SEARCH DEPTH/BREADTH FIRST BY"
+     ],
+     [
+      "Loops",
+      "NOCYCLE, CONNECT_BY_ISCYCLE",
+      "CYCLE ... SET clause"
+     ],
+     [
+      "Portability",
+      "Oracle only",
+      "Works in PostgreSQL, SQL Server and others"
+     ],
+     [
+      "Flexibility",
+      "One parent link per step",
+      "Can carry running totals and complex logic"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For everyday Oracle trees, CONNECT BY is shorter and easier to read. Choose recursive WITH when you need running calculations along the path, breadth-first order, or code that must also run on another database."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>PRIOR on the wrong side.</b> <code class=\"inline-code\">CONNECT BY employee_id = PRIOR manager_id</code> walks up, not down. If you start at the CEO and get one row back, check which side PRIOR is on.",
+      "items": []
+     },
+     {
+      "content": "<b>Forgetting START WITH.</b> Without it, every row is a root, so each employee appears once as a root and once more under every manager above them. That is useful for CONNECT_BY_ROOT totals, but it looks like duplicates in an org chart.",
+      "items": []
+     },
+     {
+      "content": "<b>Plain ORDER BY or GROUP BY on the hierarchy.</b> Both override the tree order. Use ORDER SIBLINGS BY, or group in an outer query.",
+      "items": []
+     },
+     {
+      "content": "<b>Filtering in WHERE when you meant to prune a branch.</b> WHERE removes single rows after the tree is built. Put the condition in CONNECT BY to stop the walk.",
+      "items": []
+     },
+     {
+      "content": "<b>Using NOCYCLE to hide bad data.</b> It makes the error go away but leaves the loop in your table. Find the row with CONNECT_BY_ISCYCLE and fix it.",
+      "items": []
+     },
+     {
+      "content": "<b>A separator that appears in the data.</b> SYS_CONNECT_BY_PATH then fails with ORA-30004.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Index the parent column.</b> For <code class=\"inline-code\">PRIOR employee_id = manager_id</code>, Oracle repeatedly looks up children by manager_id, so an index on manager_id helps on large tables. The key column (employee_id) is normally already indexed as the primary key.",
+      "items": []
+     },
+     {
+      "content": "<b>Make START WITH selective.</b> Starting from one department head is far cheaper than building every tree and filtering later.",
+      "items": []
+     },
+     {
+      "content": "<b>Prune early.</b> Conditions in CONNECT BY (such as <code class=\"inline-code\">AND LEVEL <= 3</code>) stop Oracle from visiting rows it would throw away anyway.",
+      "items": []
+     },
+     {
+      "content": "<b>Check the plan.</b> Run EXPLAIN PLAN or DBMS_XPLAN and look for a CONNECT BY operation and whether it uses the manager_id index.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What does PRIOR mean in Oracle CONNECT BY?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PRIOR tells Oracle to take the value from the parent row. In <code class=\"inline-code\">CONNECT BY PRIOR employee_id = manager_id</code>, a row is a child when its manager_id equals the parent's employee_id. Moving PRIOR to the other column reverses the direction of the walk."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between START WITH and CONNECT BY?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "START WITH picks the root rows where the tree begins. CONNECT BY defines how each next level is found from the current one. You can have many roots, and without START WITH every row is a root."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I get the top-level parent of each row in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">CONNECT_BY_ROOT</code>, for example <code class=\"inline-code\">CONNECT_BY_ROOT emp_name</code>, in the select list. It returns the value from the root of the branch the current row belongs to."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I fix ORA-01436 CONNECT BY loop in user data?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The data contains a cycle, where a row is its own ancestor. Run the query with CONNECT BY NOCYCLE and select CONNECT_BY_ISCYCLE to find the row that closes the loop, then correct its parent column."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does PostgreSQL support CONNECT BY?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. In PostgreSQL you write the same logic with WITH RECURSIVE, which works like the recursive WITH example above. Oracle supports both styles."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "START WITH picks the root rows; CONNECT BY defines the parent-child link.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "PRIOR marks the parent's column: PRIOR employee_id = manager_id walks down, employee_id = PRIOR manager_id walks up.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "LEVEL gives the depth; use LPAD with LEVEL to indent output.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use ORDER SIBLINGS BY, never a plain ORDER BY, to keep tree order.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "SYS_CONNECT_BY_PATH shows the path, CONNECT_BY_ISLEAF finds leaves, CONNECT_BY_ROOT returns the root value.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "WHERE removes single rows after the tree is built; a CONNECT BY condition prunes whole branches.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "ORA-01436 means a loop in the data; find it with NOCYCLE and CONNECT_BY_ISCYCLE, then fix the data.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Index the parent column (manager_id) for large hierarchies.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your org chart query returns one row when it should return the whole team. The usual cause: PRIOR on the wrong side.\n\nOracle CONNECT BY PRIOR in 5 points:\n\n→ START WITH picks the root rows. CONNECT BY says how a child row links to its parent.\n→ PRIOR employee_id = manager_id walks down the tree. employee_id = PRIOR manager_id walks up.\n→ Use ORDER SIBLINGS BY, not ORDER BY. A plain ORDER BY breaks the tree order.\n→ A condition in WHERE removes one row. The same condition in CONNECT BY cuts off the whole branch below it.\n→ ORA-01436 means a loop in your data. CONNECT BY NOCYCLE with CONNECT_BY_ISCYCLE shows the row that closes the loop. Then fix the data.\n\nBonus: SYS_CONNECT_BY_PATH(emp_name, '/') returns the full path, like /Asha/Ravi/Karan.\n\nDo you still write CONNECT BY in Oracle, or have you moved to recursive WITH?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #SQLInterview",
+  "slides": [
+   {
+    "title": "Oracle CONNECT BY PRIOR, Explained",
+    "body": "Walk up and down a tree in one query, and avoid the common traps"
+   },
+   {
+    "title": "Walk down the tree",
+    "body": "Start at the row with no manager. PRIOR marks the parent's column, so each child has manager_id equal to the parent's employee_id.",
+    "code": "SELECT emp_name, LEVEL\nFROM employees\nSTART WITH manager_id IS NULL\nCONNECT BY PRIOR employee_id = manager_id\nORDER SIBLINGS BY emp_name;",
+    "lang": "sql"
+   },
+   {
+    "title": "Move PRIOR to walk up",
+    "points": [
+     "Start at the employee, not the CEO",
+     "PRIOR goes on the column of the row you came from",
+     "LEVEL 1 is the starting row"
+    ],
+    "code": "SELECT emp_name, LEVEL\nFROM employees\nSTART WITH employee_id = 6\nCONNECT BY employee_id = PRIOR manager_id;",
+    "lang": "sql"
+   },
+   {
+    "title": "Show the path and the leaves",
+    "points": [
+     "SYS_CONNECT_BY_PATH builds /Asha/Ravi/Karan",
+     "CONNECT_BY_ISLEAF = 1 means no direct reports",
+     "Separator inside the data raises ORA-30004"
+    ],
+    "code": "SELECT emp_name,\n  SYS_CONNECT_BY_PATH(emp_name, '/') AS path,\n  CONNECT_BY_ISLEAF AS is_leaf\nFROM employees\nSTART WITH manager_id IS NULL\nCONNECT BY PRIOR employee_id = manager_id;",
+    "lang": "sql"
+   },
+   {
+    "title": "WHERE vs CONNECT BY filters",
+    "points": [
+     "WHERE runs after the tree is built and removes single rows",
+     "Children of a removed row still appear",
+     "A condition in CONNECT BY prunes the whole branch",
+     "Plain ORDER BY or GROUP BY breaks tree order"
+    ]
+   },
+   {
+    "title": "ORA-01436: loop in user data",
+    "points": [
+     "A row has become its own ancestor",
+     "Add NOCYCLE to see the rows anyway",
+     "CONNECT_BY_ISCYCLE = 1 marks the row closing the loop",
+     "Fix the parent column, do not just hide it"
+    ]
+   }
+  ]
+ }
+}
