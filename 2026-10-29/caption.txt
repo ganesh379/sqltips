@@ -1,0 +1,21 @@
+Your PL/pgSQL function threw "invalid transaction termination"? You needed a procedure.
+
+A plpgsql function returns a value. It lives inside your query, and you call it with SELECT.
+
+A PostgreSQL procedure has no RETURNS clause. You run it on its own with CALL.
+
+Here's what actually matters: only a procedure can COMMIT or ROLLBACK while it runs. So batch jobs belong in procedures. On a 10,000-row test table, archive_orders moved 4,126 old orders into orders_archive, 1,000 rows per batch, with a COMMIT after each one.
+
+Pick the wrong one and you'll know fast. Slides 6 to 8 show the 3 real errors you get.
+
+Put COMMIT in a function and you get invalid transaction termination.
+
+SELECT on a procedure, or CALL on a function, fails with a HINT that names the right one.
+
+Run CALL inside BEGIN and it fails too, the moment your procedure tries to commit.
+
+Procedures need PostgreSQL 11 or later. Tested on PostgreSQL 16.
+
+Save this for the next batch job you write.
+
+#postgresql #plpgsql #sql #dba #database
