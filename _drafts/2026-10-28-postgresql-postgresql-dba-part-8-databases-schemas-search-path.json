@@ -1,0 +1,1450 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 8: Databases, Schemas and search_path",
+ "slug": "postgresql-dba-part-8-databases-schemas-search-path",
+ "category": "postgresql",
+ "description": "PostgreSQL schema vs database explained for DBAs: create databases, use template0, organise schemas and set search_path permanently, with real output.",
+ "focusKeyword": "postgresql schema vs database",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "schema",
+  "search-path",
+  "database-administration"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/",
+  "/posts/postgresql/postgresql-dba-part-4-psql-commands/",
+  "/posts/postgresql/postgresql-dba-part-3-data-directory-pgdata/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: Chapter 22.1 Managing Databases, Overview",
+   "url": "https://www.postgresql.org/docs/current/manage-ag-overview.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 22.2 Creating a Database",
+   "url": "https://www.postgresql.org/docs/current/manage-ag-createdb.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 22.3 Template Databases",
+   "url": "https://www.postgresql.org/docs/current/manage-ag-templatedbs.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 22.4 Database Configuration",
+   "url": "https://www.postgresql.org/docs/current/manage-ag-config.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 22.5 Destroying a Database",
+   "url": "https://www.postgresql.org/docs/current/manage-ag-dropdb.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 5.10 Schemas",
+   "url": "https://www.postgresql.org/docs/current/ddl-schemas.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CREATE DATABASE",
+   "url": "https://www.postgresql.org/docs/current/sql-createdatabase.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: ALTER DATABASE",
+   "url": "https://www.postgresql.org/docs/current/sql-alterdatabase.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: DROP DATABASE",
+   "url": "https://www.postgresql.org/docs/current/sql-dropdatabase.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CREATE SCHEMA",
+   "url": "https://www.postgresql.org/docs/current/sql-createschema.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: ALTER ROLE",
+   "url": "https://www.postgresql.org/docs/current/sql-alterrole.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Client Connection Defaults (search_path)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-client.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: System Information Functions (current_schemas)",
+   "url": "https://www.postgresql.org/docs/current/functions-info.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: createdb",
+   "url": "https://www.postgresql.org/docs/current/app-createdb.html"
+  }
+ ],
+ "reviewNotes": "Series part 8. Publish Part 7 first (Part 7 is not live yet, so the intro names it without a link; Part 6 is not live either). Followed the PostgreSQL 18 documentation (docs/current, 18.x): chapter 22 Managing Databases, 5.10 Schemas, the CREATE/ALTER/DROP DATABASE, CREATE SCHEMA, ALTER ROLE and createdb reference pages, search_path in runtime-config-client and current_schemas in functions-info. TESTING CAVEAT, same as Parts 4-7: the postgresql-18 server package still cannot be installed in this sandbox (dependency liburing2 comes from archive.ubuntu.com, which the network policy blocks). All commands were run with psql/createdb 18.6 (postgresql-client-18 18.6-1.pgdg24.04+2) against the preinstalled PostgreSQL 16.15 server on Ubuntu 24.04.5 LTS (cluster 16 main, port 5432). Outputs captioned 'Output' are real. None of them contains version-specific text, and the behaviour shown (template rules, encoding error, public schema owned by pg_database_owner since 15, search_path resolution, setting precedence, DROP DATABASE WITH (FORCE)) is the same in 16 and 18 per the docs. Please spot-check on a real 18 server. Notes for the editor: (1) the sandbox cluster locale is C.UTF-8, so the Collate/Ctype columns show C.UTF-8; the article says readers may see e.g. en_US.UTF-8. (2) The pid 1760 in Step 15 and the Etc/UTC time zone are from the sandbox. (3) The 'Password for user ...:' prompt is psql's standard prompt; in testing, passwords were passed with PGPASSWORD. (4) I checked two details by testing, not only from the docs: a role-level ALTER ROLE ... SET search_path overrides ALTER DATABASE ... SET (matches the ALTER ROLE page), and ALTER DATABASE ... RENAME succeeded while another session was connected to that database, so the article only says the current database cannot be renamed. (5) STRATEGY WAL_LOG as the default since 15 and the FILE_COPY checkpoint trade-off come from the CREATE DATABASE page; not benchmarked. (6) Step 15 used a scratch database testdb with a pg_sleep session by app_user. The practice-exercise answer was tested (path hr, public; schemas audit, hr, public; limit 20).",
+ "generatedAt": "2026-10-28T13:40:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 8 of the PostgreSQL DBA series. In Part 7 we covered roles, users and privileges. Now we look at the containers those roles work in. The short answer to the most searched question first: in PostgreSQL a <b>database</b> is a fully separate container (one connection can only see one database), while a <b>schema</b> is a folder inside a database (one connection can use many schemas at once). Use separate databases for unrelated applications, and schemas to organise the parts of one application."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By the end of this part you will be able to create databases with the right owner and encoding, change per-database settings, build your own template database, organise tables into schemas, and control <code class=\"inline-code\">search_path</code> for a session, a user or a whole database. Every command was run on Ubuntu with the PostgreSQL 18 cluster <code class=\"inline-code\">18 main</code> set up in Part 2."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "How a cluster, its databases and their schemas fit together, and when to choose a database or a schema",
+      "items": []
+     },
+     {
+      "content": "How to create, configure, rename and drop databases with <code class=\"inline-code\">CREATE DATABASE</code>, <code class=\"inline-code\">createdb</code>, <code class=\"inline-code\">ALTER DATABASE</code> and <code class=\"inline-code\">DROP DATABASE</code>",
+      "items": []
+     },
+     {
+      "content": "What <code class=\"inline-code\">template1</code> and <code class=\"inline-code\">template0</code> are, and how to build a template of your own",
+      "items": []
+     },
+     {
+      "content": "How to create schemas, and why the <code class=\"inline-code\">public</code> schema behaves differently since PostgreSQL 15",
+      "items": []
+     },
+     {
+      "content": "How <code class=\"inline-code\">search_path</code> decides which table an unqualified name points to, and how to set it permanently",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 7 of this series, especially Part 4 (psql meta-commands such as \\l and \\dn) and Part 7 (roles and GRANT)",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server with PostgreSQL 18 from the PGDG repository and the cluster <code class=\"inline-code\">18 main</code> running (<code class=\"inline-code\">pg_lsclusters</code> shows it online)",
+      "items": []
+     },
+     {
+      "content": "Shell access as a user with sudo, so you can run <code class=\"inline-code\">sudo -u postgres psql</code>",
+      "items": []
+     },
+     {
+      "content": "The default Ubuntu <code class=\"inline-code\">pg_hba.conf</code> (Part 6), which allows scram-sha-256 password logins over <code class=\"inline-code\">localhost</code>",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A PostgreSQL <b>cluster</b> is one running server: one data directory, one port, one set of processes. Think of it as an office building. Inside the building are several <b>databases</b>, which are like separate locked offices. Inside each office are <b>schemas</b>, which are like filing cabinets, and the tables are the files in those cabinets."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A few things belong to the whole building, not to any one office: roles (users and groups), the list of databases and tablespaces. That is why a role you create once can log in to any database it is allowed to. These shared objects live in the <code class=\"inline-code\">pg_global</code> tablespace."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "cluster \"18 main\"  (port 5432, /var/lib/postgresql/18/main)\n|\n|-- shared by all databases: roles, tablespaces, the list of databases\n|     roles: postgres, app_owner, app_user\n|\n|-- template0      pristine copy, nobody may connect\n|-- template1      copied by every CREATE DATABASE\n|-- postgres       default database for admin tools\n|\n`-- appdb          (owner app_owner)\n      |-- schema public\n      |-- schema sales       -> tables orders, customers\n      `-- schema reporting",
+    "caption": "The hierarchy: cluster, database, schema, table"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A client connection names one database and can only read tables in it. Schemas are not separated this way: a user connected to <code class=\"inline-code\">appdb</code> can join <code class=\"inline-code\">sales.orders</code> with a table in <code class=\"inline-code\">reporting</code> in one query, given the privileges."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "New databases are not built from nothing. <code class=\"inline-code\">CREATE DATABASE</code> copies an existing database, by default <code class=\"inline-code\">template1</code>. Whatever you put in <code class=\"inline-code\">template1</code> appears in every new database. <code class=\"inline-code\">template0</code> is a clean copy that should never change, so you can always create a database with nothing extra in it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Finally, when you write <code class=\"inline-code\">SELECT * FROM orders</code> without a schema name, PostgreSQL looks through a list of schemas called the <b>search path</b> (<code class=\"inline-code\">search_path</code>) and uses the first <code class=\"inline-code\">orders</code> it finds."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Question",
+      "Separate databases",
+      "Separate schemas in one database"
+     ],
+     [
+      "Can one query join tables from both?",
+      "No (only through postgres_fdw or dblink)",
+      "Yes, with schema.table names"
+     ],
+     [
+      "Isolation between them",
+      "Strong: separate connections, CONNECT privilege",
+      "Privileges only (USAGE, CREATE)"
+     ],
+     [
+      "Typical use",
+      "Unrelated applications or customers",
+      "Modules of one application, staging vs reporting"
+     ],
+     [
+      "Backup with pg_dump",
+      "One dump per database",
+      "One dump, or -n to pick schemas"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "One warning from the documentation: databases look isolated to users, but they share one write-ahead log (WAL), so a physical backup restores the whole cluster, not one database. Weigh that before putting many unrelated, critical applications in one cluster."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Creating and configuring databases",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: List the databases and their template flags",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the database server, as the postgres OS user, open psql and list the databases. A new cluster always has three: <code class=\"inline-code\">postgres</code>, <code class=\"inline-code\">template0</code> and <code class=\"inline-code\">template1</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c '\\l'\nsudo -u postgres psql -c \"SELECT datname, datistemplate, datallowconn, datconnlimit FROM pg_database ORDER BY oid;\"",
+    "caption": "List databases from the shell"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                 List of databases\n   Name    |  Owner   | Encoding | Locale Provider | Collate |  Ctype  | Locale | ICU Rules |   Access privileges\n-----------+----------+----------+-----------------+---------+---------+--------+-----------+-----------------------\n postgres  | postgres | UTF8     | libc            | C.UTF-8 | C.UTF-8 |        |           |\n template0 | postgres | UTF8     | libc            | C.UTF-8 | C.UTF-8 |        |           | =c/postgres          +\n           |          |          |                 |         |         |        |           | postgres=CTc/postgres\n template1 | postgres | UTF8     | libc            | C.UTF-8 | C.UTF-8 |        |           | =c/postgres          +\n           |          |          |                 |         |         |        |           | postgres=CTc/postgres\n(3 rows)\n\n  datname  | datistemplate | datallowconn | datconnlimit\n-----------+---------------+--------------+--------------\n template1 | t             | t            |           -1\n template0 | t             | f            |           -1\n postgres  | f             | t            |           -1\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The catalog <code class=\"inline-code\">pg_database</code> has one row per database. <code class=\"inline-code\">datistemplate</code> = t means the database is meant to be copied. <code class=\"inline-code\">datallowconn</code> = f on <code class=\"inline-code\">template0</code> means nobody can connect to it, which protects it from changes. <code class=\"inline-code\">datconnlimit</code> = -1 means no connection limit. Your Collate and Ctype columns show the locale chosen when the cluster was created, for example <code class=\"inline-code\">en_US.UTF-8</code> on many servers."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Check: try to connect to template0. The refusal is expected and shows the protection works."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d template0 -c 'SELECT 1'",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: FATAL:  database \"template0\" is not currently accepting connections",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Create a database for an application",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the database server, as the postgres OS user, create an owner role and an application user (as in Part 7), then a database owned by the owner role. The owner of a database can drop it, change its settings and create schemas in it, so make the application's owner role the owner, not <code class=\"inline-code\">postgres</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- sudo -u postgres psql\nCREATE ROLE app_owner LOGIN PASSWORD 'Owner#2026';\nCREATE ROLE app_user  LOGIN PASSWORD 'User#2026';\nCREATE DATABASE appdb OWNER app_owner;\n\\l appdb",
+    "caption": "Create the roles and the database"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Clause",
+      "What it does"
+     ],
+     [
+      "OWNER app_owner",
+      "The role that will own the new database. The default is the role running the command. To create a database owned by another role you must be able to SET ROLE to it (a superuser always can)."
+     ],
+     [
+      "(no TEMPLATE)",
+      "Copies the default template, template1"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE ROLE\nCREATE ROLE\nCREATE DATABASE\n                                              List of databases\n Name  |   Owner   | Encoding | Locale Provider | Collate |  Ctype  | Locale | ICU Rules | Access privileges\n-------+-----------+----------+-----------------+---------+---------+--------+-----------+-------------------\n appdb | app_owner | UTF8     | libc            | C.UTF-8 | C.UTF-8 |        |           |\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The new database copied its encoding and locale from <code class=\"inline-code\">template1</code>. An empty Access privileges column means the defaults: every role may connect (Part 7 showed how to revoke that)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You need superuser or the <code class=\"inline-code\">CREATEDB</code> attribute to create a database. Undo: <code class=\"inline-code\">DROP DATABASE appdb;</code> (see Step 15 for its warnings)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Create a database from the shell with createdb",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">createdb</code> is a small program that connects to the <code class=\"inline-code\">postgres</code> database and runs <code class=\"inline-code\">CREATE DATABASE</code> for you. It is handy in scripts. On the database server, as the postgres OS user:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres createdb -e -O app_owner -T template0 -E UTF8 reportdb \"Reporting copy for the BI team\"",
+    "caption": "Create a database with createdb"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-e (--echo)",
+      "Echo the commands that createdb generates and sends to the server"
+     ],
+     [
+      "-O owner (--owner)",
+      "The database user who will own the new database"
+     ],
+     [
+      "-T template (--template)",
+      "The template database to build this database from"
+     ],
+     [
+      "-E encoding (--encoding)",
+      "The character encoding to use in this database"
+     ],
+     [
+      "reportdb",
+      "The name of the new database"
+     ],
+     [
+      "\"Reporting copy...\"",
+      "Optional description, stored as a comment on the database"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "SELECT pg_catalog.set_config('search_path', '', false);\nCREATE DATABASE reportdb OWNER app_owner ENCODING 'UTF8' TEMPLATE template0;\nCOMMENT ON DATABASE reportdb IS 'Reporting copy for the BI team';",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With -e you see what createdb sent: it emptied its own search path (a safety habit), ran CREATE DATABASE and added the comment. Check it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT datname, shobj_description(oid, 'pg_database') AS description\n  FROM pg_database\n WHERE datname = 'reportdb';",
+    "caption": "Verify the comment"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " datname  |          description\n----------+--------------------------------\n reportdb | Reporting copy for the BI team\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Undo: <code class=\"inline-code\">sudo -u postgres dropdb reportdb</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Create a database with a different encoding (needs template0)",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Sometimes an old application needs a database in another encoding, such as LATIN1. The encoding and locale of a new database must match its template, except when the template is <code class=\"inline-code\">template0</code>. The reason: <code class=\"inline-code\">template1</code> might hold data or indexes that depend on its encoding; <code class=\"inline-code\">template0</code> holds none. On the server, in psql as postgres:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE legacydb ENCODING 'LATIN1' LOCALE 'C';\nCREATE DATABASE legacydb TEMPLATE template0 ENCODING 'LATIN1' LOCALE 'C';",
+    "caption": "First without, then with template0"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  new encoding (LATIN1) is incompatible with the encoding of the template database (UTF8)\nHINT:  Use the same encoding as in the template database, or use template0 as template.\nCREATE DATABASE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The first command fails because template1 is UTF8. The second works. Verify:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT datname, pg_encoding_to_char(encoding) AS encoding, datcollate\n  FROM pg_database\n WHERE datname = 'legacydb';",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " datname  | encoding | datcollate\n----------+----------+------------\n legacydb | LATIN1   | C\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Set a connection limit and per-database defaults",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">ALTER DATABASE</code> changes a database's attributes, and it can store default values for settings that apply to every new session in that database. A common DBA use is a statement timeout for an application database, so one runaway query cannot run for hours. On the server, in psql as postgres (or as the database owner):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER DATABASE appdb CONNECTION LIMIT 50;\nALTER DATABASE appdb SET statement_timeout = '60s';\nALTER DATABASE appdb SET timezone = 'Asia/Kolkata';\n\nSELECT datname, datconnlimit FROM pg_database WHERE datname = 'appdb';\n\\drds",
+    "caption": "Database-level settings"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Command",
+      "What it does"
+     ],
+     [
+      "CONNECTION LIMIT 50",
+      "How many concurrent connections can be made to this database. -1 (the default) means no limit; approximate, and not applied to superusers"
+     ],
+     [
+      "SET statement_timeout = '60s'",
+      "Saves a session default for this database. (users can still SET it)"
+     ],
+     [
+      "\\drds",
+      "Lists per-role and per-database settings"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER DATABASE\nALTER DATABASE\nALTER DATABASE\n datname | datconnlimit\n---------+--------------\n appdb   |           50\n(1 row)\n\n            List of settings\n Role | Database |       Settings\n------+----------+-----------------------\n      | appdb    | statement_timeout=60s+\n      |          | TimeZone=Asia/Kolkata\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The setting is saved but not applied to sessions that are already connected. It takes effect in new connections. No reload or restart is needed. Check from fresh connections:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d appdb -c \"SHOW statement_timeout\" -c \"SHOW timezone\"\nsudo -u postgres psql -d postgres -c \"SHOW statement_timeout\" -c \"SHOW timezone\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " statement_timeout\n-------------------\n 1min\n(1 row)\n\n   TimeZone\n--------------\n Asia/Kolkata\n(1 row)\n\n statement_timeout\n-------------------\n 0\n(1 row)\n\n TimeZone\n----------\n Etc/UTC\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In appdb the defaults apply; the postgres database still uses the values from postgresql.conf. Undo one setting with <code class=\"inline-code\">ALTER DATABASE appdb RESET timezone;</code>, all of them with <code class=\"inline-code\">ALTER DATABASE appdb RESET ALL;</code>, and the limit with <code class=\"inline-code\">ALTER DATABASE appdb CONNECTION LIMIT -1;</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Template databases",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Because every new database is a copy, you can prepare a template once. Adding objects to <code class=\"inline-code\">template1</code> puts them in every new database, including ones you restore dumps into, which causes conflicts. A separate, named template is cleaner."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Build your own template database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the server, in psql as postgres. We create a database, add an audit schema and table that every branch database should have, then mark it as a template and block connections so nobody changes it by accident."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE company_template;\n\\c company_template\nCREATE SCHEMA audit;\nCREATE TABLE audit.change_log (\n  log_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  table_name text NOT NULL,\n  changed_by text NOT NULL DEFAULT current_user,\n  changed_at timestamptz NOT NULL DEFAULT now()\n);\n\\c postgres\nALTER DATABASE company_template IS_TEMPLATE true ALLOW_CONNECTIONS false;\nSELECT datname, datistemplate, datallowconn FROM pg_database ORDER BY datname;",
+    "caption": "Create and mark a template"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "IS_TEMPLATE true",
+      "Any user with CREATEDB can clone this database. If false (the default), only superusers and the owner can clone it"
+     ],
+     [
+      "ALLOW_CONNECTIONS false",
+      "No one can connect to the database (existing sessions are not terminated by this)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "     datname      | datistemplate | datallowconn\n------------------+---------------+--------------\n appdb            | f             | t\n company_template | t             | f\n legacydb         | f             | t\n postgres         | f             | t\n reportdb         | f             | t\n template0        | t             | f\n template1        | t             | t\n(7 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "company_template now behaves like template0: copyable, closed to connections. To change it later, set <code class=\"inline-code\">ALLOW_CONNECTIONS true</code>, make the change, then set it back."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Create a database from the template",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE branch_mumbai TEMPLATE company_template OWNER app_owner;\n\\c branch_mumbai\n\\dt audit.*",
+    "caption": "Clone the template"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE DATABASE\nYou are now connected to database \"branch_mumbai\" as user \"postgres\".\n             List of tables\n Schema |    Name    | Type  |  Owner\n--------+------------+-------+----------\n audit  | change_log | table | postgres\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The audit table came with the copy. Notice its owner is still <code class=\"inline-code\">postgres</code>, even though app_owner owns the database: objects keep the owner they had in the template. Database-level GRANTs and <code class=\"inline-code\">ALTER DATABASE ... SET</code> values are not copied either; you set those again on each new database."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "No sessions on the template while it is copied",
+    "text": "CREATE DATABASE fails if any other session is connected to the source database when it starts, and new connections to the source are blocked until the copy finishes. This is why the documentation says copying a database this way is not a general-purpose \"COPY DATABASE\" tool. Since PostgreSQL 15 the default copy method is <code class=\"inline-code\">STRATEGY WAL_LOG</code>, which copies block by block through the WAL; the older <code class=\"inline-code\">FILE_COPY</code> strategy writes much less WAL for a big template but forces a checkpoint before and after."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Schemas",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Look at the public schema in a new database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every new database has a schema called <code class=\"inline-code\">public</code>. On the server, as the postgres OS user:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d appdb -c '\\dn+'",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                       List of schemas\n  Name  |       Owner       |           Access privileges            |      Description\n--------+-------------------+----------------------------------------+------------------------\n public | pg_database_owner | pg_database_owner=UC/pg_database_owner+| standard public schema\n        |                   | =U/pg_database_owner                   |\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read the Access privileges like this: <code class=\"inline-code\">pg_database_owner</code> (a built-in role that always means \"whoever owns this database\", here app_owner) has U (USAGE) and C (CREATE). Everyone else (<code class=\"inline-code\">=U</code>) has only USAGE: they can use objects there if granted, but cannot create anything."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Changed in PostgreSQL 15",
+    "text": "Before PostgreSQL 15, every user could create objects in public, and public was owned by postgres. Databases upgraded from 14 or earlier keep the old, less secure privileges. On such a database run <code class=\"inline-code\">REVOKE CREATE ON SCHEMA public FROM PUBLIC;</code> unless you have a reason not to."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Create schemas and tables as the database owner",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now log in as app_owner over localhost (psql asks <code class=\"inline-code\">Password for user app_owner:</code>). Creating schemas as the owner role means the owner role owns them, which keeps later GRANTs simple."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql -h localhost -U app_owner -d appdb",
+    "caption": "On the database server, as any OS user"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE SCHEMA sales;\nCREATE SCHEMA reporting;\n\nCREATE TABLE sales.orders (\n  order_id  int PRIMARY KEY,\n  customer  text NOT NULL,\n  amount    numeric(10,2) NOT NULL\n);\nINSERT INTO sales.orders VALUES\n  (1, 'Asha Traders', 2500.00),\n  (2, 'Ravi Stores', 1200.50);\n\n-- an old test table with the same name, left in public\nCREATE TABLE public.orders (\n  order_id  int PRIMARY KEY,\n  note      text\n);\nINSERT INTO public.orders VALUES (99, 'old test table in public');\n\n\\dn",
+    "caption": "Schemas and sample tables"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE SCHEMA\nCREATE SCHEMA\nCREATE TABLE\nINSERT 0 2\nCREATE TABLE\nINSERT 0 1\n        List of schemas\n   Name    |       Owner\n-----------+-------------------\n public    | pg_database_owner\n reporting | app_owner\n sales     | app_owner\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two tables called <code class=\"inline-code\">orders</code> now exist; names only need to be unique inside a schema. Names starting with <code class=\"inline-code\">pg_</code> are reserved for the system. To create a schema owned by another role, use <code class=\"inline-code\">CREATE SCHEMA name AUTHORIZATION role;</code> (Step 13 uses this)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The search_path",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: See which table an unqualified name finds",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Still connected as app_owner to appdb:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SHOW search_path;\nSELECT current_schema(), current_schemas(true);\nSELECT * FROM orders;\nSELECT * FROM sales.orders;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "   search_path\n-----------------\n \"$user\", public\n(1 row)\n\n current_schema |   current_schemas\n----------------+---------------------\n public         | {pg_catalog,public}\n(1 row)\n\n order_id |           note\n----------+--------------------------\n       99 | old test table in public\n(1 row)\n\n order_id |   customer   | amount\n----------+--------------+---------\n        1 | Asha Traders | 2500.00\n        2 | Ravi Stores  | 1200.50\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The default search path is <code class=\"inline-code\">\"$user\", public</code>. <code class=\"inline-code\">$user</code> means \"a schema with the same name as the current user\". There is no schema called app_owner, so that entry is skipped silently. The first schema that exists, public, is the <b>current schema</b>: unqualified names are looked up there, and new tables are created there."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">current_schemas(true)</code> shows the path as really used, including <code class=\"inline-code\">pg_catalog</code> (built-in tables and functions), which is always searched first unless you list it elsewhere. So <code class=\"inline-code\">SELECT * FROM orders</code> found the old test table, not the real orders. Writing <code class=\"inline-code\">sales.orders</code> (a qualified name) always finds the intended table."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Change the search path for one session",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET search_path TO sales, public;\nSELECT current_schema();\nSELECT * FROM orders;\nCREATE TABLE customers (customer_id int PRIMARY KEY, name text);\n\\dt *.customers",
+    "caption": "Session-level SET"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " current_schema\n----------------\n sales\n(1 row)\n\n order_id |   customer   | amount\n----------+--------------+---------\n        1 | Asha Traders | 2500.00\n        2 | Ravi Stores  | 1200.50\n(2 rows)\n\n             List of tables\n Schema |   Name    | Type  |   Owner\n--------+-----------+-------+-----------\n sales  | customers | table | app_owner\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now <code class=\"inline-code\">orders</code> means <code class=\"inline-code\">sales.orders</code>, and the new table went into sales, the first schema in the list. <code class=\"inline-code\">SET</code> lasts only until you disconnect (or <code class=\"inline-code\">RESET search_path</code>). Applications need something permanent."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Make the search path permanent",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "First give app_user access to the sales table (as app_owner, as in Part 7), and see what app_user gets with the default path:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "GRANT USAGE ON SCHEMA sales TO app_user;\nGRANT SELECT ON sales.orders TO app_user;",
+    "caption": "As app_owner in appdb"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql -h localhost -U app_user -d appdb -c \"SHOW search_path\" -c \"SELECT * FROM orders;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "   search_path\n-----------------\n \"$user\", public\n(1 row)\n\nERROR:  permission denied for table orders",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This error confuses many people: the GRANT worked, but the unqualified name found <code class=\"inline-code\">public.orders</code>, which app_user has no rights on. The fix is the right search path. Set it for the role in this database only. On the server, in psql as postgres:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER ROLE app_user IN DATABASE appdb SET search_path = sales, public;\n\\drds",
+    "caption": "Per-role, per-database default"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                List of settings\n   Role   | Database |         Settings\n----------+----------+---------------------------\n app_user | appdb    | search_path=sales, public\n          | appdb    | statement_timeout=60s    +\n          |          | TimeZone=Asia/Kolkata\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Verify from new connections as app_user and as app_owner:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql -h localhost -U app_user -d appdb -c \"SHOW search_path\" -c \"SELECT order_id, customer FROM orders;\"\npsql -h localhost -U app_owner -d appdb -c \"SHOW search_path\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  search_path\n---------------\n sales, public\n(1 row)\n\n order_id |   customer\n----------+--------------\n        1 | Asha Traders\n        2 | Ravi Stores\n(2 rows)\n\n   search_path\n-----------------\n \"$user\", public\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only app_user in appdb is affected. You can set the search path at several levels; the most specific one wins when the session starts:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Where you set it",
+      "Command",
+      "Applies to"
+     ],
+     [
+      "postgresql.conf",
+      "search_path = '\"$user\", public' (then reload)",
+      "Every session in the cluster"
+     ],
+     [
+      "Database",
+      "ALTER DATABASE appdb SET search_path = ...",
+      "New sessions in that database"
+     ],
+     [
+      "Role",
+      "ALTER ROLE app_user SET search_path = ...",
+      "New sessions of that role, any database; overrides the database setting"
+     ],
+     [
+      "Role in one database",
+      "ALTER ROLE app_user IN DATABASE appdb SET ...",
+      "That role in that database; overrides both of the above"
+     ],
+     [
+      "Connection",
+      "options=-csearch_path=... or PGOPTIONS",
+      "That one connection"
+     ],
+     [
+      "Session",
+      "SET search_path TO ...",
+      "Until disconnect or RESET"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The connection-level option is useful for tools and applications that let you edit the connection string but not run SQL first:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql \"host=localhost dbname=appdb user=app_user options=-csearch_path=public\" -c \"SHOW search_path\"\nPGOPTIONS=\"-c search_path=public\" psql -h localhost -U app_user -d appdb -c \"SHOW search_path\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " search_path\n-------------\n public\n(1 row)\n\n search_path\n-------------\n public\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Undo the role setting with <code class=\"inline-code\">ALTER ROLE app_user IN DATABASE appdb RESET search_path;</code>. Role and database settings are applied only at login: <code class=\"inline-code\">SET ROLE app_user</code> inside an existing session does not load them."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "search_path is a security setting",
+    "text": "Adding a schema to your search path means trusting everyone who can create objects in it. A user who can create a function or table there could make your unqualified queries run their code. Keep schemas in an application's path writable only by the owner role, and in <code class=\"inline-code\">SECURITY DEFINER</code> functions always set the path, for example <code class=\"inline-code\">SET search_path = sales, pg_temp</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Give each user a private schema with $user",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The default path starts with <code class=\"inline-code\">$user</code> for a reason: if a user has a schema with their own name, they use it automatically. This is the secure pattern the documentation recommends for databases with several untrusted users. As postgres, create the schema, then remove the Step 12 setting so app_user uses the default path again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d appdb -c \"CREATE SCHEMA AUTHORIZATION app_user;\"\nsudo -u postgres psql -c \"ALTER ROLE app_user IN DATABASE appdb RESET search_path;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">CREATE SCHEMA AUTHORIZATION app_user</code> without a schema name creates a schema named after the role and owned by it. Now connect as app_user:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SHOW search_path;\nSELECT current_schema(), current_schemas(false);\nCREATE TABLE scratch (id int);\n\\dt *.scratch",
+    "caption": "psql -h localhost -U app_user -d appdb"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "   search_path\n-----------------\n \"$user\", public\n(1 row)\n\n current_schema |  current_schemas\n----------------+-------------------\n app_user       | {app_user,public}\n(1 row)\n\nCREATE TABLE\n            List of tables\n  Schema  |  Name   | Type  |  Owner\n----------+---------+-------+----------\n app_user | scratch | table | app_user\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Renaming and dropping",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: Rename a database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the server, in psql as postgres, connected to a different database than the one you rename:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER DATABASE branch_mumbai RENAME TO branch_pune;",
+    "caption": "From the postgres database"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER DATABASE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only the owner (who also needs CREATEDB) or a superuser can rename a database. Renaming the database you are connected to fails with <code class=\"inline-code\">ERROR:  current database cannot be renamed</code>. Update connection strings and pg_hba.conf lines that name it. Check with <code class=\"inline-code\">\\l branch_pune</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: Drop a schema and a database",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Destructive commands",
+    "text": "DROP SCHEMA ... CASCADE deletes every object in the schema, and DROP DATABASE deletes the database's directory on disk. Neither can be undone. Check the name twice, make sure you have a tested backup, and never run these on a production server you have not been asked to change."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "As app_owner in appdb, a schema with objects in it cannot be dropped without CASCADE:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DROP SCHEMA reporting;\nDROP SCHEMA sales;\nDROP SCHEMA sales CASCADE;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "DROP SCHEMA\nERROR:  cannot drop schema sales because other objects depend on it\nDETAIL:  table sales.orders depends on schema sales\ntable sales.customers depends on schema sales\nHINT:  Use DROP ... CASCADE to drop the dependent objects too.\nNOTICE:  drop cascades to 2 other objects\nDETAIL:  drop cascades to table sales.orders\ndrop cascades to table sales.customers\nDROP SCHEMA",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The empty reporting schema dropped at once. For sales, read the DETAIL list before you add CASCADE; it is exactly what you will lose."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Dropping a database fails while anyone is connected. In this test app_user had a session open in a scratch database <code class=\"inline-code\">testdb</code> (created with <code class=\"inline-code\">sudo -u postgres createdb testdb</code>). As postgres, connected to the postgres database:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DROP DATABASE testdb;\nSELECT pid, usename, datname, state FROM pg_stat_activity WHERE datname = 'testdb';\nDROP DATABASE testdb WITH (FORCE);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  database \"testdb\" is being accessed by other users\nDETAIL:  There is 1 other session using the database.\n pid  | usename  | datname | state\n------+----------+---------+--------\n 1760 | app_user | testdb  | active\n(1 row)\n\nDROP DATABASE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_stat_activity</code> shows who is connected (Part 10 covers it in depth). <code class=\"inline-code\">WITH (FORCE)</code> tries to terminate those sessions first; it fails if prepared transactions, active logical replication slots or subscriptions exist in the database. Verify with <code class=\"inline-code\">\\l testdb</code>, which should list 0 rows. From the shell, <code class=\"inline-code\">dropdb testdb</code> does the same, and <code class=\"inline-code\">dropdb --force testdb</code> adds FORCE."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: permission denied for table orders (but you granted SELECT)",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The unqualified name resolved to a different table, such as <code class=\"inline-code\">public.orders</code>, through the search path. Run <code class=\"inline-code\">SELECT current_schemas(true);</code> as that user, then either qualify the name (<code class=\"inline-code\">sales.orders</code>) or set the path with <code class=\"inline-code\">ALTER ROLE ... IN DATABASE ... SET search_path</code> (Step 12)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: permission denied for schema public",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On PostgreSQL 15 and later only the database owner can create in public. Create a schema for the application owned by the role that creates tables, or give the user a private schema (<code class=\"inline-code\">CREATE SCHEMA AUTHORIZATION app_user;</code>). Granting CREATE on public to everyone brings back the old, insecure behaviour."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: no schema has been selected to create in",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every schema in the search path is missing or not usable. Names in the path that do not exist, or where the user lacks USAGE, are silently ignored, so a typo gives an empty path:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET search_path TO saels;\nSELECT current_schemas(false);\nCREATE TABLE t1 (id int);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " current_schemas\n-----------------\n {}\n(1 row)\n\nERROR:  no schema has been selected to create in",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix the spelling, or grant USAGE on the schema. With an empty path, <code class=\"inline-code\">SELECT * FROM orders</code> fails with <code class=\"inline-code\">ERROR:  relation \"orders\" does not exist</code> even though the table exists."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: source database \"template1\" is being accessed by other users",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Someone (often a GUI tool) is connected to the template. Find them with <code class=\"inline-code\">SELECT pid, usename, application_name FROM pg_stat_activity WHERE datname = 'template1';</code>, ask them to disconnect, and never point tools at template1."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: new encoding (LATIN1) is incompatible with the encoding of the template database (UTF8)",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Add <code class=\"inline-code\">TEMPLATE template0</code> (or <code class=\"inline-code\">-T template0</code> for createdb), as the HINT says. The same applies to a different locale."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: CREATE DATABASE cannot run inside a transaction block",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Your tool or script wrapped the command in BEGIN. Run CREATE and DROP DATABASE on their own with autocommit on, and do not use <code class=\"inline-code\">psql -1</code> for such scripts."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "1. Create a database <code class=\"inline-code\">hrdb</code> from <code class=\"inline-code\">company_template</code>, owned by app_owner, with at most 20 connections. 2. In it, create a schema <code class=\"inline-code\">hr</code> owned by app_owner, and make <code class=\"inline-code\">hr, public</code> the search path for everyone who connects to hrdb. Verify both as app_owner."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "As postgres: <code class=\"inline-code\">CREATE DATABASE hrdb TEMPLATE company_template OWNER app_owner CONNECTION LIMIT 20;</code> then <code class=\"inline-code\">\\c hrdb</code>, <code class=\"inline-code\">CREATE SCHEMA hr AUTHORIZATION app_owner;</code> and <code class=\"inline-code\">ALTER DATABASE hrdb SET search_path = hr, public;</code>. Check with <code class=\"inline-code\">psql -h localhost -U app_owner -d hrdb -c \"SHOW search_path\" -c \"\\dn\"</code>: the path is <code class=\"inline-code\">hr, public</code> and the schemas are audit (from the template), hr and public. <code class=\"inline-code\">SELECT datconnlimit FROM pg_database WHERE datname = 'hrdb';</code> returns 20."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# list databases and template flags\nsudo -u postgres psql -c '\\l'\nsudo -u postgres psql -c \"SELECT datname, datistemplate, datallowconn, datconnlimit FROM pg_database;\"\n\n# create a database owned by the application owner role\nsudo -u postgres psql -c \"CREATE DATABASE appdb OWNER app_owner;\"\n\n# same from the shell, from template0 with an explicit encoding\nsudo -u postgres createdb -e -O app_owner -T template0 -E UTF8 reportdb \"Reporting copy\"\n\n# other encoding or locale: template0 is required\nsudo -u postgres psql -c \"CREATE DATABASE legacydb TEMPLATE template0 ENCODING 'LATIN1' LOCALE 'C';\"\n\n# connection limit and per-database defaults (new sessions only)\nsudo -u postgres psql -c \"ALTER DATABASE appdb CONNECTION LIMIT 50;\"\nsudo -u postgres psql -c \"ALTER DATABASE appdb SET statement_timeout = '60s';\"\nsudo -u postgres psql -c '\\drds'\nsudo -u postgres psql -c \"ALTER DATABASE appdb RESET ALL;\"\n\n# turn a database into a closed template, then clone it\nsudo -u postgres psql -c \"ALTER DATABASE company_template IS_TEMPLATE true ALLOW_CONNECTIONS false;\"\nsudo -u postgres psql -c \"CREATE DATABASE branch_mumbai TEMPLATE company_template OWNER app_owner;\"\n\n# schemas\npsql -h localhost -U app_owner -d appdb -c \"CREATE SCHEMA sales;\"\nsudo -u postgres psql -d appdb -c \"CREATE SCHEMA AUTHORIZATION app_user;\"\nsudo -u postgres psql -d appdb -c '\\dn+'\n\n# inspect and set the search path\npsql -h localhost -U app_user -d appdb -c \"SHOW search_path\" -c \"SELECT current_schemas(true);\"\nsudo -u postgres psql -c \"ALTER ROLE app_user IN DATABASE appdb SET search_path = sales, public;\"\nsudo -u postgres psql -c \"ALTER DATABASE appdb SET search_path = sales, public;\"\nPGOPTIONS=\"-c search_path=sales\" psql -h localhost -U app_user -d appdb\n\n# rename and drop (destructive: check names and backups first)\nsudo -u postgres psql -c \"ALTER DATABASE branch_mumbai RENAME TO branch_pune;\"\npsql -h localhost -U app_owner -d appdb -c \"DROP SCHEMA reporting;\"\nsudo -u postgres psql -c \"DROP DATABASE testdb WITH (FORCE);\"",
+    "caption": "Every command from this part"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "A cluster holds databases; a database holds schemas; roles are shared by the whole cluster",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use separate databases for unrelated applications and schemas for parts of one application",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Create each database with OWNER set to the application owner role, and keep CREATE DATABASE outside transactions",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use TEMPLATE template0 for a different encoding or locale, and for restoring pg_dump files",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Keep template1 clean; put shared starting objects in a named template marked IS_TEMPLATE true and ALLOW_CONNECTIONS false",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "On PostgreSQL 15 and later only the database owner can create in public; give applications their own schemas",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Set search_path with ALTER ROLE ... IN DATABASE ... SET, check it with current_schemas(true), and qualify names in scripts",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 9 we look at tablespaces and where PostgreSQL stores data on disk."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your GRANT worked, yet the user still gets \"permission denied for table orders\". The search_path is pointing at the wrong table.\n\nPart 8 of my PostgreSQL DBA series covers databases, schemas, search_path and templates. What a DBA needs to know:\n\n→ Database vs schema: one connection sees one database, but can use many schemas in the same query. Unrelated apps get databases, modules of one app get schemas.\n→ An unqualified name like orders is found through search_path, default \"$user\", public. Check what a user really gets with SELECT current_schemas(true);\n→ Make it permanent per user and database: ALTER ROLE app_user IN DATABASE appdb SET search_path = sales, public;\n→ Every CREATE DATABASE copies template1. Need another encoding or locale? Add TEMPLATE template0.\n→ Since PostgreSQL 15, only the database owner can create tables in public. Give each application its own schema.\n\nAll examples were run with real output, with the exact error messages and fixes.\n\nHow do you organise your apps: one database per app, or schemas in a shared database?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #SQL #Database",
+  "slides": [
+   {
+    "title": "PostgreSQL DBA Part 8: Databases and Schemas",
+    "body": "search_path, template databases and the errors they cause"
+   },
+   {
+    "title": "Database or schema?",
+    "points": [
+     "One connection sees exactly one database",
+     "Schemas are folders inside it; one query can join many",
+     "Unrelated apps: separate databases",
+     "Modules of one app: separate schemas"
+    ]
+   },
+   {
+    "title": "Create a database the right way",
+    "code": "CREATE DATABASE appdb\n  OWNER app_owner;\n\n-- other encoding or locale\nCREATE DATABASE legacydb\n  TEMPLATE template0\n  ENCODING 'LATIN1' LOCALE 'C';",
+    "lang": "postgresql"
+   },
+   {
+    "title": "How search_path finds a table",
+    "points": [
+     "Default is \"$user\", public",
+     "Missing schemas are skipped silently",
+     "First match wins, so the wrong orders table can win",
+     "Check it with SELECT current_schemas(true);"
+    ]
+   },
+   {
+    "title": "Set search_path permanently",
+    "code": "ALTER ROLE app_user\n  IN DATABASE appdb\n  SET search_path = sales, public;\n\n-- applies at the next login\nSHOW search_path;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Templates and the public schema",
+    "points": [
+     "CREATE DATABASE copies template1",
+     "Keep shared objects in your own template",
+     "GRANTs and SET values are not copied",
+     "PostgreSQL 15+: only the owner creates in public"
+    ]
+   }
+  ]
+ }
+}
