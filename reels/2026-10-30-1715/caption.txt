@@ -1,0 +1,11 @@
+In PostgreSQL, an UPDATE does not overwrite your row. It writes a new version.
+
+We updated Ravi's salary from 50000 to 60000. The ctid moved from (0,1) to (0,2): same page, new slot. The old version stayed in slot 1.
+
+That is MVCC in PostgreSQL. The old row version is kept while another transaction may still need to see it. Once nobody needs it, it is a dead row, and pg_stat_user_tables showed 1 live and 1 dead.
+
+VACUUM removed the dead row and marked the space for reuse. Lots of updates without vacuum is how table bloat starts.
+
+Tested on PostgreSQL 16. Comment PART 2 for the next PostgreSQL internals reel.
+
+#postgresql #sql #dba #database #postgres
