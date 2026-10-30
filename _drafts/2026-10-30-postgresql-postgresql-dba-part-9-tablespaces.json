@@ -1,0 +1,1434 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 9: Tablespaces and Where Data Is Stored",
+ "slug": "postgresql-dba-part-9-tablespaces",
+ "category": "postgresql",
+ "description": "Learn PostgreSQL tablespaces on Ubuntu: create one on another disk, move tables and indexes, set temp_tablespaces and drop it safely, with real output.",
+ "focusKeyword": "postgresql tablespace",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "tablespace",
+  "storage",
+  "database-administration"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-8-databases-schemas-search-path/",
+  "/posts/postgresql/postgresql-dba-part-3-data-directory-pgdata/",
+  "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 22.6 Tablespaces",
+   "url": "https://www.postgresql.org/docs/current/manage-ag-tablespaces.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CREATE TABLESPACE",
+   "url": "https://www.postgresql.org/docs/current/sql-createtablespace.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: ALTER TABLESPACE",
+   "url": "https://www.postgresql.org/docs/current/sql-altertablespace.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: DROP TABLESPACE",
+   "url": "https://www.postgresql.org/docs/current/sql-droptablespace.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: ALTER TABLE (SET TABLESPACE, ALL IN TABLESPACE)",
+   "url": "https://www.postgresql.org/docs/current/sql-altertable.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: ALTER DATABASE (SET TABLESPACE)",
+   "url": "https://www.postgresql.org/docs/current/sql-alterdatabase.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Client Connection Defaults (default_tablespace, temp_tablespaces)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-client.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 66.1 Database File Layout",
+   "url": "https://www.postgresql.org/docs/current/storage-file-layout.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: System Administration Functions (pg_tablespace_size, pg_relation_filepath)",
+   "url": "https://www.postgresql.org/docs/current/functions-admin.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: System Information Functions (pg_tablespace_databases, pg_tablespace_location)",
+   "url": "https://www.postgresql.org/docs/current/functions-info.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_basebackup (--tablespace-mapping)",
+   "url": "https://www.postgresql.org/docs/current/app-pgbasebackup.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 14.1 Using EXPLAIN (BUFFERS on by default with ANALYZE)",
+   "url": "https://www.postgresql.org/docs/current/using-explain.html"
+  }
+ ],
+ "reviewNotes": "Series part 9. Part 8 is live, so the intro links to it. Followed the PostgreSQL 18 documentation (docs/current): 22.6 Tablespaces, CREATE/ALTER/DROP TABLESPACE, ALTER TABLE (SET TABLESPACE, ALL IN TABLESPACE), ALTER DATABASE (SET TABLESPACE), default_tablespace and temp_tablespaces in runtime-config-client, Database File Layout, and the size/location functions. TESTING CAVEAT, same as Parts 4-8: the postgresql-18 server package still cannot be installed in this sandbox (its dependency liburing2 comes from archive.ubuntu.com, which the network policy blocks). All SQL was run with psql 18.6 (postgresql-client-18 18.6-1.pgdg24.04+2) against the preinstalled PostgreSQL 16.15 server on Ubuntu 24.04.5 LTS. Unlike earlier parts, some outputs here contain version-specific text, so: (1) blocks captioned 'Output (expected output)' are real 16.15 output with only two substitutions: the version folder PG_16_202307071 replaced by PG_18_202506291, and /var/lib/postgresql/16/main by .../18/main and the log file name postgresql-16-main.log by postgresql-18-main.log. PG_18_202506291 is not guessed: I extracted the postgresql-18 18.6 .deb (dpkg -x, not installed) and read the string from the postgres binary (TABLESPACE_VERSION_DIRECTORY). (3) In Step 10 EXPLAIN uses BUFFERS OFF because PostgreSQL 18 adds buffer counts to EXPLAIN ANALYZE by default (confirmed in using-explain.html: ANALYZE implicitly enables BUFFERS); the shown plan is from 16 and should be identical with BUFFERS OFF on 18, but please spot-check. (4) Observed, not documented: ALTER DATABASE SET TABLESPACE waited about 5 seconds for the other session before failing; the article only says 'waits a few seconds'. (5) OIDs, file numbers, sizes, timestamps and the PID 1735 are from the sandbox. (6) random_page_cost = 1.1 for SSDs is labelled in the text as a common starting point, not a documented rule. (7) The pg_basebackup --tablespace-mapping mention was checked against app-pgbasebackup.html. (8) The postgresql.conf before/after comment text matches the Ubuntu 16 sample file; please confirm it on an 18 server. The /mnt/fast_ssd and /mnt/slow_hdd directories were plain directories on the sandbox disk, not separate mounts. Practice answer tested. Length: about 3,500 words of prose (slightly above the 3,200 target) because the part has 12 full procedural steps; the optional FAQ was left out to keep it shorter.",
+ "generatedAt": "2026-10-30T13:10:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 9 of the PostgreSQL DBA series. In <a href=\"/posts/postgresql/postgresql-dba-part-8-databases-schemas-search-path/\">Part 8 we covered databases, schemas and search_path</a>, which are the logical containers for your tables. This part answers the physical question: on which disk do those tables actually live? In PostgreSQL the answer is a <b>tablespace</b>, a name that points to a directory on the server. Every table and index belongs to exactly one tablespace, and you can choose or change it with SQL."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By the end of this part you will be able to list the tablespaces of a cluster, create a new one on another disk, put tables, indexes, whole databases and temporary files in it, move existing objects between tablespaces, check how much space each one uses, and remove a tablespace safely. Every command is for Ubuntu with the PostgreSQL 18 cluster <code class=\"inline-code\">18 main</code> from Part 2."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "What a tablespace is, and the two built-in ones: <code class=\"inline-code\">pg_default</code> and <code class=\"inline-code\">pg_global</code>",
+      "items": []
+     },
+     {
+      "content": "How to prepare a directory and run <code class=\"inline-code\">CREATE TABLESPACE</code>, and what PostgreSQL creates on disk",
+      "items": []
+     },
+     {
+      "content": "How to place tables, indexes and databases in a tablespace, and how <code class=\"inline-code\">default_tablespace</code> works",
+      "items": []
+     },
+     {
+      "content": "How to move existing tables and indexes with <code class=\"inline-code\">ALTER TABLE ... SET TABLESPACE</code>, and what that locks",
+      "items": []
+     },
+     {
+      "content": "How to send temporary files to their own disk with <code class=\"inline-code\">temp_tablespaces</code>",
+      "items": []
+     },
+     {
+      "content": "How to measure, tune and drop a tablespace without surprises",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 8 of this series, especially Part 3 (the data directory), Part 5 (postgresql.conf and reload) and Part 7 (roles and GRANT)",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server with PostgreSQL 18 from the PGDG repository and the cluster <code class=\"inline-code\">18 main</code> running (<code class=\"inline-code\">pg_lsclusters</code> shows it online)",
+      "items": []
+     },
+     {
+      "content": "A Linux user with sudo, so you can run <code class=\"inline-code\">sudo -u postgres psql</code> and create directories",
+      "items": []
+     },
+     {
+      "content": "Optional: a second disk mounted on the server. We use the directories <code class=\"inline-code\">/mnt/fast_ssd</code> and <code class=\"inline-code\">/mnt/slow_hdd</code>; if you have only one disk, plain directories work the same way for practice",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of the cluster as a library. Schemas are the sections (history, science), but the books still have to sit on a physical shelf somewhere. A tablespace is a shelf: a named place on the file system where PostgreSQL keeps the files of tables and indexes. Schemas and tablespaces are independent, so tables from one schema can sit on different shelves."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every new cluster has two tablespaces, created by <code class=\"inline-code\">initdb</code>:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Tablespace",
+      "Directory on disk",
+      "What it holds"
+     ],
+     [
+      "pg_default",
+      "/var/lib/postgresql/18/main/base",
+      "The default tablespace of template0 and template1, and so of every database created without a TABLESPACE clause"
+     ],
+     [
+      "pg_global",
+      "/var/lib/postgresql/18/main/global",
+      "Shared system catalogs only, such as the list of roles and databases. You cannot put your own objects here"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When you create your own tablespace, you give PostgreSQL an empty directory, for example on a second disk. PostgreSQL records the tablespace in the <code class=\"inline-code\">pg_tablespace</code> catalog and adds a <b>symbolic link</b> (a shortcut file) inside <code class=\"inline-code\">PGDATA/pg_tblspc</code>. The link is named after the tablespace's OID (object identifier, the internal number PostgreSQL gives every object) and points to your directory."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "server db1, cluster \"18 main\"\n|\n|-- /var/lib/postgresql/18/main            (PGDATA, system disk)\n|     |-- base/           = pg_default    -> catalogs + tables of most databases\n|     |-- global/         = pg_global     -> roles, list of databases\n|     `-- pg_tblspc/\n|           |-- 16395  -> /mnt/fast_ssd/pg18   (tablespace fast_ssd)\n|           `-- 16397  -> /mnt/slow_hdd/pg18   (tablespace archive_hdd)\n|\n|-- /mnt/fast_ssd/pg18/PG_18_202506291/<database OID>/<file>   hot tables, indexes\n`-- /mnt/slow_hdd/pg18/PG_18_202506291/<database OID>/<file>   old, rarely read data",
+    "caption": "How a tablespace maps to directories (OIDs are examples)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Inside your directory PostgreSQL creates a subdirectory whose name depends on the server version: <code class=\"inline-code\">PG_18_</code> followed by a catalog version number. This lets a future major version use the same location without clashing with the old files, which matters during upgrades. Below that is one folder per database that has objects in the tablespace, named after the database OID."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Why would a DBA use tablespaces? The documentation gives two main reasons. First, when the disk holding PGDATA is full and cannot be extended, you can put new or large tables on another disk. Second, you can match data to storage: busy indexes on fast SSDs, old archive tables on cheaper, slower disks. A third common use is keeping large temporary sort files away from the main data disk."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Tablespaces belong to the cluster",
+    "text": "A tablespace is <b>not</b> a separate, self-contained piece of data. It depends on metadata in the main data directory, so you cannot attach it to another cluster or back it up on its own. If you lose a tablespace (a failed disk, or a RAM disk after a reboot), the whole cluster may become unreadable or fail to start. Only put tablespaces on permanent, reliable storage."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Tablespaces also add work: every backup, standby server and restore must know about the extra directories. Many production servers use none at all and simply put PGDATA on one large, fast volume. Use tablespaces when you have a real storage reason, not by habit."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Looking at the tablespaces you already have",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: List the tablespaces of the cluster",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as the postgres user.</b> Open psql and use the <code class=\"inline-code\">\\db+</code> meta-command (from Part 4), then query the catalog directly."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql",
+    "caption": "Connect as the postgres superuser"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\db+\nSELECT oid, spcname, spcowner::regrole, pg_tablespace_location(oid)\n  FROM pg_tablespace;",
+    "caption": "List tablespaces with size and location"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                  List of tablespaces\n    Name    |  Owner   | Location | Access privileges | Options |  Size  | Description\n------------+----------+----------+-------------------+---------+--------+-------------\n pg_default | postgres |          |                   |         | 22 MB  |\n pg_global  | postgres |          |                   |         | 565 kB |\n(2 rows)\n\n  oid  |  spcname   | spcowner | pg_tablespace_location\n-------+------------+----------+------------------------\n  1663 | pg_default | postgres |\n  1664 | pg_global  | postgres |",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A fresh cluster has only the two built-in tablespaces. Their location is empty because they are not reached through <code class=\"inline-code\">pg_tblspc</code>; they are the <code class=\"inline-code\">base</code> and <code class=\"inline-code\">global</code> folders inside PGDATA. <code class=\"inline-code\">pg_tablespace_location(oid)</code> returns the file system path of a tablespace, and <code class=\"inline-code\">spcowner::regrole</code> turns the owner's OID into a role name. Your sizes will differ."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Create a sample database and see where a table's file lives",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as the postgres user, in psql.</b> We reuse the <code class=\"inline-code\">app_owner</code> role idea from Parts 7 and 8 and create a small <code class=\"inline-code\">shopdb</code> database with 50,000 orders. <code class=\"inline-code\">pg_relation_filepath()</code> shows the path of a table's main data file, relative to PGDATA."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE ROLE app_owner LOGIN PASSWORD 'Secret#2026';\nCREATE DATABASE shopdb OWNER app_owner;\n\\c shopdb\nSET ROLE app_owner;\n\nCREATE TABLE orders (\n    order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer_id int NOT NULL,\n    order_date  date NOT NULL,\n    amount      numeric(10,2) NOT NULL\n);\n\nINSERT INTO orders (customer_id, order_date, amount)\nSELECT (g % 500) + 1,\n       date '2026-01-01' + (g % 300),\n       round((g % 997) * 1.37, 2)\n  FROM generate_series(1, 50000) g;\n\nSELECT oid, datname FROM pg_database WHERE datname = 'shopdb';\nSELECT pg_relation_filepath('orders');",
+    "caption": "Sample database and table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  oid  | datname\n-------+---------\n 16385 | shopdb\n(1 row)\n\n pg_relation_filepath\n----------------------\n base/16385/16387\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The table lives in <code class=\"inline-code\">base/16385/16387</code>: the <code class=\"inline-code\">pg_default</code> tablespace (<code class=\"inline-code\">base</code>), the folder of database OID 16385, and file number 16387. Your numbers will be different. Remember this path; in Step 8 we move the table and watch it change."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Creating a tablespace",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Prepare the directory on the new disk",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as your sudo user (not postgres).</b> PostgreSQL will not create the directory for you. The documentation says the directory must exist, should be empty, must be owned by the PostgreSQL system user, and must be given as an absolute path. Use a subdirectory of the mount point rather than the mount point itself, so the ownership change does not touch the mount point."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo mkdir -p /mnt/fast_ssd/pg18\nsudo chown postgres:postgres /mnt/fast_ssd/pg18\nsudo chmod 700 /mnt/fast_ssd/pg18\nls -ld /mnt/fast_ssd/pg18",
+    "caption": "Create the tablespace directory"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Command",
+      "What it does"
+     ],
+     [
+      "mkdir -p",
+      "Creates the directory and any missing parent directories"
+     ],
+     [
+      "chown postgres:postgres",
+      "Makes the postgres OS user and group the owner, as CREATE TABLESPACE requires"
+     ],
+     [
+      "chmod 700",
+      "Gives only the owner read, write and enter rights, like PGDATA itself"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "drwx------ 2 postgres postgres 4096 Oct 30 12:47 /mnt/fast_ssd/pg18",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The directory is owned by postgres and closed to every other user. That is all the preparation needed."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "In production, <code class=\"inline-code\">/mnt/fast_ssd</code> should be a real disk mounted permanently through <code class=\"inline-code\">/etc/fstab</code>. Check with <code class=\"inline-code\">findmnt /mnt/fast_ssd</code> before you continue: if the disk is not mounted, you would silently be writing to the system disk under the mount point."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Create the tablespace",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as the postgres user, in psql.</b> Only a superuser can create a tablespace, but it can give ownership to another role with <code class=\"inline-code\">OWNER</code>. <code class=\"inline-code\">CREATE TABLESPACE</code> cannot run inside a transaction block (<code class=\"inline-code\">BEGIN ... COMMIT</code>)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLESPACE fast_ssd\n    OWNER postgres\n    LOCATION '/mnt/fast_ssd/pg18';\n\\db",
+    "caption": "Register the directory as a tablespace"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Clause",
+      "What it does"
+     ],
+     [
+      "fast_ssd",
+      "Name of the tablespace. It must be unique in the cluster and cannot begin with pg_ (you get ERROR: unacceptable tablespace name), which is reserved for system tablespaces"
+     ],
+     [
+      "OWNER",
+      "The role that will own the tablespace. If omitted, the user running the command"
+     ],
+     [
+      "LOCATION",
+      "The absolute path of the existing, empty directory owned by postgres"
+     ],
+     [
+      "WITH ( option = value )",
+      "Optional per-tablespace settings: seq_page_cost, random_page_cost, effective_io_concurrency, maintenance_io_concurrency (see Step 11)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLESPACE\n            List of tablespaces\n    Name    |  Owner   |      Location\n------------+----------+--------------------\n fast_ssd   | postgres | /mnt/fast_ssd/pg18\n pg_default | postgres |\n pg_global  | postgres |\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify it worked</b> by looking at both ends of the link, as your sudo user:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo ls -l /var/lib/postgresql/18/main/pg_tblspc/\nsudo ls -la /mnt/fast_ssd/pg18/",
+    "caption": "Check the symbolic link and the version folder"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "total 0\nlrwxrwxrwx 1 postgres postgres 18 Oct 30 12:47 16395 -> /mnt/fast_ssd/pg18\ntotal 12\ndrwx------ 3 postgres postgres 4096 Oct 30 12:47 .\ndrwxr-xr-x 3 root     root     4096 Oct 30 12:47 ..\ndrwx------ 2 postgres postgres 4096 Oct 30 12:47 PG_18_202506291",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The link <code class=\"inline-code\">16395</code> is the OID of the new tablespace, and PostgreSQL has created the version folder <code class=\"inline-code\">PG_18_202506291</code> in your directory. Nothing else is there yet, because no table uses the tablespace."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">DROP TABLESPACE fast_ssd;</code> removes an empty tablespace (Step 12 covers dropping one that has objects in it)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Allow an application role to use the tablespace",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as the postgres user, in psql, connected to shopdb.</b> Ordinary roles need the <code class=\"inline-code\">CREATE</code> privilege on a tablespace before they can put objects in it. Without it, this is what <code class=\"inline-code\">app_owner</code> gets:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\c shopdb\nSET ROLE app_owner;\nCREATE TABLE payments (payment_id bigint PRIMARY KEY) TABLESPACE fast_ssd;",
+    "caption": "Try to use the tablespace without the privilege"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  permission denied for tablespace fast_ssd",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Switch back to postgres and grant the privilege:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "RESET ROLE;\nGRANT CREATE ON TABLESPACE fast_ssd TO app_owner;\n\\db+ fast_ssd",
+    "caption": "Grant CREATE on the tablespace"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                        List of tablespaces\n   Name   |  Owner   |      Location      |  Access privileges   | Options |  Size   | Description\n----------+----------+--------------------+----------------------+---------+---------+-------------\n fast_ssd | postgres | /mnt/fast_ssd/pg18 | postgres=C/postgres +|         | 0 bytes |\n          |          |                    | app_owner=C/postgres |         |         |\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">C</code> in <code class=\"inline-code\">app_owner=C/postgres</code> means CREATE, granted by postgres (the access privilege codes were explained in Part 7). <b>Undo:</b> <code class=\"inline-code\">REVOKE CREATE ON TABLESPACE fast_ssd FROM app_owner;</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Placing tables and indexes in a tablespace",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Create a table and its indexes in the new tablespace",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql connected to shopdb, as app_owner</b> (<code class=\"inline-code\">SET ROLE app_owner;</code>). The <code class=\"inline-code\">TABLESPACE</code> clause puts the table in <code class=\"inline-code\">fast_ssd</code>. An index is a separate object with its own tablespace: the index behind a primary key goes to the table's database default unless you add <code class=\"inline-code\">USING INDEX TABLESPACE</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET ROLE app_owner;\n\nCREATE TABLE payments (\n    payment_id  bigint PRIMARY KEY USING INDEX TABLESPACE fast_ssd,\n    order_id    bigint NOT NULL,\n    paid_at     timestamptz NOT NULL\n) TABLESPACE fast_ssd;\n\nINSERT INTO payments\nSELECT g, g, timestamptz '2026-01-01' + g * interval '1 minute'\n  FROM generate_series(1, 20000) g;\n\nCREATE INDEX payments_order_id_idx ON payments (order_id)\n    TABLESPACE fast_ssd;",
+    "caption": "Table, primary key index and index in fast_ssd"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Clause",
+      "What it does"
+     ],
+     [
+      "CREATE TABLE ... TABLESPACE fast_ssd",
+      "Stores the table's data files in fast_ssd"
+     ],
+     [
+      "PRIMARY KEY USING INDEX TABLESPACE fast_ssd",
+      "Stores the index that enforces the primary key in fast_ssd"
+     ],
+     [
+      "CREATE INDEX ... TABLESPACE fast_ssd",
+      "Stores this index in fast_ssd"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify it worked</b> with the <code class=\"inline-code\">tablespace</code> column of <code class=\"inline-code\">pg_tables</code> and <code class=\"inline-code\">pg_indexes</code>, and the file paths:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT tablename, tablespace FROM pg_tables\n WHERE schemaname = 'public' ORDER BY tablename;\n\nSELECT indexname, tablespace FROM pg_indexes\n WHERE schemaname = 'public' ORDER BY indexname;\n\nSELECT pg_relation_filepath('payments') AS table_file,\n       pg_relation_filepath('payments_pkey') AS pkey_file;",
+    "caption": "Where did each object go?"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " tablename | tablespace\n-----------+------------\n orders    |\n payments  | fast_ssd\n(2 rows)\n\n       indexname       | tablespace\n-----------------------+------------\n orders_pkey           |\n payments_order_id_idx | fast_ssd\n payments_pkey         | fast_ssd\n(3 rows)\n\n                 table_file                  |                  pkey_file\n---------------------------------------------+---------------------------------------------\n pg_tblspc/16395/PG_18_202506291/16385/16398 | pg_tblspc/16395/PG_18_202506291/16385/16401\n(1 row)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An empty <code class=\"inline-code\">tablespace</code> column means the object is in the database's default tablespace (here <code class=\"inline-code\">pg_default</code>). The paths now go through <code class=\"inline-code\">pg_tblspc/16395</code>, the link to <code class=\"inline-code\">/mnt/fast_ssd/pg18</code>, then the version folder and database OID 16385. On disk, <code class=\"inline-code\">sudo ls -l /mnt/fast_ssd/pg18/PG_18_202506291/16385/</code> shows the files <code class=\"inline-code\">16398</code>, <code class=\"inline-code\">16398_fsm</code>, <code class=\"inline-code\">16401</code> and <code class=\"inline-code\">16403</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Choose a tablespace automatically with default_tablespace",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Typing <code class=\"inline-code\">TABLESPACE</code> on every command is easy to forget. The <code class=\"inline-code\">default_tablespace</code> setting supplies it for <code class=\"inline-code\">CREATE TABLE</code> and <code class=\"inline-code\">CREATE INDEX</code> commands that do not name one. Its default is an empty string, which means \"use the current database's default tablespace\". It is not used for temporary tables (Step 10) or for <code class=\"inline-code\">CREATE DATABASE</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>For one session</b>, on db1 in psql connected to shopdb as app_owner:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SHOW default_tablespace;\nSET default_tablespace = fast_ssd;\nCREATE TABLE refunds (refund_id bigint PRIMARY KEY, amount numeric(10,2));\n\nSELECT c.relname, t.spcname\n  FROM pg_class c\n  LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace\n WHERE c.relname LIKE 'refunds%' ORDER BY 1;\nRESET default_tablespace;",
+    "caption": "Session-level default_tablespace"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " default_tablespace\n--------------------\n\n(1 row)\n\nSET\nCREATE TABLE\n   relname    | spcname\n--------------+----------\n refunds      | fast_ssd\n refunds_pkey | fast_ssd\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both the table and its primary key index went to <code class=\"inline-code\">fast_ssd</code> without a <code class=\"inline-code\">TABLESPACE</code> clause. <code class=\"inline-code\">pg_class.reltablespace</code> stores the tablespace OID of every table and index (0 means the database default)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Permanently for one role in one database</b>, as postgres. This uses <code class=\"inline-code\">ALTER ROLE ... IN DATABASE ... SET</code> from Part 8; it applies at the next login, not to <code class=\"inline-code\">SET ROLE</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER ROLE app_owner IN DATABASE shopdb SET default_tablespace = 'fast_ssd';",
+    "caption": "Role and database level default"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql -h localhost -U app_owner -d shopdb -c \"SHOW default_tablespace;\"",
+    "caption": "Verify: log in as app_owner (password Secret#2026)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " default_tablespace\n--------------------\n fast_ssd\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">ALTER ROLE app_owner IN DATABASE shopdb RESET default_tablespace;</code> (the next login shows an empty value again), and <code class=\"inline-code\">DROP TABLE refunds;</code> to remove the test table. You can also set <code class=\"inline-code\">default_tablespace</code> in postgresql.conf, but a per-role or per-database setting is easier to reason about."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "If <code class=\"inline-code\">default_tablespace</code> names a tablespace that does not exist, PostgreSQL quietly uses the database's default tablespace instead. If it names one the user has no CREATE privilege on, the CREATE fails. Check the setting first when tables are not landing where you expect."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Moving existing objects",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Move a table and its index to another tablespace",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Moving a table blocks it",
+    "text": "<b>ALTER TABLE ... SET TABLESPACE</b> copies every data file of the table to the new location and holds an ACCESS EXCLUSIVE lock while it does. Nobody can read or write the table until it finishes. On a large production table this can take minutes or hours; run it in a maintenance window."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql connected to shopdb as postgres.</b> Moving a table does <b>not</b> move its indexes; move each index with <code class=\"inline-code\">ALTER INDEX</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_size_pretty(pg_relation_size('orders')) AS table_size;\n\nALTER TABLE orders SET TABLESPACE fast_ssd;\n\nSELECT pg_relation_filepath('orders') AS table_file,\n       pg_relation_filepath('orders_pkey') AS index_file;\n\nALTER INDEX orders_pkey SET TABLESPACE fast_ssd;",
+    "caption": "Move the orders table, then its index"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " table_size\n------------\n 2552 kB\n(1 row)\n\nALTER TABLE\n                 table_file                  |    index_file\n---------------------------------------------+------------------\n pg_tblspc/16395/PG_18_202506291/16385/16409 | base/16385/16390\n(1 row)\n\nALTER INDEX",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Compare with Step 2: the table moved from <code class=\"inline-code\">base/16385/16387</code> to a new file <code class=\"inline-code\">16409</code> in <code class=\"inline-code\">fast_ssd</code>. PostgreSQL wrote a fresh copy and removed the old file. The index was still in <code class=\"inline-code\">base</code> until the <code class=\"inline-code\">ALTER INDEX</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>See the lock for yourself.</b> Run the move inside a transaction, look at <code class=\"inline-code\">pg_locks</code> (covered in depth in Part 29), then roll back:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\nALTER TABLE payments SET TABLESPACE pg_default;\nSELECT relation::regclass, mode, granted\n  FROM pg_locks\n WHERE pid = pg_backend_pid() AND relation = 'payments'::regclass;\nROLLBACK;",
+    "caption": "Which lock does SET TABLESPACE take?"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " relation |        mode         | granted\n----------+---------------------+---------\n payments | AccessExclusiveLock | t\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify</b> what is now in the tablespace, with sizes:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT c.relname, c.relkind, t.spcname,\n       pg_size_pretty(pg_relation_size(c.oid)) AS size\n  FROM pg_class c\n  JOIN pg_tablespace t ON t.oid = c.reltablespace\n WHERE t.spcname = 'fast_ssd'\n ORDER BY c.relname;",
+    "caption": "Objects of this database in fast_ssd"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "        relname        | relkind | spcname  |  size\n-----------------------+---------+----------+---------\n orders                | r       | fast_ssd | 2552 kB\n orders_pkey           | i       | fast_ssd | 1112 kB\n payments              | r       | fast_ssd | 1024 kB\n payments_order_id_idx | i       | fast_ssd | 456 kB\n payments_pkey         | i       | fast_ssd | 456 kB\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In <code class=\"inline-code\">relkind</code>, <code class=\"inline-code\">r</code> is a table and <code class=\"inline-code\">i</code> an index. This query only sees the current database, because <code class=\"inline-code\">pg_class</code> is a per-database catalog. <b>Undo:</b> <code class=\"inline-code\">ALTER TABLE orders SET TABLESPACE pg_default;</code> and <code class=\"inline-code\">ALTER INDEX orders_pkey SET TABLESPACE pg_default;</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Give a whole database its own default tablespace",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A database's default tablespace holds its system catalogs and is where its tables, indexes and temporary files go when nothing else is specified. <b>On db1, as your sudo user</b>, prepare a second directory for slower archive storage:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo mkdir -p /mnt/slow_hdd/pg18\nsudo chown postgres:postgres /mnt/slow_hdd/pg18\nsudo chmod 700 /mnt/slow_hdd/pg18",
+    "caption": "Directory for the archive tablespace"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>As the postgres user, in psql</b>, create the tablespace and a database that uses it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLESPACE archive_hdd LOCATION '/mnt/slow_hdd/pg18';\nCREATE DATABASE reportdb OWNER app_owner TABLESPACE archive_hdd;\n\nSELECT d.datname, t.spcname AS default_tablespace\n  FROM pg_database d\n  JOIN pg_tablespace t ON t.oid = d.dattablespace\n WHERE d.datname IN ('postgres', 'shopdb', 'reportdb')\n ORDER BY 1;",
+    "caption": "Create a database in archive_hdd"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLESPACE\nCREATE DATABASE\n datname  | default_tablespace\n----------+--------------------\n postgres | pg_default\n reportdb | archive_hdd\n shopdb   | pg_default\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every object created in <code class=\"inline-code\">reportdb</code> without a <code class=\"inline-code\">TABLESPACE</code> clause now lands on the slow disk, including its catalogs. Without the <code class=\"inline-code\">TABLESPACE</code> clause, a new database uses the same tablespace as its template (normally <code class=\"inline-code\">pg_default</code>); <code class=\"inline-code\">default_tablespace</code> is not used here."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To move an existing database, use <code class=\"inline-code\">ALTER DATABASE ... SET TABLESPACE</code>. It physically moves every table and index in the old default tablespace. The rules from the documentation: only the database owner or a superuser can do it, you need CREATE on the new tablespace, nobody may be connected to the database, it cannot run in a transaction block, and the database must have no objects in the new tablespace yet."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER DATABASE reportdb SET TABLESPACE pg_default;",
+    "caption": "Move reportdb back to pg_default (run while connected to postgres, not reportdb)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER DATABASE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify</b> by repeating the <code class=\"inline-code\">pg_database</code> query above: <code class=\"inline-code\">reportdb</code> now shows <code class=\"inline-code\">pg_default</code>. If a session is connected to <code class=\"inline-code\">reportdb</code>, the command waits a few seconds and then fails with <code class=\"inline-code\">ERROR: database \"reportdb\" is being accessed by other users</code>. Find and end those sessions first (Part 10 covers <code class=\"inline-code\">pg_stat_activity</code> and terminating sessions)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Temporary files on their own disk",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Point temp_tablespaces at a separate tablespace",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a sort or hash does not fit in <code class=\"inline-code\">work_mem</code>, PostgreSQL writes temporary files. Temporary tables and their indexes are also files. The <code class=\"inline-code\">temp_tablespaces</code> setting says where all of these go. Its default is an empty string, meaning the current database's default tablespace. You can list several tablespaces; PostgreSQL then picks one at random for each temporary object, which spreads the load."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as your sudo user</b>, create the directory; then <b>as postgres in psql</b>, create the tablespace:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo mkdir -p /mnt/fast_ssd/pgtemp\nsudo chown postgres:postgres /mnt/fast_ssd/pgtemp\nsudo chmod 700 /mnt/fast_ssd/pgtemp\nsudo -u postgres psql -c \"CREATE TABLESPACE temp_ssd LOCATION '/mnt/fast_ssd/pgtemp';\"",
+    "caption": "Create the temp tablespace"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Edit <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code> (with <code class=\"inline-code\">sudo nano</code> or your editor). The line is in the client connection defaults section:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before\n#temp_tablespaces = ''\t\t\t# a list of tablespace names, '' uses\n                                        # only default tablespace\n# after\ntemp_tablespaces = 'temp_ssd'\t\t# a list of tablespace names, '' uses\n                                        # only default tablespace",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This setting only needs a <b>reload</b>, not a restart. As postgres in psql:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_reload_conf();\nSELECT name, setting, context, source\n  FROM pg_settings WHERE name = 'temp_tablespaces';",
+    "caption": "Reload and check"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_reload_conf\n----------------\n t\n(1 row)\n\n       name       | setting  | context |       source\n------------------+----------+---------+--------------------\n temp_tablespaces | temp_ssd | user    | configuration file\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">context</code> value <code class=\"inline-code\">user</code> means any user can also change it for their own session, and <code class=\"inline-code\">source</code> confirms the value came from postgresql.conf. Note one safety rule from the documentation: a value set in postgresql.conf silently skips tablespaces that do not exist or that the user has no CREATE privilege on, so ordinary users can use <code class=\"inline-code\">temp_ssd</code> without an explicit GRANT."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify it worked</b> in two ways, connected to shopdb as postgres: a temporary table's file path, and a sort that spills to disk, with <code class=\"inline-code\">log_temp_files = 0</code> so every temporary file is logged."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TEMP TABLE cart_tmp (id int);\nSELECT pg_relation_filepath('cart_tmp');\n\nSET work_mem = '64kB';\nSET log_temp_files = 0;\nEXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT * FROM orders ORDER BY amount DESC;",
+    "caption": "Temp table and a sort that spills"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "              pg_relation_filepath\n------------------------------------------------\n pg_tblspc/16426/PG_18_202506291/16385/t3_16429\n(1 row)\n\n                      QUERY PLAN\n------------------------------------------------------\n Sort (actual rows=50000 loops=1)\n   Sort Key: amount DESC\n   Sort Method: external merge  Disk: 1656kB\n   ->  Seq Scan on orders (actual rows=50000 loops=1)\n(4 rows)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo tail -3 /var/log/postgresql/postgresql-18-main.log",
+    "caption": "The server log shows where the temporary file was written"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-10-30 12:53:16.459 UTC [1735] postgres@shopdb LOG:  temporary file: path \"pg_tblspc/16426/PG_18_202506291/pgsql_tmp/pgsql_tmp1735.0\", size 1695744\n2026-10-30 12:53:16.459 UTC [1735] postgres@shopdb STATEMENT:  EXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF, TIMING OFF, SUMMARY OFF)\n\tSELECT * FROM orders ORDER BY amount DESC;",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The temporary table file (the <code class=\"inline-code\">t3_</code> prefix marks a temporary relation) and the 1.6 MB sort file (<code class=\"inline-code\">Sort Method: external merge</code>) were both written under tablespace 16426, <code class=\"inline-code\">temp_ssd</code>, in its <code class=\"inline-code\">pgsql_tmp</code> folder. <code class=\"inline-code\">BUFFERS OFF</code> is there only to keep the output short, because EXPLAIN ANALYZE shows buffer counts by default since PostgreSQL 18. <b>Undo:</b> comment the line out again in postgresql.conf and reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Monitoring, tuning and removing tablespaces",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Check sizes and set per-tablespace cost options",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres in psql.</b> <code class=\"inline-code\">pg_tablespace_size()</code> returns the space used by a whole tablespace across all databases. Ordinary users need CREATE on the tablespace or membership in <code class=\"inline-code\">pg_read_all_stats</code> to call it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT spcname, pg_size_pretty(pg_tablespace_size(oid)) AS size\n  FROM pg_tablespace ORDER BY spcname;",
+    "caption": "Size of every tablespace"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "   spcname   |    size\n-------------+------------\n archive_hdd | 8192 bytes\n fast_ssd    | 5668 kB\n pg_default  | 36 MB\n pg_global   | 605 kB\n temp_ssd    | 8192 bytes\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Watch these numbers next to <code class=\"inline-code\">df -h /mnt/fast_ssd</code> in your monitoring: a full tablespace disk stops writes to every table on it, even if PGDATA has plenty of space."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A tablespace can also tell the query planner that its disk is faster or slower than the rest. Four options can be set per tablespace: <code class=\"inline-code\">seq_page_cost</code>, <code class=\"inline-code\">random_page_cost</code>, <code class=\"inline-code\">effective_io_concurrency</code> and <code class=\"inline-code\">maintenance_io_concurrency</code>. They override the server-wide settings of the same name for objects in that tablespace. The server defaults are <code class=\"inline-code\">seq_page_cost = 1</code> and <code class=\"inline-code\">random_page_cost = 4</code>, a ratio that assumes spinning disks."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLESPACE fast_ssd SET (random_page_cost = 1.1);\nSELECT spcname, spcoptions FROM pg_tablespace WHERE spcname = 'fast_ssd';",
+    "caption": "Tell the planner random reads are cheap on fast_ssd"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER TABLESPACE\n spcname  |       spcoptions\n----------+------------------------\n fast_ssd | {random_page_cost=1.1}\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The value 1.1 is a common starting point for SSDs, not a documented rule; Part 28 covers planner cost tuning. <b>Undo:</b> <code class=\"inline-code\">ALTER TABLESPACE fast_ssd RESET (random_page_cost);</code>. <code class=\"inline-code\">ALTER TABLESPACE</code> can also rename a tablespace or change its owner, but it cannot change its location."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Empty and drop a tablespace",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Use DROP TABLESPACE, never rm",
+    "text": "Never delete a tablespace directory, or the link in <code class=\"inline-code\">pg_tblspc</code>, with <code class=\"inline-code\">rm</code>. The catalogs would still point to files that no longer exist, and every query on those tables would fail. Always empty the tablespace and use <code class=\"inline-code\">DROP TABLESPACE</code>. Also do not edit the links in <code class=\"inline-code\">pg_tblspc</code> while the server is running; the documentation forbids it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres in psql.</b> A tablespace must be empty of objects from <b>all</b> databases before it can be dropped:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DROP TABLESPACE fast_ssd;",
+    "caption": "Try to drop a tablespace that is still in use"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  tablespace \"fast_ssd\" is not empty",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "First find which databases still have objects in it, with <code class=\"inline-code\">pg_tablespace_databases()</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT d.datname\n  FROM pg_tablespace t\n CROSS JOIN LATERAL pg_tablespace_databases(t.oid) AS db(oid)\n  JOIN pg_database d ON d.oid = db.oid\n WHERE t.spcname = 'fast_ssd';",
+    "caption": "Which databases use fast_ssd?"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " datname\n---------\n shopdb\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Connect to each database listed and move everything out. The <code class=\"inline-code\">ALL IN TABLESPACE</code> form locks all matching tables first, then moves them one by one. Add <code class=\"inline-code\">OWNED BY role</code> to move only one role's objects, or <code class=\"inline-code\">NOWAIT</code> to fail at once instead of waiting for locks. Indexes need their own command:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\c shopdb\nALTER TABLE ALL IN TABLESPACE fast_ssd SET TABLESPACE pg_default;\nALTER INDEX ALL IN TABLESPACE fast_ssd SET TABLESPACE pg_default;\n\nSELECT c.relname, c.relkind\n  FROM pg_class c\n  JOIN pg_tablespace t ON t.oid = c.reltablespace\n WHERE t.spcname = 'fast_ssd';\n\n\\c postgres\nDROP TABLESPACE fast_ssd;",
+    "caption": "Move everything out, then drop"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER TABLE\nALTER INDEX\n relname | relkind\n---------+---------\n(0 rows)\n\nDROP TABLESPACE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify</b>: <code class=\"inline-code\">\\db</code> no longer lists <code class=\"inline-code\">fast_ssd</code>, and <code class=\"inline-code\">sudo ls -la /mnt/fast_ssd/pg18/</code> shows an empty directory, because PostgreSQL removed its <code class=\"inline-code\">PG_18_...</code> folder. The empty directory itself is left for you to remove with <code class=\"inline-code\">sudo rmdir /mnt/fast_ssd/pg18</code> if you no longer need it. If a session still lists the tablespace in <code class=\"inline-code\">temp_tablespaces</code>, the drop can fail because of its temporary files; reset that setting first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: directory \"/mnt/fast_ssd/pg18\" does not exist",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">CREATE TABLESPACE</code> never creates the directory. Create it as in Step 3, and check for typos and for a disk that is not mounted."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: could not set permissions on directory \"/mnt/fast_ssd/pg18\": Operation not permitted",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The directory exists but is owned by root, so the postgres OS user cannot change it. Fix: <code class=\"inline-code\">sudo chown postgres:postgres /mnt/fast_ssd/pg18</code> and <code class=\"inline-code\">sudo chmod 700 /mnt/fast_ssd/pg18</code>, then run the command again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: tablespace location must be an absolute path",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You wrote a relative path such as <code class=\"inline-code\">'mnt/fast_ssd/pg18'</code>. Start the path with <code class=\"inline-code\">/</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "WARNING: tablespace location should not be inside the data directory",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You pointed the tablespace at a folder inside <code class=\"inline-code\">/var/lib/postgresql/18/main</code>. The command succeeds, but it gives no storage benefit and confuses backup tools. Drop it and use a directory outside PGDATA, ideally on another disk."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: permission denied for tablespace fast_ssd",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The role has no CREATE privilege on the tablespace, either because you named it in a TABLESPACE clause or because <code class=\"inline-code\">default_tablespace</code> points to it. Fix: <code class=\"inline-code\">GRANT CREATE ON TABLESPACE fast_ssd TO app_owner;</code> or reset <code class=\"inline-code\">default_tablespace</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: some relations of database \"reportdb\" are already in tablespace \"archive_hdd\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You ran <code class=\"inline-code\">ALTER DATABASE reportdb SET TABLESPACE archive_hdd</code> while some tables of that database already live there. PostgreSQL adds the hint <code class=\"inline-code\">You must move them back to the database's default tablespace before using this command.</code> Move those tables to the current default with <code class=\"inline-code\">ALTER TABLE ... SET TABLESPACE</code>, then repeat."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: CREATE TABLESPACE cannot run inside a transaction block",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same applies to <code class=\"inline-code\">DROP TABLESPACE</code> and <code class=\"inline-code\">ALTER DATABASE ... SET TABLESPACE</code>. Run them on their own, outside <code class=\"inline-code\">BEGIN</code>, and check that your migration tool does not wrap every script in a transaction."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "A standby or restored server will not start because a tablespace path is missing",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Physical copies of a cluster (pg_basebackup, standbys, file-level restores) need the tablespace directories too. Create the same paths on the other server, or map them to new ones with pg_basebackup's <code class=\"inline-code\">--tablespace-mapping</code> option. Parts 18 and 33 show this in practice."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "1. Create a tablespace <code class=\"inline-code\">idx_ts</code> in <code class=\"inline-code\">/mnt/fast_ssd/idx</code>. 2. Move only the two indexes of the <code class=\"inline-code\">payments</code> table into it, leaving the table where it is. 3. Prove it with <code class=\"inline-code\">pg_indexes</code> and <code class=\"inline-code\">pg_tables</code>."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "As your sudo user: <code class=\"inline-code\">sudo mkdir -p /mnt/fast_ssd/idx && sudo chown postgres:postgres /mnt/fast_ssd/idx && sudo chmod 700 /mnt/fast_ssd/idx</code>. As postgres in psql: <code class=\"inline-code\">CREATE TABLESPACE idx_ts LOCATION '/mnt/fast_ssd/idx';</code>, then in shopdb <code class=\"inline-code\">ALTER INDEX payments_pkey SET TABLESPACE idx_ts;</code> and <code class=\"inline-code\">ALTER INDEX payments_order_id_idx SET TABLESPACE idx_ts;</code>. <code class=\"inline-code\">SELECT indexname, tablespace FROM pg_indexes WHERE tablename = 'payments';</code> shows idx_ts for both indexes, while <code class=\"inline-code\">SELECT tablename, tablespace FROM pg_tables WHERE tablename = 'payments';</code> shows an empty tablespace (the database default)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# List tablespaces with locations and sizes (psql)\nsudo -u postgres psql -c '\\db+'\n\n# Find the file of a table, relative to PGDATA\nsudo -u postgres psql -d shopdb -c \"SELECT pg_relation_filepath('orders');\"\n\n# Prepare a directory for a tablespace (as a sudo user)\nsudo mkdir -p /mnt/fast_ssd/pg18\nsudo chown postgres:postgres /mnt/fast_ssd/pg18\nsudo chmod 700 /mnt/fast_ssd/pg18\n\n# Create the tablespace and let a role use it\nsudo -u postgres psql -c \"CREATE TABLESPACE fast_ssd LOCATION '/mnt/fast_ssd/pg18';\"\nsudo -u postgres psql -c \"GRANT CREATE ON TABLESPACE fast_ssd TO app_owner;\"\n\n# See the symbolic link PostgreSQL created\nsudo ls -l /var/lib/postgresql/18/main/pg_tblspc/\n\n# Create objects in it (SQL):\n#   CREATE TABLE t (...) TABLESPACE fast_ssd;\n#   CREATE INDEX i ON t (c) TABLESPACE fast_ssd;\n#   ALTER ROLE app_owner IN DATABASE shopdb SET default_tablespace = 'fast_ssd';\n\n# Move a table and its index (ACCESS EXCLUSIVE lock while copying)\nsudo -u postgres psql -d shopdb -c \"ALTER TABLE orders SET TABLESPACE fast_ssd;\"\nsudo -u postgres psql -d shopdb -c \"ALTER INDEX orders_pkey SET TABLESPACE fast_ssd;\"\n\n# Create a database in a tablespace, or move one (no connections allowed)\nsudo -u postgres psql -c \"CREATE DATABASE reportdb OWNER app_owner TABLESPACE archive_hdd;\"\nsudo -u postgres psql -c \"ALTER DATABASE reportdb SET TABLESPACE pg_default;\"\n\n# Temporary files: set temp_tablespaces = 'temp_ssd' in\n# /etc/postgresql/18/main/postgresql.conf, then reload\nsudo -u postgres psql -c \"SELECT pg_reload_conf();\"\n\n# Size of each tablespace\nsudo -u postgres psql -c \"SELECT spcname, pg_size_pretty(pg_tablespace_size(oid)) FROM pg_tablespace;\"\n\n# Planner hint for a fast disk\nsudo -u postgres psql -c \"ALTER TABLESPACE fast_ssd SET (random_page_cost = 1.1);\"\n\n# Empty and drop a tablespace (run the ALTERs in every database that uses it)\nsudo -u postgres psql -d shopdb -c \"ALTER TABLE ALL IN TABLESPACE fast_ssd SET TABLESPACE pg_default;\"\nsudo -u postgres psql -d shopdb -c \"ALTER INDEX ALL IN TABLESPACE fast_ssd SET TABLESPACE pg_default;\"\nsudo -u postgres psql -c \"DROP TABLESPACE fast_ssd;\"",
+    "caption": "Every command from this part, in order"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "A tablespace is a named directory where PostgreSQL stores table and index files; pg_default (PGDATA/base) and pg_global (PGDATA/global) exist from the start",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Prepare an empty directory owned by postgres with mode 700, outside PGDATA, on permanent storage",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "CREATE TABLESPACE needs a superuser and runs outside a transaction; other roles need GRANT CREATE ON TABLESPACE",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use the TABLESPACE clause, USING INDEX TABLESPACE, default_tablespace or a database's own default to place objects",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "ALTER TABLE / ALTER INDEX ... SET TABLESPACE copy the files under an ACCESS EXCLUSIVE lock; indexes move separately",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "temp_tablespaces sends temp tables and sort files to their own disk and only needs a reload",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Check pg_tablespace_size() and disk space; empty a tablespace in every database before DROP TABLESPACE, and never rm its files",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 10 we look at connections and sessions: max_connections, pg_stat_activity and how to terminate sessions safely."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your PostgreSQL data disk is 95% full and cannot be extended. You do not need a new server: you need a tablespace.\n\nA tablespace is a named directory, usually on another disk, where PostgreSQL keeps table and index files. Part 9 of my PostgreSQL DBA series covers it on Ubuntu with PostgreSQL 18:\n\n→ The directory must exist, be empty and be owned by postgres. CREATE TABLESPACE fast_ssd LOCATION '/mnt/fast_ssd/pg18'; does not create it for you.\n→ Ordinary roles need GRANT CREATE ON TABLESPACE before they can use it.\n→ ALTER TABLE orders SET TABLESPACE fast_ssd; copies the files under an ACCESS EXCLUSIVE lock, and the indexes stay behind until you move them too.\n→ temp_tablespaces sends big sort files and temp tables to their own disk, and only needs a reload.\n→ Never rm a tablespace folder. Empty it in every database, then DROP TABLESPACE.\n\nOne warning: a tablespace is part of the cluster. Lose that disk and the whole cluster can fail to start.\n\nDo you use tablespaces in production, or keep everything on one big volume?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "PostgreSQL Tablespaces, Step by Step",
+    "body": "PostgreSQL DBA series, Part 9: put tables on another disk"
+   },
+   {
+    "title": "What a tablespace is",
+    "points": [
+     "A named directory where table and index files live",
+     "pg_default = PGDATA/base, pg_global = PGDATA/global",
+     "Each new one gets a link in PGDATA/pg_tblspc",
+     "It belongs to the cluster: never back it up alone"
+    ]
+   },
+   {
+    "title": "Step 1: prepare and create",
+    "points": [
+     "mkdir the folder, chown postgres, chmod 700",
+     "Superuser only, outside a transaction block"
+    ],
+    "code": "CREATE TABLESPACE fast_ssd\n  LOCATION '/mnt/fast_ssd/pg18';\nGRANT CREATE ON TABLESPACE fast_ssd\n  TO app_owner;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 2: place objects",
+    "code": "CREATE TABLE payments (\n  payment_id bigint PRIMARY KEY\n    USING INDEX TABLESPACE fast_ssd,\n  paid_at timestamptz NOT NULL\n) TABLESPACE fast_ssd;\n\nSET default_tablespace = fast_ssd;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 3: move existing tables",
+    "points": [
+     "Copies the files under an ACCESS EXCLUSIVE lock",
+     "Indexes are not moved with the table"
+    ],
+    "code": "ALTER TABLE orders\n  SET TABLESPACE fast_ssd;\nALTER INDEX orders_pkey\n  SET TABLESPACE fast_ssd;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Temp files on their own disk",
+    "body": "Set temp_tablespaces = 'temp_ssd' in postgresql.conf and reload. Temp tables and sorts that spill past work_mem are then written to that tablespace."
+   },
+   {
+    "title": "Dropping safely",
+    "points": [
+     "DROP fails while any database still has objects in it",
+     "Move out with ALTER TABLE ALL IN TABLESPACE ... SET TABLESPACE",
+     "Never delete the folder or the pg_tblspc link with rm"
+    ]
+   }
+  ]
+ }
+}

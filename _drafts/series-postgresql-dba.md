@@ -7,3 +7,4 @@
 - Part 6 | postgresql-dba-part-6-pg-hba-conf-authentication | 2026-10-26
 - Part 7 | postgresql-dba-part-7-roles-and-privileges | 2026-10-27
 - Part 8 | postgresql-dba-part-8-databases-schemas-search-path | 2026-10-28
+- Part 9 | postgresql-dba-part-9-tablespaces | 2026-10-30
