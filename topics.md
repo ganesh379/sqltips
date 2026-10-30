@@ -57,7 +57,7 @@ When a category has fewer than 5 unchecked topics, the task adds new practical o
 - [ ] Cursors in PL/pgSQL
 
 ## PostgreSQL DBA
-- [ ] Long-running queries in pg_stat_activity, pg_cancel_backend vs pg_terminate_backend
+- [x] Long-running queries in pg_stat_activity, pg_cancel_backend vs pg_terminate_backend (2026-10-30 21:41)
 - [ ] Find blocking sessions with pg_blocking_pids()
 - [ ] Dead tuples and autovacuum in pg_stat_user_tables
 - [ ] Table and index sizes with pg_total_relation_size and pg_size_pretty
