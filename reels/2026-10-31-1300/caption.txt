@@ -1,0 +1,11 @@
+One NULL can make your NOT IN query return 0 rows.
+
+NOT IN checks your value against every value in the list. Any comparison with NULL gives UNKNOWN, and WHERE drops every row that is not TRUE.
+
+The fix: use NOT EXISTS, or filter the NULLs out of the subquery with WHERE customer_id IS NOT NULL.
+
+Same behaviour in PostgreSQL and Oracle.
+
+Save this for your next SQL interview. Comment PART 2 for more SQL traps.
+
+#sql #postgresql #oracle #sqlinterview #database

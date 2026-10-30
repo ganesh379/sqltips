@@ -1,0 +1,9 @@
+What happens inside PostgreSQL after you press Enter on a SELECT?
+
+Your query reaches port 5432, gets its own backend process, then goes through the parser, rewriter, planner and executor.
+
+The executor looks for the 8 KB page in shared_buffers first. If it is not there, PostgreSQL asks the operating system, which has its own cache too, so the read may never touch the disk.
+
+Save this for your next PostgreSQL interview. Comment PART 2 for more internals.
+
+#postgresql #sql #dba #database #postgres

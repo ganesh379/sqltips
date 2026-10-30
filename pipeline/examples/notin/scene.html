@@ -1,0 +1,289 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#000}canvas{display:block}</style>
+</head><body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script src="timing.js"></script>
+<script>
+const W=1080,H=1920, cv=document.getElementById('c'), ctx=cv.getContext('2d');
+const ORANGE='#ff7a1a', GREEN='#3ecf7a', RED='#ff4d4d', AMBER='#ffb020', INK='#1b1f27';
+const T=window.TIMING, TOTAL=T.total+0.0;
+const A=i=>T.lines[i].a, B=i=>T.lines[i].b;
+const C=(i,f)=>T.lines[i].cue!==undefined?T.lines[i].cue:A(i)+f;  // cue-word time
+
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)), lerp=(a,b,t)=>a+(b-a)*t;
+const ease=t=>{t=clamp(t,0,1);return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;};
+const back=t=>{t=clamp(t,0,1);const c1=1.70158,c3=c1+1;return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2);};
+const prog=(t,a,b)=>clamp((t-a)/(b-a),0,1);
+// visible window with fade in/out
+const win=(t,a,b,f=.3)=>prog(t,a,a+f)*(1-prog(t,b-f,b));
+function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+function card(x,y,w,h,fill=INK){ctx.save();ctx.shadowColor='rgba(60,40,10,.35)';ctx.shadowBlur=36;ctx.shadowOffsetY=14;ctx.fillStyle=fill;rr(x,y,w,h,26);ctx.fill();ctx.restore();}
+function text(s,x,y,font,col,align='left'){ctx.font=font;ctx.fillStyle=col;ctx.textAlign=align;ctx.textBaseline='middle';ctx.fillText(s,x,y);}
+function shakeX(t,t0,amp=14,dur=.45){const k=prog(t,t0,t0+dur);return k>0&&k<1?Math.sin(k*40)*amp*(1-k):0;}
+
+// ---------- background ----------
+function background(t){
+  const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#efe7da');g.addColorStop(1,'#d6c9b5');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  // slowly drifting isometric grid
+  ctx.save();ctx.strokeStyle='rgba(120,100,70,.12)';ctx.lineWidth=1.5;
+  const off=(t*18)%80;
+  for(let i=-30;i<40;i++){
+    ctx.beginPath();ctx.moveTo(i*80+off-H*.577,0);ctx.lineTo(i*80+off+H*.577,H);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(i*80-off+H*.577,0);ctx.lineTo(i*80-off-H*.577,H);ctx.stroke();
+  }
+  ctx.restore();
+  const v=ctx.createRadialGradient(W/2,H*.45,H*.25,W/2,H*.45,H*.8);
+  v.addColorStop(0,'rgba(0,0,0,0)');v.addColorStop(1,'rgba(50,35,15,.30)');ctx.fillStyle=v;ctx.fillRect(0,0,W,H);
+}
+
+// ---------- SQL code card ----------
+const KW=new Set(['SELECT','FROM','WHERE','NOT','IN','EXISTS','AND']);
+function tokens(line){return line.split(/(\s+|[(),;=.])/).filter(s=>s!=='');}
+function tokCol(s){if(KW.has(s))return '#ff9a4d';if(s==='NULL')return ORANGE;if(/^\d+$/.test(s))return '#7fe3a5';if(/^[(),;=.]$/.test(s))return '#c9ced8';return '#e8ecf2';}
+function codeCard(t,x,y,w,lines,t0,t1,alpha,opt={}){
+  if(alpha<=0)return;
+  const lh=58,h=110+lines.length*lh;
+  ctx.save();ctx.globalAlpha=alpha;
+  card(x,y,w,h);
+  ['#ff5f57','#febc2e','#28c840'].forEach((c,i)=>{ctx.fillStyle=c;ctx.beginPath();ctx.arc(x+40+i*30,y+38,9,0,7);ctx.fill();});
+  if(opt.tag) text(opt.tag,x+w-36,y+38,'700 26px Inter',opt.tagCol||'#9aa3b2','right');
+  const total=lines.join('').length; let shown=Math.floor(prog(t,t0,t1)*total);
+  ctx.font='500 38px "DejaVu Sans Mono"';
+  lines.forEach((ln,li)=>{let cx=x+40;const cy=y+100+li*lh;
+    tokens(ln).forEach(tok=>{const n=clamp(shown,0,tok.length);shown-=n;
+      if(n>0){ctx.fillStyle=tokCol(tok);ctx.textBaseline='middle';ctx.textAlign='left';ctx.fillText(tok.slice(0,n),cx,cy);}
+      cx+=ctx.measureText(tok).width;});});
+  ctx.restore();
+  return h;
+}
+
+// ---------- data table card ----------
+function tableCard(x,y,w,title,cols,rows,colX,alpha,st={}){
+  if(alpha<=0)return;
+  const rh=66,h=140+rows.length*rh;
+  ctx.save();ctx.globalAlpha=alpha;card(x,y,w,h,'#fbf8f3');
+  text(title,x+32,y+44,'800 34px Inter',INK);
+  ctx.fillStyle='rgba(27,31,39,.07)';ctx.fillRect(x,y+80,w,52);
+  cols.forEach((c,i)=>text(c,x+colX[i],y+106,'600 28px Inter','#6b7280'));
+  rows.forEach((r,ri)=>{
+    const cy=y+132+rh*ri+rh/2, s=st[ri]||{};
+    if(s.hl>0){ctx.save();ctx.globalAlpha=alpha*s.hl;ctx.fillStyle=s.hlCol||'rgba(62,207,122,.22)';ctx.fillRect(x+8,cy-rh/2+4,w-16,rh-8);ctx.restore();}
+    r.forEach((v,ci)=>{
+      const isNull=v==='NULL';
+      if(isNull&&s.nullGlow>0){ctx.save();ctx.shadowColor=ORANGE;ctx.shadowBlur=30*s.nullGlow;}
+      text(v,x+colX[ci],cy,isNull?'800 38px "DejaVu Sans Mono"':'500 38px "DejaVu Sans Mono"',isNull?ORANGE:INK);
+      if(isNull&&s.nullGlow>0)ctx.restore();
+    });
+    if(s.strike>0){ctx.save();ctx.strokeStyle=RED;ctx.lineWidth=6;ctx.lineCap='round';
+      ctx.beginPath();ctx.moveTo(x+24,cy);ctx.lineTo(x+24+(w-48)*s.strike,cy);ctx.stroke();ctx.restore();}
+    if(s.mark){const m=s.mark;ctx.save();ctx.globalAlpha=alpha*m.a;text(m.txt,x+w-36,cy,'800 40px Inter',m.col,'right');ctx.restore();}
+  });
+  ctx.restore();return h;
+}
+function chip(txt,cx,cy,col,alpha,scale=1,font='800 40px Inter',txtCol='#fff'){
+  if(alpha<=0)return;ctx.save();ctx.globalAlpha=alpha;ctx.translate(cx,cy);ctx.scale(scale,scale);
+  ctx.font=font;const w=ctx.measureText(txt).width+56;
+  ctx.shadowColor='rgba(0,0,0,.25)';ctx.shadowBlur=16;ctx.shadowOffsetY=6;
+  ctx.fillStyle=col;rr(-w/2,-38,w,76,38);ctx.fill();ctx.shadowColor='transparent';
+  text(txt,0,2,font,txtCol,'center');ctx.restore();
+}
+
+// ---------- scenes ----------
+const NOTIN=['SELECT name FROM customers','WHERE id NOT IN (','  SELECT customer_id FROM orders);'];
+const FIX=['SELECT name FROM customers c','WHERE NOT EXISTS (','  SELECT 1 FROM orders o','  WHERE o.customer_id = c.id);'];
+
+function hook(t){
+  const a=win(t,0,A(2)-.05,.25); if(a<=0)return;
+  codeCard(t,60,430,960,NOTIN,-1,-0.5,a,{tag:'PostgreSQL'});
+  // result: 0 rows slam
+  const s=back(prog(t,.35,.75)), sx=shakeX(t,.75,18);
+  ctx.save();ctx.globalAlpha=a*prog(t,.35,.5);ctx.translate(W/2+sx,860);ctx.scale(s,s);
+  card(-300,-120,600,240,'#2a1416');
+  text('0 rows',0,-10,'900 120px Inter',RED,'center');
+  text('(empty result)',0,78,'500 32px Inter','#f3b0b0','center');
+  ctx.restore();
+  // NULL drops in on line 1
+  const d=prog(t,A(1)+.2,A(1)+.75);
+  if(d>0){ const y=lerp(300,1150,back(d)); chip('NULL',W/2,y,ORANGE,a,1.5,'900 52px "DejaVu Sans Mono"');
+    const ring=prog(t,A(1)+.75,A(1)+1.6); if(ring>0&&ring<1){ctx.save();ctx.globalAlpha=a*(1-ring);ctx.strokeStyle=ORANGE;ctx.lineWidth=6;ctx.beginPath();ctx.arc(W/2,1150,80+ring*160,0,7);ctx.stroke();ctx.restore();} }
+}
+
+function tables(t){
+  const a=win(t,A(2)-.1,A(15)-.1,.35); if(a<=0)return;
+  // customers slides from left at line 2, orders from right at line 3
+  const c=ease(prog(t,A(2),A(2)+.6)), o=ease(prog(t,A(3),A(3)+.6));
+  const st={};
+  // highlight expected rows at line 4
+  const exp=win(t,C(4,.3),A(5)+.2,.3);
+  // strikes during explanation
+  const sSita=ease(prog(t,C(11,1.2)+.2,C(11,1.2)+.9)), sAll=ease(prog(t,A(12)+.1,A(12)+.7));
+  const reset=prog(t,A(13)-.3,A(13));
+  const fixOk=win(t,A(14)+.2,A(15)+.2,.3);
+  [0,1,2].forEach(i=>{
+    const strike=(i===1?Math.max(sSita,sAll):sAll)*(1-reset);
+    st[i]={strike, hl: (i>0? Math.max(exp,fixOk):0)};
+    if(i>0&&fixOk>0) st[i].mark={txt:'✓',col:'#1f9d55',a:fixOk};
+  });
+  if(c>0){ctx.save();ctx.translate((1-c)*-600,0);
+    tableCard(50,330,470,'customers',['id','name'],[['1','Ravi'],['2','Sita'],['3','Kiran']],[36,140],a*c,st);ctx.restore();}
+  if(o>0){ctx.save();ctx.translate((1-o)*600,0);
+    const g=win(t,A(3)+1.2,A(5),.3)+win(t,A(10),A(11)+.6,.3)*0.9;
+    tableCard(560,330,470,'orders',['order_id','customer_id'],[['101','1'],['102','NULL']],[36,220],a*o,{1:{nullGlow:clamp(g,0,1)}});ctx.restore();}
+  // expected chip
+  chip('Expected: Sita, Kiran',W/2,800,'#1f9d55',a*exp,0.9+0.1*back(prog(t,C(4,.3),C(4,.3)+.4)));
+}
+
+function query(t){
+  const a=win(t,A(5),A(8),.3); if(a<=0)return;
+  codeCard(t,60,760,960,NOTIN,A(5)+.1,Math.min(A(5)+2.0,A(6)-.15),a,{tag:'NOT IN'});
+  // run -> 0 rows
+  const r=prog(t,C(6,.6),C(6,.6)+.3);
+  if(r>0){const s=back(prog(t,C(6,.6),C(6,.6)+.4)),sx=shakeX(t,C(6,.6)+.4,16);
+    ctx.save();ctx.globalAlpha=a*r;ctx.translate(W/2+sx,1150);ctx.scale(s,s);
+    card(-230,-75,460,150,'#2a1416');text('0 rows',0,0,'900 84px Inter',RED,'center');ctx.restore();}
+  // run button flash
+  const rb=win(t,A(6)-.1,A(6)+.8,.15);
+  chip('▶ RUN',880,740,ORANGE,a*rb,1,'800 32px Inter');
+  // open loop teaser
+  const q=prog(t,A(7),A(7)+.4);
+  chip('Safe fix → end lo',W/2,1300,INK,a*q,0.9+0.1*back(q),'700 34px Inter');
+}
+
+function explain(t){
+  const a=win(t,A(8)-.05,A(13)-.05,.3); if(a<=0)return;
+  const x=60,y=760,w=960,h=560;
+  ctx.save();ctx.globalAlpha=a;card(x,y,w,h);
+  text("Sita (id = 2) check:",x+40,y+50,'700 30px Inter','#9aa3b2');
+  // line 1: 2 NOT IN (1, NULL)
+  ctx.font='600 52px "DejaVu Sans Mono"';
+  const L1='2 NOT IN (1, NULL)'; text(L1,W/2,y+130,'600 52px "DejaVu Sans Mono"','#e8ecf2','center');
+  // arrow + expansion
+  const ex=ease(prog(t,A(8)+1.0,A(8)+1.8));
+  if(ex>0){ctx.save();ctx.globalAlpha=a*ex;
+    text('↓',W/2,y+200,'700 44px Inter',ORANGE,'center');
+    text('2 <> 1',x+210,y+275,'600 52px "DejaVu Sans Mono"','#e8ecf2','center');
+    text('AND',W/2,y+275,'800 40px Inter','#ff9a4d','center');
+    text('2 <> NULL',x+w-220,y+275,'600 52px "DejaVu Sans Mono"','#e8ecf2','center');
+    ctx.restore();}
+  ctx.restore();
+  // TRUE under left, UNKNOWN under right
+  const tr=prog(t,C(9,2.6),C(9,2.6)+.4); chip('TRUE',x+210,y+370,'#1f9d55',a*tr,0.8+0.2*back(tr));
+  const un=prog(t,C(10,3.0),C(10,3.0)+.4); chip('UNKNOWN',x+w-220,y+370,'#c98a00',a*un,0.8+0.2*back(un));
+  // result line
+  const rs=prog(t,A(11)+.1,A(11)+.6);
+  if(rs>0){ctx.save();ctx.globalAlpha=a*rs;
+    text('TRUE AND UNKNOWN = UNKNOWN',W/2,y+465,'700 40px "DejaVu Sans Mono"',AMBER,'center');ctx.restore();}
+  const dr=prog(t,C(11,2.0),C(11,2.0)+.4);
+  if(dr>0){ctx.save();ctx.globalAlpha=a*dr;text('WHERE → row dropped ✗',W/2,y+525,'700 34px Inter',RED,'center');ctx.restore();}
+  // final 0 rows
+  const z=prog(t,A(12)+.6,A(12)+.9);
+  if(z>0){const sx=shakeX(t,A(12)+.9,16);ctx.save();ctx.globalAlpha=a*z;ctx.translate(W/2+sx,1430);const s=back(prog(t,A(12)+.6,A(12)+1.0));ctx.scale(s,s);
+    card(-230,-70,460,140,'#2a1416');text('0 rows',0,0,'900 80px Inter',RED,'center');ctx.restore();}
+}
+
+function fix(t){
+  const a=win(t,A(13)-.05,A(15)-.1,.3); if(a<=0)return;
+  chip('FIX',140,730,'#1f9d55',a,1,'900 34px Inter');
+  codeCard(t,60,770,960,FIX,A(13)+.3,A(13)+2.6,a,{tag:'NOT EXISTS',tagCol:'#7fe3a5'});
+  const r=prog(t,A(14),A(14)+.4);
+  if(r>0){const s=back(prog(t,A(14),A(14)+.5));ctx.save();ctx.globalAlpha=a*r;ctx.translate(W/2,1280);ctx.scale(s,s);
+    card(-300,-80,600,160,'#12261b');text('Sita, Kiran',0,-14,'900 64px Inter',GREEN,'center');text('2 rows ✓',0,48,'600 30px Inter','#a8e8c4','center');ctx.restore();}
+}
+
+function both(t){
+  const a=win(t,A(15)-.1,A(16)+.1,.3); if(a<=0)return;
+  text('NOT IN + NULL → 0 rows',W/2,620,'800 50px Inter',INK,'center');
+  ['PostgreSQL','Oracle'].forEach((n,i)=>{
+    const k=back(prog(t,A(15)+.2+i*.5,A(15)+.7+i*.5)); if(k<=0)return;
+    ctx.save();ctx.globalAlpha=a*clamp(k,0,1);const cx=i?760:320;ctx.translate(cx,900);ctx.scale(k,k);
+    card(-220,-140,440,280,'#fbf8f3');
+    text(n,0,-50,'800 54px Inter',INK,'center');
+    chip('same trap',0,55,ORANGE,1,1,'800 34px Inter');
+    ctx.restore();});
+  const f=prog(t,A(15)+1.8,A(15)+2.2);
+  chip('Use NOT EXISTS',W/2,1200,'#1f9d55',a*f,0.9+0.1*back(f));
+}
+
+// ---------- overlays ----------
+const sections=[
+  {txt:'SQL TRAP ⚠',a:0,b:()=>A(2)},
+  {txt:'The data',a:()=>A(2),b:()=>A(5)},
+  {txt:'NOT IN query',a:()=>A(5),b:()=>A(8)},
+  {txt:'Why 0 rows?',a:()=>A(8),b:()=>A(13)},
+  {txt:'The fix',a:()=>A(13),b:()=>A(15)},
+  {txt:'Oracle too!',a:()=>A(15),b:()=>A(16)},
+];
+const val=v=>typeof v==='function'?v():v;
+function topLabel(t){
+  sections.forEach(s=>{const a=win(t,val(s.a),val(s.b),.25);if(a<=0)return;
+    ctx.save();ctx.globalAlpha=a;ctx.shadowColor='rgba(0,0,0,.4)';ctx.shadowBlur=16;ctx.shadowOffsetY=4;
+    text(s.txt,W/2,230+(1-a)*12,'900 74px Inter','#fff','center');ctx.restore();});
+}
+function progressBar(t){
+  ctx.fillStyle='rgba(0,0,0,.15)';ctx.fillRect(0,0,W,10);
+  ctx.fillStyle=ORANGE;ctx.fillRect(0,0,W*clamp(t/TOTAL,0,1),10);
+}
+// captions: chunks of up to 3 words per voice line, timed by characters
+const chunks=[];
+T.lines.forEach(l=>{
+  const words=l.cap.split(' ');const groups=[];
+  for(let i=0;i<words.length;){const left=words.length-i;const n=left===4?2:Math.min(3,left);groups.push(words.slice(i,i+n));i+=n;}
+  const tot=groups.reduce((s,g)=>s+g.join(' ').length,0);let acc=l.a;
+  groups.forEach(g=>{const d=(l.b-l.a)*g.join(' ').length/tot;chunks.push({words:g,a:acc,b:acc+d});acc+=d;});
+  chunks[chunks.length-1].b=l.b+0.17;
+});
+function captions(t){
+  if(t>=A(16))return;
+  const c=chunks.find(c=>t>=c.a&&t<c.b);if(!c)return;
+  const pop=ease(prog(t,c.a,c.a+.12));
+  ctx.save();ctx.translate(W/2,1580);ctx.scale(.9+.1*pop,.9+.1*pop);ctx.globalAlpha=.4+.6*pop;
+  ctx.font='800 62px Inter';ctx.textBaseline='middle';ctx.textAlign='left';
+  const parts=c.words.map(w=>({hl:w.includes('*'),s:w.replace(/\*/g,'')}));
+  const sp=ctx.measureText(' ').width+14,ws=parts.map(p=>ctx.measureText(p.s).width);
+  let x=-(ws.reduce((a,b)=>a+b,0)+sp*(parts.length-1))/2;
+  parts.forEach((p,i)=>{ctx.lineWidth=11;ctx.strokeStyle='rgba(20,16,12,.8)';ctx.lineJoin='round';ctx.strokeText(p.s,x,0);
+    ctx.fillStyle=p.hl?ORANGE:'#fff';ctx.fillText(p.s,x,0);x+=ws[i]+sp;});
+  ctx.restore();
+}
+function dbIcon(cx,cy,s,col,lw){ctx.save();ctx.strokeStyle=col;ctx.lineWidth=lw||s*.11;const rx=s*.42,ry=s*.14,top=cy-s*.38,bot=cy+s*.38;
+  ctx.beginPath();ctx.ellipse(cx,top,rx,ry,0,0,7);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx-rx,top);ctx.lineTo(cx-rx,bot);ctx.ellipse(cx,bot,rx,ry,0,Math.PI,0,true);ctx.lineTo(cx+rx,top);ctx.stroke();
+  ctx.beginPath();ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI);ctx.stroke();ctx.restore();}
+function watermark(t){
+  const a=1-prog(t,A(16)-.2,A(16)+.2);if(a<=0)return;
+  ctx.save();ctx.globalAlpha=.8*a;ctx.shadowColor='rgba(0,0,0,.35)';ctx.shadowBlur=8;
+  dbIcon(770,100,34,'#fff');text('@daily_sql_notes',798,100,'700 28px Inter','#fff','left');ctx.restore();
+}
+function endCard(t){
+  const a=prog(t,A(16)-.2,A(16)+.3);if(a<=0)return;
+  ctx.save();ctx.globalAlpha=a*.9;ctx.fillStyle='#17140f';ctx.fillRect(0,0,W,H);ctx.restore();
+  const b=ease(prog(t,A(16),A(16)+.6));
+  ctx.save();ctx.globalAlpha=b;ctx.translate(0,(1-b)*30);
+  dbIcon(W/2,640,150,ORANGE);
+  text('@daily_sql_notes',W/2,820,'800 66px Inter','#fff','center');
+  text('Daily SQL & PostgreSQL DBA tips',W/2,900,'500 40px Inter','rgba(255,255,255,.75)','center');
+  const f=back(prog(t,A(16)+.6,A(16)+1.0));
+  if(f>0){chip('FOLLOW',W/2,1040,ORANGE,1,f,'900 46px Inter');}
+  const c=back(prog(t,B(16)-2.6,B(16)-2.2));
+  if(c>0){ctx.save();ctx.translate(W/2,1220);ctx.scale(c,c);
+    ctx.strokeStyle='#fff';ctx.lineWidth=4;rr(-330,-60,660,120,30);ctx.stroke();
+    text('Comment "PART 2"',0,2,'800 50px Inter','#fff','center');ctx.restore();}
+  ctx.restore();
+}
+
+function render(t){
+  ctx.clearRect(0,0,W,H);
+  background(t);
+  // gentle breathing zoom on content
+  ctx.save();const s=1+0.012*Math.sin(t*0.6);ctx.translate(W/2,H*.45);ctx.scale(s,s);ctx.translate(-W/2,-H*.45);
+  hook(t);tables(t);query(t);explain(t);fix(t);both(t);
+  ctx.restore();
+  topLabel(t);captions(t);watermark(t);endCard(t);progressBar(t);
+}
+window.TOTAL=TOTAL;
+window.frameJPEG=t=>{render(t);return cv.toDataURL('image/jpeg',0.92);};
+document.fonts.load('800 60px Inter').then(()=>document.fonts.load('500 40px "DejaVu Sans Mono"')).then(()=>{window.ready=true;render(0);});
+</script>
+</body></html>

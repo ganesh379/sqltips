@@ -1,0 +1,19 @@
+[
+  {"say": "This query returned zero rows. But the data is there!", "cap": "This query returned *zero* *rows.* But the data is there!"},
+  {"say": "One single NULL can empty your entire report.", "cap": "One single *NULL* can empty your entire report."},
+  {"say": "Our customers table has Ravi, Sita and Kiran.", "cap": "Our customers table has Ravi, Sita and Kiran."},
+  {"say": "The orders table has Ravi's order, and one row where customer id is NULL.", "cap": "Orders has Ravi's order, and one row where customer_id is *NULL.*"},
+  {"say": "We want customers who never ordered. The answer should be Sita and Kiran.", "cap": "We want customers who never ordered. Answer: *Sita* and *Kiran.*", "cue": "Sita"},
+  {"say": "So we write a NOT IN query.", "cap": "So we write a *NOT* *IN* query."},
+  {"say": "Run it... zero rows!", "cap": "Run it... *zero* *rows!*", "cue": "zero"},
+  {"say": "Why? Stay till the end for the safe fix.", "cap": "Why? Stay till the end for the *safe* *fix.*"},
+  {"say": "NOT IN means a not-equal check against every value in the list.", "cap": "NOT IN means a *not-equal* check against every value in the list."},
+  {"say": "Sita's id is 2. 2 not equal to 1 is TRUE.", "cap": "Sita's id is 2. 2 not equal 1 → *TRUE.*", "cue": "TRUE"},
+  {"say": "But 2 not equal to NULL? Any comparison with NULL gives UNKNOWN.", "cap": "But 2 not equal NULL? Any comparison with NULL gives *UNKNOWN.*", "cue": "UNKNOWN"},
+  {"say": "TRUE AND UNKNOWN is UNKNOWN, and WHERE drops that row.", "cap": "TRUE AND UNKNOWN = *UNKNOWN,* and WHERE *drops* that row.", "cue": "WHERE"},
+  {"say": "That's why not a single row comes back.", "cap": "That's why not a single row *comes* *back.*"},
+  {"say": "The fix: use NOT EXISTS instead of NOT IN.", "cap": "The fix: use *NOT* *EXISTS* instead of NOT IN."},
+  {"say": "Now Sita and Kiran come back correctly.", "cap": "Now *Sita* and *Kiran* come back correctly."},
+  {"say": "This trap exists in both PostgreSQL and Oracle.", "cap": "This trap exists in both *PostgreSQL* and *Oracle.*"},
+  {"say": "Follow for more SQL traps, and comment PART 2 for the next one.", "cap": "*Follow* for more SQL traps, and comment *PART* *2* for the next one."}
+]

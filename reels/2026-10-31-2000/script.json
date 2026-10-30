@@ -1,0 +1,18 @@
+[
+  {"say": "You press Enter on a simple SELECT. What really happens inside PostgreSQL?", "cap": "You press Enter on a SELECT. What really happens *inside* *PostgreSQL?*"},
+  {"say": "Let's follow one query, all the way to the disk and back.", "cap": "Let's follow one query, all the way to the *disk* and back."},
+  {"say": "Your app sends the query over the network to port 5432, PostgreSQL's default port.", "cap": "Your app sends it to port *5432,* PostgreSQL's default port."},
+  {"say": "There, every connection gets its own backend process. One connection, one process.", "cap": "Every connection gets its own *backend* *process.*"},
+  {"say": "The parser checks your syntax and builds a query tree. The rewriter expands any views.", "cap": "The *parser* checks syntax and builds a query tree."},
+  {"say": "Next, the planner estimates the cost of every possible path and picks the cheapest one.", "cap": "The *planner* estimates every path and picks the *cheapest.*"},
+  {"say": "With an index on id, the cheapest path can be an Index Scan.", "cap": "With an index on id, that can be an *Index* *Scan.*", "cue": "Index Scan"},
+  {"say": "Stay till the end. There's one detail most people miss.", "cap": "Stay till the end. One detail most people *miss.*"},
+  {"say": "Now the executor runs the plan. It needs the 8 kilobyte page that holds row 101.", "cap": "The *executor* needs the *8* *KB* *page* holding row 101."},
+  {"say": "It looks in shared buffers first, PostgreSQL's own memory cache.", "cap": "It checks *shared_buffers* first, PostgreSQL's own cache.", "cue": "shared buffers"},
+  {"say": "Not there? PostgreSQL asks the operating system to read the page.", "cap": "Not there? It asks the *operating* *system* for the page.", "cue": "operating system"},
+  {"say": "Here's the detail: the operating system has its own cache too, so that read may never touch the disk.", "cap": "The OS has its *own* *cache* too. The read may never touch the *disk.*", "cue": "own cache"},
+  {"say": "The page lands in shared buffers, so the next query finds it in memory.", "cap": "The page lands in *shared_buffers* for the next query."},
+  {"say": "The executor takes row 101 from the page and sends it back to your app.", "cap": "Row 101 goes back to your *app.*"},
+  {"say": "Parser, planner, executor, buffers, and maybe the disk. That's one SELECT.", "cap": "Parser, planner, executor, buffers, maybe disk. That's *one* *SELECT.*"},
+  {"say": "Follow for more PostgreSQL internals, and comment PART 2 for the next one.", "cap": "*Follow* for more PostgreSQL internals. Comment *PART* *2* for the next one."}
+]
