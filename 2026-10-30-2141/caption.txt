@@ -1,0 +1,19 @@
+Your PostgreSQL database feels slow? Find the stuck session in pg_stat_activity first.
+
+You're usually looking for one of two things. A long query that keeps a connection busy. Or a transaction somebody forgot to close. It sits in "idle in transaction" and keeps its row locks until it ends.
+
+Slide 3 lists every client session that isn't idle, longest first, using now() - query_start. In the test it found 2: pid 195 running a SELECT, and pid 196 that ran an UPDATE and never sent COMMIT.
+
+Here's the trap you'll fall into. For pid 196, the query column shows the last statement it ran. Nothing's actually running. To see how long its transaction has been open, use now() - xact_start.
+
+Then you pick your tool.
+
+pg_cancel_backend(195) stopped the SELECT with "canceling statement due to user request". The session stayed connected.
+
+pg_terminate_backend(196) ended the session and rolled back its transaction. Order 42 is still NEW, so the PAID update never landed.
+
+All of it ran on PostgreSQL 16.
+
+Save this for the next time someone says the database is slow.
+
+#postgresql #sql #dba #database #performance
