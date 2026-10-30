@@ -6,6 +6,6 @@ That is MVCC in PostgreSQL. The old row version is kept while another transactio
 
 VACUUM removed the dead row and marked the space for reuse. Lots of updates without vacuum is how table bloat starts.
 
-Tested on PostgreSQL 16. Comment PART 2 for the next PostgreSQL internals reel.
+Tested on PostgreSQL 16. Save this for the next time someone asks what VACUUM does.
 
 #postgresql #sql #dba #database #postgres

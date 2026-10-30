@@ -1,19 +1,76 @@
 [
-  {"say": "In PostgreSQL, an UPDATE does not overwrite your row.", "cap": "In PostgreSQL, an UPDATE does *not* *overwrite* your row."},
-  {"say": "It writes a brand new version, and the old one stays behind.", "cap": "It writes a *new* *version,* and the old one stays behind."},
-  {"say": "Here is one employee, Ravi, earning fifty thousand.", "cap": "Here is one employee, Ravi, earning 50000."},
-  {"say": "The hidden column C T I D shows where this row version lives. Page zero, slot one.", "cap": "Hidden column *ctid* = where it lives: page 0, slot *1.*", "cue": "Page"},
-  {"say": "Now we update his salary to sixty thousand.", "cap": "Now we *UPDATE* his salary to 60000."},
-  {"say": "Same row? Look at the C T I D. It is now page zero, slot two.", "cap": "Same row? ctid is now page 0, slot *2.*", "cue": "now"},
-  {"say": "The new version went into a new slot. Stay till the end to see what happens to the old one.", "cap": "New version, new slot. Stay till the end for the *old* *one.*", "cue": "Stay"},
-  {"say": "This is M V C C, multiversion concurrency control.", "cap": "This is *MVCC:* multiversion concurrency control."},
-  {"say": "The old version is kept while another transaction may still need to see it.", "cap": "The old version stays while *another* *transaction* may still see it."},
-  {"say": "X min changed too. In our test it went from seven fifty to seven fifty one, the transaction that wrote the new version.", "cap": "xmin changed too: *750* to *751,* the transaction that wrote it.", "cue": "seven fifty one"},
-  {"say": "When no transaction needs the old version any more, it is a dead row.", "cap": "When nobody needs it any more, it is a *dead* *row.*"},
-  {"say": "pg stat user tables showed one live row and one dead row.", "cap": "pg_stat_user_tables: 1 live row, *1* *dead* row.", "cue": "one dead"},
-  {"say": "VACUUM removes dead row versions and marks the space for reuse.", "cap": "*VACUUM* removes dead rows and marks the space for *reuse.*"},
-  {"say": "After VACUUM, one live row, zero dead.", "cap": "After VACUUM: 1 live, *0* *dead.*", "cue": "zero"},
-  {"say": "Plain VACUUM usually does not give that space back to the operating system.", "cap": "Plain VACUUM usually does *not* give space back to the OS."},
-  {"say": "So lots of updates without vacuum means a bloated table.", "cap": "Lots of updates without vacuum = a *bloated* *table.*"},
-  {"say": "Follow for more SQL traps, and comment PART 2 for the next one.", "cap": "*Follow* for more SQL traps, and comment *PART* *2* for the next one."}
+ {
+  "say": "In PostgreSQL, an UPDATE does not overwrite your row.",
+  "cap": "In PostgreSQL, an UPDATE does *not* *overwrite* your row."
+ },
+ {
+  "say": "It writes a brand new version, and the old one stays behind.",
+  "cap": "It writes a *new* *version,* and the old one stays behind."
+ },
+ {
+  "say": "Here is one employee, Ravi, earning fifty thousand.",
+  "cap": "Here is one employee, Ravi, earning 50000."
+ },
+ {
+  "say": "The hidden column C T I D shows where this row version lives. Page zero, slot one.",
+  "cap": "Hidden column *ctid* = where it lives: page 0, slot *1.*",
+  "cue": "Page"
+ },
+ {
+  "say": "Now we update his salary to sixty thousand.",
+  "cap": "Now we *UPDATE* his salary to 60000."
+ },
+ {
+  "say": "Same row? Look at the C T I D. It is now page zero, slot two.",
+  "cap": "Same row? ctid is now page 0, slot *2.*",
+  "cue": "now"
+ },
+ {
+  "say": "The new version went into a new slot. Stay till the end to see what happens to the old one.",
+  "cap": "New version, new slot. Stay till the end for the *old* *one.*",
+  "cue": "Stay"
+ },
+ {
+  "say": "This is M V C C, multiversion concurrency control.",
+  "cap": "This is *MVCC:* multiversion concurrency control."
+ },
+ {
+  "say": "The old version is kept while another transaction may still need to see it.",
+  "cap": "The old version stays while *another* *transaction* may still see it."
+ },
+ {
+  "say": "X min changed too. In our test it went from seven fifty to seven fifty one, the transaction that wrote the new version.",
+  "cap": "xmin changed too: *750* to *751,* the transaction that wrote it.",
+  "cue": "seven fifty one"
+ },
+ {
+  "say": "When no transaction needs the old version any more, it is a dead row.",
+  "cap": "When nobody needs it any more, it is a *dead* *row.*"
+ },
+ {
+  "say": "pg stat user tables showed one live row and one dead row.",
+  "cap": "pg_stat_user_tables: 1 live row, *1* *dead* row.",
+  "cue": "one dead"
+ },
+ {
+  "say": "VACUUM removes dead row versions and marks the space for reuse.",
+  "cap": "*VACUUM* removes dead rows and marks the space for *reuse.*"
+ },
+ {
+  "say": "After VACUUM, one live row, zero dead.",
+  "cap": "After VACUUM: 1 live, *0* *dead.*",
+  "cue": "zero"
+ },
+ {
+  "say": "Plain VACUUM usually does not give that space back to the operating system.",
+  "cap": "Plain VACUUM usually does *not* give space back to the OS."
+ },
+ {
+  "say": "So lots of updates without vacuum means a bloated table.",
+  "cap": "Lots of updates without vacuum = a *bloated* *table.*"
+ },
+ {
+  "say": "Follow for more SQL traps, and save this for later.",
+  "cap": "*Follow* for more SQL traps, and *save* this for later."
+ }
 ]
