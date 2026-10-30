@@ -38,7 +38,7 @@ When a queue has fewer than 5 unchecked topics, add new ones that follow the sam
 
 ## 8:00 PM queue: PostgreSQL DBA
 - [x] How a SELECT travels inside PostgreSQL: "What happens after you press Enter?" (2026-10-31 20:00)
-- [ ] MVCC: "UPDATE never changes your row. It writes a new one."
+- [x] MVCC: "UPDATE does not overwrite your row. It writes a new version." (2026-10-30 17:15)
 - [ ] DROP ... CASCADE: "One word, CASCADE, can drop your views too."
 - [ ] VACUUM vs VACUUM FULL: "VACUUM FULL freed space and blocked your app."
 - [ ] Stale statistics: "You loaded 1 million rows. Now the query is slow."

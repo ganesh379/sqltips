@@ -14,3 +14,5 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-10-31 | 20:00 | LinkedIn | Reel: PostgreSQL DBA | How a SELECT travels inside PostgreSQL | reels/2026-10-31-2000 | 6ae446df6385db216a2e74e9
 - 2026-10-31 | 09:00 | Instagram | Carousel: PostgreSQL SQL | INSERT ... ON CONFLICT and EXCLUDED | 2026-10-31-0900 | 6ae474fb80f61ee5191032b0
 - 2026-10-31 | 09:00 | LinkedIn | Carousel: PostgreSQL SQL | INSERT ... ON CONFLICT and EXCLUDED | 2026-10-31-0900 | 6ae474fc80f61ee5191032e6
+- 2026-10-30 | 17:15 | Instagram | Reel: PostgreSQL DBA | MVCC: UPDATE writes a new row version | reels/2026-10-30-1715 | 6ae477bcc56bf7afb3acc563
+- 2026-10-30 | 17:15 | LinkedIn | Reel: PostgreSQL DBA | MVCC: UPDATE writes a new row version | reels/2026-10-30-1715 | 6ae477bd1c1ab1e7bc307005
