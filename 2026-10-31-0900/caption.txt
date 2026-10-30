@@ -1,0 +1,13 @@
+Your INSERT failed with "duplicate key value violates unique constraint". One clause fixes it.
+
+INSERT ... ON CONFLICT is how you write a PostgreSQL upsert. DO NOTHING skips the row that already exists. DO UPDATE changes it instead.
+
+Inside DO UPDATE, EXCLUDED is the row you tried to insert. In our test, orders = c.orders + EXCLUDED.orders took Ravi from 3 orders to 4.
+
+Two things will bite you. DO UPDATE needs a conflict target backed by a unique index or constraint. And if one batch has the same key twice, you get "ON CONFLICT DO UPDATE command cannot affect row a second time".
+
+Every statement ran on PostgreSQL 16, and the outputs on the slides are the real ones.
+
+Save this for your next data load.
+
+#sql #postgresql #postgres #database #sqltips
