@@ -91,6 +91,7 @@ function chip(txt,cx,cy,col,alpha,scale=1,font='800 40px Inter',txtCol='#fff'){
 }
 
 // ---------- scenes ----------
+const END_ASK='Save this for later';
 const NOTIN=['SELECT name FROM customers','WHERE id NOT IN (','  SELECT customer_id FROM orders);'];
 const FIX=['SELECT name FROM customers c','WHERE NOT EXISTS (','  SELECT 1 FROM orders o','  WHERE o.customer_id = c.id);'];
 
@@ -148,7 +149,7 @@ function query(t){
   chip('▶ RUN',880,740,ORANGE,a*rb,1,'800 32px Inter');
   // open loop teaser
   const q=prog(t,A(7),A(7)+.4);
-  chip('Safe fix → end lo',W/2,1300,INK,a*q,0.9+0.1*back(q),'700 34px Inter');
+  chip('Safe fix → at the end',W/2,1300,INK,a*q,0.9+0.1*back(q),'700 34px Inter');
 }
 
 function explain(t){
@@ -269,7 +270,7 @@ function endCard(t){
   const c=back(prog(t,B(16)-2.6,B(16)-2.2));
   if(c>0){ctx.save();ctx.translate(W/2,1220);ctx.scale(c,c);
     ctx.strokeStyle='#fff';ctx.lineWidth=4;rr(-330,-60,660,120,30);ctx.stroke();
-    text('Comment "PART 2"',0,2,'800 50px Inter','#fff','center');ctx.restore();}
+    text(END_ASK,0,2,'800 50px Inter','#fff','center');ctx.restore();}
   ctx.restore();
 }
 

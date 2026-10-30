@@ -39,6 +39,7 @@ When a queue has fewer than 5 unchecked topics, add new ones that follow the sam
 ## 8:00 PM queue: PostgreSQL DBA
 - [x] How a SELECT travels inside PostgreSQL: "What happens after you press Enter?" (2026-10-31 20:00)
 - [x] MVCC: "UPDATE does not overwrite your row. It writes a new version." (2026-10-30 17:15)
+- [ ] Part 2 of "How a SELECT travels inside PostgreSQL" (promised in the 2026-10-31 20:00 reel): what happens after you press Enter on an UPDATE and COMMIT, the write path (new row version in shared_buffers, WAL record, WAL flushed at COMMIT, data page written later). Hook: "Your COMMIT returned. Your table file on disk may not have changed yet." Make it work on its own too.
 - [ ] DROP ... CASCADE: "One word, CASCADE, can drop your views too."
 - [ ] VACUUM vs VACUUM FULL: "VACUUM FULL freed space and blocked your app."
 - [ ] Stale statistics: "You loaded 1 million rows. Now the query is slow."
