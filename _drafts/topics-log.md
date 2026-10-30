@@ -26,3 +26,4 @@
 - 2026-10-27 [PostgreSQL] postgresql create user and grant privileges -> _drafts/2026-10-27-postgresql-postgresql-dba-part-7-roles-and-privileges.json
 - 2026-10-28 [Oracle] oracle connect by prior example -> _drafts/2026-10-28-oracle-oracle-connect-by-prior-example.json
 - 2026-10-28 [PostgreSQL] postgresql schema vs database -> _drafts/2026-10-28-postgresql-postgresql-dba-part-8-databases-schemas-search-path.json
+- 2026-10-30 [Oracle] oracle identity column -> _drafts/2026-10-30-oracle-oracle-identity-column.json
