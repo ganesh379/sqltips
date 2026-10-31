@@ -1,0 +1,72 @@
+[
+ {
+  "say": "In Oracle, comparing an empty string with an empty string is not TRUE.",
+  "cap": "Empty string = empty string? In Oracle, *not* *TRUE.*"
+ },
+ {
+  "say": "Sounds wrong? Let's prove it with one tiny table.",
+  "cap": "Sounds wrong? Let's *prove* it."
+ },
+ {
+  "say": "A customers table. Ravi has a phone number. Sita doesn't.",
+  "cap": "A customers table. Ravi has a phone. *Sita* doesn't."
+ },
+ {
+  "say": "So for Sita, we insert an empty string as her phone.",
+  "cap": "For Sita, we insert an *empty* *string.*",
+  "cue": "empty"
+ },
+ {
+  "say": "Now we look for customers whose phone is an empty string.",
+  "cap": "Now find customers whose phone is *empty.*"
+ },
+ {
+  "say": "Run it. Zero rows.",
+  "cap": "Run it. *Zero* *rows.*",
+  "cue": "Zero"
+ },
+ {
+  "say": "Sita is right there in the table. Stay till the end for the fix.",
+  "cap": "Sita is right there. Stay till the end for the *fix.*"
+ },
+ {
+  "say": "Here's why. Oracle treats a character value with a length of zero as NULL.",
+  "cap": "Oracle treats a zero-length string as *NULL.*",
+  "cue": "NULL"
+ },
+ {
+  "say": "So the insert actually stored NULL in Sita's phone.",
+  "cap": "So the insert stored *NULL* in Sita's phone."
+ },
+ {
+  "say": "And your WHERE clause became phone equals NULL.",
+  "cap": "And your WHERE became phone = *NULL.*"
+ },
+ {
+  "say": "Any comparison with NULL gives UNKNOWN, never TRUE.",
+  "cap": "Any comparison with NULL gives *UNKNOWN.*",
+  "cue": "UNKNOWN"
+ },
+ {
+  "say": "WHERE keeps only TRUE rows, so Sita is dropped.",
+  "cap": "WHERE keeps only TRUE rows. Sita is *dropped.*",
+  "cue": "dropped"
+ },
+ {
+  "say": "The fix: test for NULL with IS NULL.",
+  "cap": "The fix: use *IS* *NULL.*"
+ },
+ {
+  "say": "Now Sita comes back.",
+  "cap": "Now *Sita* comes back."
+ },
+ {
+  "say": "Careful when you move to PostgreSQL. There, an empty string is a real value, not NULL.",
+  "cap": "In *PostgreSQL,* an empty string is a real value, *not* *NULL.*",
+  "cue": "PostgreSQL"
+ },
+ {
+  "say": "Follow for more SQL traps, and save this for later.",
+  "cap": "*Follow* for more SQL traps, and *save* this for later."
+ }
+]

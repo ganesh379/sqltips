@@ -1,0 +1,11 @@
+In Oracle, '' = '' is not TRUE. Here is why your empty string search returns zero rows.
+
+Oracle treats a character value with a length of zero as NULL. So INSERT ... VALUES (2, 'Sita', '') stores NULL in the phone column, and WHERE phone = '' becomes a comparison with NULL.
+
+Any comparison with NULL gives UNKNOWN, and WHERE only keeps rows where the condition is TRUE. The fix in Oracle SQL is WHERE phone IS NULL.
+
+Moving between databases? In PostgreSQL an empty string is a real value, not NULL, so the same query behaves differently there.
+
+Save this before your next Oracle to PostgreSQL migration.
+
+#sql #oracle #postgresql #plsql #database
