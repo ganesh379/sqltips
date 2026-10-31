@@ -18,3 +18,5 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-10-30 | 17:15 | LinkedIn | Reel: PostgreSQL DBA | MVCC: UPDATE writes a new row version | reels/2026-10-30-1715 | 6ae477bd1c1ab1e7bc307005
 - 2026-11-01 | 09:00 | Instagram | Carousel: Oracle SQL | MERGE for upserts | posts/2026-11-01-0900 | 6ae5c050a1145743499ba3a6
 - 2026-11-01 | 09:00 | LinkedIn | Carousel: Oracle SQL | MERGE for upserts | posts/2026-11-01-0900 | 6ae5c056406ab8a018b08a2e
+- 2026-11-01 | 13:00 | Instagram | Reel: Oracle SQL | Empty string is NULL | reels/2026-11-01-1300 | 6ae5c20fb84259308bceaa57
+- 2026-11-01 | 13:00 | LinkedIn | Reel: Oracle SQL | Empty string is NULL | reels/2026-11-01-1300 | 6ae5c217406ab8a018b0f20e

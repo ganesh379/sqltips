@@ -7,7 +7,7 @@ When a queue has fewer than 5 unchecked topics, add new ones that follow the sam
 
 ## 1:00 PM queue: Oracle SQL & PL/SQL
 - [x] NOT IN with a NULL returns 0 rows: "This query returned zero rows. But the data is there!" (2026-10-31 13:00)
-- [ ] Empty string is NULL: "In Oracle, '' = '' is not TRUE."
+- [x] Empty string is NULL: "In Oracle, '' = '' is not TRUE." (2026-11-01 13:00)
 - [ ] SELECT INTO exceptions: "This SELECT crashed because it found 2 rows."
 - [ ] Implicit conversion: "Your index exists. Oracle ignores it because of missing quotes."
 - [ ] ORA-14551: "Your function works alone but fails inside a SELECT."
