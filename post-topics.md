@@ -19,7 +19,7 @@ When a category has fewer than 5 unchecked topics, the task adds new practical o
 - [ ] UNIQUE NULLS NOT DISTINCT (15+)
 
 ## Oracle SQL
-- [ ] Top-N with FETCH FIRST n ROWS ONLY and WITH TIES
+- [x] Top-N with FETCH FIRST n ROWS ONLY and WITH TIES (dropped: overlaps the ROWNUM vs LIMIT / OFFSET and FETCH FIRST carousel, 2026-11-01)
 - [x] MERGE for upserts (2026-11-01 09:00)
 - [ ] LISTAGG and ON OVERFLOW TRUNCATE
 - [ ] Hierarchical queries with CONNECT BY and LEVEL
