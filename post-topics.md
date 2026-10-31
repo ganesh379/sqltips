@@ -92,5 +92,5 @@ When a category has fewer than 5 unchecked topics, the task adds new practical o
 - [ ] 5/2 in PostgreSQL vs Oracle
 - [x] DELETE vs TRUNCATE vs DROP (moved to reels)
 - [x] Why WHERE upper(name) = ... skips a normal index (moved to reels)
-- [ ] LEFT JOIN with a WHERE filter on the right table
+- [x] LEFT JOIN with a WHERE filter on the right table (moved to reels)
 - [ ] BETWEEN with timestamps
