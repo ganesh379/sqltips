@@ -1,0 +1,783 @@
+{
+ "schemaVersion": 1,
+ "title": "How to Recover Deleted Records in Oracle After Commit",
+ "slug": "how-to-recover-deleted-records-in-oracle-after-commit",
+ "category": "plsql",
+ "description": "Recover deleted records in Oracle after commit with Flashback Query: read old rows with AS OF, find the delete time, and re-insert only what was lost.",
+ "focusKeyword": "how to recover deleted records in oracle after commit",
+ "tags": [
+  "oracle",
+  "flashback",
+  "undo",
+  "recovery",
+  "sql"
+ ],
+ "related": [
+  "/posts/plsql/ora-01555-snapshot-too-old/",
+  "/posts/plsql/oracle-delete-duplicate-rows-but-keep-one/",
+  "/posts/plsql/oracle-identity-column/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle 19c Development Guide: Using Oracle Flashback Technology",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/adfns/flashback.html"
+  },
+  {
+   "title": "Oracle 19c SQL Language Reference: FLASHBACK TABLE",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/FLASHBACK-TABLE.html"
+  },
+  {
+   "title": "Oracle 19c Reference: UNDO_RETENTION",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/UNDO_RETENTION.html"
+  },
+  {
+   "title": "Oracle error help: ORA-08189",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-08189/"
+  },
+  {
+   "title": "Oracle error help: ORA-01466",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-01466/"
+  },
+  {
+   "title": "Oracle 19c Licensing Information (feature availability by edition)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/dblic/Licensing-Information.html"
+  },
+  {
+   "title": "Oracle 23ai PL/SQL Packages: DBMS_FLASHBACK",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/23/arpls/DBMS_FLASHBACK.html"
+  }
+ ],
+ "reviewNotes": "Examples written from the Oracle 19c docs and not run; please test on a scratch schema (wait a few minutes after CREATE TABLE before testing flashback). SCN/XID values in the VERSIONS output are illustrative. Check: (1) ORA-32795 message text for GENERATED ALWAYS identity inserts (from memory, not verified in docs this run); (2) the claim that a flashback query fails with ORA-01555 when undo is gone (standard behaviour, not quoted from the flashback chapter); (3) the FAQ line on RMAN point-in-time restore is deliberately general; (4) Flashback Table SE2 exclusion is from the 19c licensing table, Flashback Query itself is not listed there as EE-only. (5) Recycle bin note that restored indexes keep BIN$ names is from general knowledge, not quoted from the FLASHBACK TABLE page.",
+ "generatedAt": "2026-10-31T00:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You ran a <code class=\"inline-code\">DELETE</code>, typed <code class=\"inline-code\">COMMIT</code>, and then saw the WHERE clause was wrong. <code class=\"inline-code\">ROLLBACK</code> cannot help you now, because the transaction is already committed. In most cases you can still get the rows back with <b>Oracle Flashback Query</b>: you read the table <i>as it was</i> a few minutes ago with <code class=\"inline-code\">AS OF TIMESTAMP</code> and insert the missing rows again."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This works because Oracle keeps the old versions of changed rows in undo for a while after the commit. The window is limited, so speed matters. This guide shows the exact steps on a small orders table, how to find the precise moment of the delete, when to use FLASHBACK TABLE instead, and what to do when the undo is already gone."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How recovering deleted records after commit works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every time you change a row, Oracle writes the old version of that row to the <b>undo tablespace</b>. Undo is what makes <code class=\"inline-code\">ROLLBACK</code> and read consistency work. After you commit, that undo is no longer needed for rollback, but Oracle does not throw it away at once. It keeps it for at least <code class=\"inline-code\">UNDO_RETENTION</code> seconds (default 900, which is 15 minutes) when there is enough space, and often longer when automatic undo tuning extends retention."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Flashback Query reads that undo. When you write <code class=\"inline-code\">SELECT ... FROM orders AS OF TIMESTAMP ...</code>, Oracle rebuilds each block as it looked at that time and returns the old rows, including the ones you deleted. Nothing is changed by the query itself. You decide what to do with the result."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There are three tools for this job, and they suit different situations:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Tool",
+      "What it does",
+      "Best for"
+     ],
+     [
+      "Flashback Query (AS OF)",
+      "Reads old row versions; you re-insert them yourself",
+      "Restoring a few deleted or wrongly updated rows"
+     ],
+     [
+      "Flashback Version Query (VERSIONS BETWEEN)",
+      "Lists every version of a row in a time range, with the operation",
+      "Finding exactly when the delete happened"
+     ],
+     [
+      "FLASHBACK TABLE ... TO TIMESTAMP",
+      "Rewinds the whole table to an earlier time",
+      "Undoing everything since a point, when nothing else must be kept"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Act quickly",
+    "text": "Undo is reused as the database needs space, so the clock is running from the moment of the commit. Do the recovery first and investigate afterwards. Copy the old rows into a separate table straight away, then take your time."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small orders table and add five rows. You can follow every step below on your own schema."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE orders (\n  order_id      NUMBER        PRIMARY KEY,\n  customer_name VARCHAR2(50)  NOT NULL,\n  amount        NUMBER(10,2)  NOT NULL,\n  status        VARCHAR2(20)  NOT NULL,\n  order_date    DATE          NOT NULL\n);\n\nINSERT INTO orders VALUES (101, 'Asha',  2500, 'SHIPPED',   DATE '2026-10-01');\nINSERT INTO orders VALUES (102, 'Ravi',  1200, 'PENDING',   DATE '2026-10-03');\nINSERT INTO orders VALUES (103, 'Meera',  800, 'PENDING',   DATE '2026-10-05');\nINSERT INTO orders VALUES (104, 'John',  4300, 'CANCELLED', DATE '2026-10-06');\nINSERT INTO orders VALUES (105, 'Priya', 1500, 'PENDING',   DATE '2026-10-08');\nCOMMIT;",
+    "caption": "Sample orders table"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Testing on a brand new table",
+    "text": "If you have just created the table, wait a few minutes before you test. Oracle maps timestamps to SCNs (system change numbers) at a granularity of about 3 seconds, and a timestamp that falls just after a CREATE TABLE can map to an SCN before it. That gives <code class=\"inline-code\">ORA-01466: unable to read data - table definition has changed</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now make the mistake. The plan was to delete cancelled orders, but the WHERE clause says PENDING:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "DELETE FROM orders WHERE status = 'PENDING';\nCOMMIT;\n\nSELECT order_id, customer_name, status FROM orders ORDER BY order_id;",
+    "caption": "The accidental delete"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORDER_ID CUSTOMER_NAME STATUS\n-------- ------------- ---------\n     101 Asha          SHIPPED\n     104 John          CANCELLED",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Three orders (102, 103 and 105) are gone and the delete is committed. Here is how to get them back."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Method 1: recover deleted rows with Flashback Query",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: look at the table as it was before the delete",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Add <code class=\"inline-code\">AS OF TIMESTAMP</code> after the table name. Pick a time that you are sure is before the delete. A rough time is fine for a first look."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_name, amount, status\n  FROM orders AS OF TIMESTAMP (SYSTIMESTAMP - INTERVAL '15' MINUTE)\n ORDER BY order_id;",
+    "caption": "Read the orders table as it was 15 minutes ago"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORDER_ID CUSTOMER_NAME AMOUNT STATUS\n-------- ------------- ------ ---------\n     101 Asha            2500 SHIPPED\n     102 Ravi            1200 PENDING\n     103 Meera            800 PENDING\n     104 John            4300 CANCELLED\n     105 Priya           1500 PENDING",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All five rows are visible again. The table itself still has two rows; only this query sees the past. In a real incident you will usually know the clock time, so use an exact timestamp:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT *\n  FROM orders AS OF TIMESTAMP\n       TO_TIMESTAMP('2026-10-31 10:40:00', 'YYYY-MM-DD HH24:MI:SS');",
+    "caption": "Using a fixed point in time"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: save the old rows in a staging table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before you touch the real table, copy the old state into a separate table. If undo is overwritten while you work, you still have the data."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE orders_recovered AS\n  SELECT *\n    FROM orders AS OF TIMESTAMP (SYSTIMESTAMP - INTERVAL '15' MINUTE);",
+    "caption": "Keep a safe copy first"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Check <code class=\"inline-code\">orders_recovered</code> and confirm it holds the rows you expect. This is a normal table, so it does not depend on undo any more."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: insert only the missing rows",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Insert rows from the staging table that do not exist in <code class=\"inline-code\">orders</code> now. <code class=\"inline-code\">NOT EXISTS</code> on the primary key avoids duplicate key errors for rows that were never deleted."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "INSERT INTO orders\n  SELECT r.*\n    FROM orders_recovered r\n   WHERE NOT EXISTS (SELECT 1\n                       FROM orders o\n                      WHERE o.order_id = r.order_id);\n\nCOMMIT;",
+    "caption": "Put back only the deleted rows"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "3 rows created.\n\nCommit complete.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The three pending orders are back with their original values. Rows that other users inserted or changed after the delete are untouched, which is the main advantage over rewinding the whole table. When you are done and have verified the data, drop <code class=\"inline-code\">orders_recovered</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you prefer one statement and the window is short, you can insert straight from the flashback query, as the Oracle documentation shows: <code class=\"inline-code\">INSERT INTO orders SELECT * FROM orders AS OF TIMESTAMP (...) MINUS SELECT * FROM orders;</code> Be careful with it: MINUS compares whole rows, so a row that was <i>updated</i> since then also comes back and fails on the primary key. Filtering on the key with NOT EXISTS, and checking rows in a staging table first, is safer."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Method 2: find the exact time of the delete with VERSIONS BETWEEN",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Guessing \"15 minutes ago\" is risky. Too early and you miss rows inserted just before the delete. Too late and the rows are already gone. Flashback Version Query shows every version of each row in a time range, with the operation that created it in <code class=\"inline-code\">VERSIONS_OPERATION</code> (<code class=\"inline-code\">I</code> insert, <code class=\"inline-code\">U</code> update, <code class=\"inline-code\">D</code> delete)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT versions_startscn,\n       versions_xid,\n       versions_operation,\n       order_id, customer_name, status\n  FROM orders\n       VERSIONS BETWEEN TIMESTAMP\n                (SYSTIMESTAMP - INTERVAL '30' MINUTE)\n            AND SYSTIMESTAMP\n WHERE versions_operation = 'D'\n ORDER BY order_id;",
+    "caption": "List deleted row versions in the last 30 minutes"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "VERSIONS_STARTSCN VERSIONS_XID     V ORDER_ID CUSTOMER_NAME STATUS\n----------------- ---------------- - -------- ------------- -------\n          4518732 0A001F00C2340000 D      102 Ravi          PENDING\n          4518732 0A001F00C2340000 D      103 Meera         PENDING\n          4518732 0A001F00C2340000 D      105 Priya         PENDING",
+    "caption": "Output (expected output; SCN and XID values will differ)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All three rows were deleted by the same transaction (<code class=\"inline-code\">VERSIONS_XID</code>), committed at SCN 4518732. A delete version shows the values the row had when it was deleted, so you can already see what you lost."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now you can read the table as of the SCN just before that commit. This is more precise than a timestamp, which Oracle maps to an SCN with an error of up to 3 seconds:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT *\n  FROM orders AS OF SCN 4518731\n ORDER BY order_id;",
+    "caption": "Read the table one SCN before the delete committed"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use the same <code class=\"inline-code\">AS OF SCN</code> clause in the <code class=\"inline-code\">CREATE TABLE orders_recovered AS SELECT</code> statement from Method 1. Oracle recommends avoiding <code class=\"inline-code\">VERSIONS_STARTTIME</code> and <code class=\"inline-code\">VERSIONS_ENDTIME</code> in large version queries for performance, which is why this query uses the SCN columns."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Method 3: rewind the whole table with FLASHBACK TABLE",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">FLASHBACK TABLE</code> puts the entire table back to an earlier time in one statement. It is quick, but it also undoes <b>every other change</b> made to the table after that point, including good ones by other users. Use it only when you are sure nothing after the target time needs to be kept."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ALTER TABLE orders ENABLE ROW MOVEMENT;\n\nFLASHBACK TABLE orders TO SCN 4518731;",
+    "caption": "Rewind the table to just before the delete"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Things to know before you run it:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Row movement must be enabled first, because Flashback Table does not keep the original rowids. Without it you get <code class=\"inline-code\">ORA-08189: cannot flashback the table because row movement is not enabled</code>.",
+      "items": []
+     },
+     {
+      "content": "You need the <code class=\"inline-code\">FLASHBACK</code> object privilege on the table (or <code class=\"inline-code\">FLASHBACK ANY TABLE</code>) plus <code class=\"inline-code\">SELECT</code> or <code class=\"inline-code\">READ</code>, <code class=\"inline-code\">INSERT</code>, <code class=\"inline-code\">DELETE</code> and <code class=\"inline-code\">ALTER</code> on it.",
+      "items": []
+     },
+     {
+      "content": "Oracle takes exclusive DML locks on the table while it runs, so other sessions wait.",
+      "items": []
+     },
+     {
+      "content": "You cannot roll it back. If you picked the wrong point, run another <code class=\"inline-code\">FLASHBACK TABLE</code> to a time just before you ran the first one.",
+      "items": []
+     },
+     {
+      "content": "Enabled triggers on the table are disabled during the operation by default, so your delete or insert triggers do not fire.",
+      "items": []
+     },
+     {
+      "content": "Statistics are not reverted, and indexes dropped in the meantime are not recreated.",
+      "items": []
+     },
+     {
+      "content": "Flashback Table is an Enterprise Edition feature; it is not included in Standard Edition 2.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Recovering a dropped table from the recycle bin",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If someone ran <code class=\"inline-code\">DROP TABLE</code> rather than <code class=\"inline-code\">DELETE</code>, undo is not involved. A dropped table goes to the recycle bin (unless it was dropped with <code class=\"inline-code\">PURGE</code>), and you bring it back like this:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT object_name, original_name, droptime\n  FROM user_recyclebin\n WHERE original_name = 'ORDERS';\n\nFLASHBACK TABLE orders TO BEFORE DROP;\n\n-- if a new ORDERS table was already created:\nFLASHBACK TABLE orders TO BEFORE DROP RENAME TO orders_old;",
+    "caption": "Restore a dropped table"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Indexes, triggers and most constraints come back with it, but referential (foreign key) constraints that point to other tables are not restored, and the indexes keep their system-generated recycle bin names. Recreate the foreign keys and rename the indexes afterwards."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How far back can you recover deleted data?",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There is no fixed answer. It depends on how much undo your database keeps and how busy it is. Start with these two checks:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT value AS undo_retention_seconds\n  FROM v$parameter\n WHERE name = 'undo_retention';\n\nSELECT MAX(tuned_undoretention) AS tuned_seconds\n  FROM v$undostat;",
+    "caption": "Check the undo retention settings (needs access to V$ views)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "UNDO_RETENTION_SECONDS\n----------------------\n900\n\nTUNED_SECONDS\n-------------\n(depends on your workload and undo size)",
+    "caption": "Output (expected output with the default setting)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">UNDO_RETENTION</code> is the low threshold. Oracle tries to keep undo at least that long, and <code class=\"inline-code\">TUNED_UNDORETENTION</code> shows the retention it is currently managing. Neither is a promise: if the undo tablespace runs short of space, unexpired undo can be overwritten. When the undo you need is gone, the flashback query fails with <code class=\"inline-code\">ORA-01555: snapshot too old</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If your team relies on this kind of recovery, ask the DBA to raise <code class=\"inline-code\">UNDO_RETENTION</code> and size the undo tablespace for it. <code class=\"inline-code\">RETENTION GUARANTEE</code> on the undo tablespace stops Oracle from overwriting unexpired undo, but then DML can fail when undo space runs out, so it is a decision for the DBA, not a quick fix."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Running TRUNCATE or changing the table first",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "DDL that changes the table structure, such as <code class=\"inline-code\">TRUNCATE</code>, moving the table, adding a constraint, or modifying or dropping a column, invalidates the undo for that table. A flashback query to a time before that DDL fails with <code class=\"inline-code\">ORA-01466</code>. Do not \"tidy up\" the table before you recover the rows. Also note that a truncated table cannot be recovered with Flashback Query at all."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Waiting too long",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every minute of normal activity uses undo space. Run the CREATE TABLE AS SELECT from Method 1 first, and only then look into who ran the delete and why."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Re-inserting everything and hitting ORA-00001",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">INSERT INTO orders SELECT * FROM orders AS OF ...</code> without a filter tries to insert the rows that still exist too, and the primary key rejects them with a unique constraint error. Filter on the key with <code class=\"inline-code\">NOT EXISTS</code> as shown above."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Identity columns declared GENERATED ALWAYS",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the key is <code class=\"inline-code\">GENERATED ALWAYS AS IDENTITY</code>, you cannot insert the old key values directly (<code class=\"inline-code\">ORA-32795: cannot insert into a generated always identity column</code>). The DBA can temporarily change the column to <code class=\"inline-code\">GENERATED BY DEFAULT</code>, insert the rows with their original IDs, and change it back. Check that the identity's next value is still above the restored IDs."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Forgetting the side effects of re-inserting",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Your INSERT fires the table's triggers and is checked against current constraints. If child rows (for example order_items) were deleted by ON DELETE CASCADE, recover those tables too, parent first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Best practices",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Note the current SCN before risky manual changes: <code class=\"inline-code\">SELECT dbms_flashback.get_system_change_number FROM dual;</code> (needs EXECUTE on DBMS_FLASHBACK). Then you know exactly where to flash back to.",
+      "items": []
+     },
+     {
+      "content": "Use a staging table for recovery, and verify row counts against it before committing the re-insert.",
+      "items": []
+     },
+     {
+      "content": "Give developers <code class=\"inline-code\">FLASHBACK</code> and <code class=\"inline-code\">SELECT</code> on the tables they own so they can recover their own mistakes, instead of <code class=\"inline-code\">FLASHBACK ANY TABLE</code>.",
+      "items": []
+     },
+     {
+      "content": "Prefer Flashback Query over FLASHBACK TABLE on shared tables, because it restores only what was lost.",
+      "items": []
+     },
+     {
+      "content": "Flashback is not a backup. Keep tested RMAN backups for anything older than your undo window.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I rollback a delete after commit in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. <code class=\"inline-code\">ROLLBACK</code> only undoes uncommitted work. After the commit, use Flashback Query to read the old rows and insert them again, or FLASHBACK TABLE to rewind the table."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I recover deleted records in Oracle without flashback?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the undo has been overwritten, the data has to come from somewhere else: an export, a copy in another environment, or an RMAN backup restored to a point in time before the delete (for example into an auxiliary database). Your DBA decides the right method; this takes much longer than a flashback query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How long is deleted data available for Flashback Query?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "At least <code class=\"inline-code\">UNDO_RETENTION</code> seconds (900 by default) if the undo tablespace has room, and often longer when Oracle auto-tunes retention. Check <code class=\"inline-code\">V$UNDOSTAT.TUNED_UNDORETENTION</code> for the current value on your system."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What privilege is needed for Flashback Query?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You need <code class=\"inline-code\">FLASHBACK</code> and <code class=\"inline-code\">SELECT</code> (or <code class=\"inline-code\">READ</code>) on the table, or the system privilege <code class=\"inline-code\">FLASHBACK ANY TABLE</code>. The table owner can run flashback queries on their own tables."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I recover a truncated table with Flashback Query?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. TRUNCATE is DDL and invalidates the table's undo, so a flashback query to a time before it raises <code class=\"inline-code\">ORA-01466</code>. You need a backup or, if it is configured, Flashback Database."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "After a committed DELETE, <code class=\"inline-code\">ROLLBACK</code> is useless; Flashback Query reads the old rows from undo.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Act fast and copy the old state with <code class=\"inline-code\">CREATE TABLE ... AS SELECT ... AS OF TIMESTAMP</code>.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">VERSIONS BETWEEN</code> with <code class=\"inline-code\">versions_operation = 'D'</code> to find the exact SCN of the delete.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Re-insert only the missing rows with <code class=\"inline-code\">NOT EXISTS</code> and commit.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use FLASHBACK TABLE only when losing all later changes is acceptable, and enable row movement first.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">FLASHBACK TABLE ... TO BEFORE DROP</code> for dropped tables.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Do not run TRUNCATE or other structural DDL before recovering; it causes <code class=\"inline-code\">ORA-01466</code>.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "You deleted the wrong rows and already typed COMMIT. ROLLBACK won't help, but the rows are often still in Oracle.\n\nOracle keeps old row versions in undo after a commit (UNDO_RETENTION defaults to 900 seconds, often longer when auto-tuned). Flashback Query reads them back.\n\nWhat to do, in order:\n\n1. Read the past: SELECT * FROM orders AS OF TIMESTAMP (SYSTIMESTAMP - INTERVAL '15' MINUTE)\n2. Copy it at once into a staging table with CREATE TABLE ... AS SELECT ... AS OF. Undo can be overwritten while you investigate.\n3. Find the exact moment: VERSIONS BETWEEN with versions_operation = 'D' shows the deleted rows and the SCN of the commit.\n4. Re-insert only the missing rows with NOT EXISTS on the primary key, then commit.\n5. FLASHBACK TABLE rewinds the whole table, but it also wipes every good change made after that point and needs ROW MOVEMENT enabled.\n\nOne trap: do not TRUNCATE or alter the table before recovering. Structural DDL invalidates the undo and you get ORA-01466.\n\nHave you ever had to recover committed data in production? Flashback, backup, or something else?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #OracleDBA",
+  "slides": [
+   {
+    "title": "Recover Deleted Rows in Oracle After COMMIT",
+    "body": "Flashback Query, step by step, before the undo is gone"
+   },
+   {
+    "title": "Why the rows are still there",
+    "points": [
+     "Oracle writes old row versions to undo on every change",
+     "Undo is kept after COMMIT for at least UNDO_RETENTION",
+     "Default is 900 seconds; space pressure can shorten it",
+     "Flashback Query reads those old versions"
+    ]
+   },
+   {
+    "title": "Step 1: look at the past",
+    "code": "SELECT *\n  FROM orders\n  AS OF TIMESTAMP\n    (SYSTIMESTAMP\n     - INTERVAL '15' MINUTE);",
+    "lang": "sql",
+    "body": "The table itself is unchanged. Only this query sees the old rows."
+   },
+   {
+    "title": "Step 2: save a copy right away",
+    "code": "CREATE TABLE orders_recovered AS\n  SELECT *\n    FROM orders\n    AS OF TIMESTAMP\n      (SYSTIMESTAMP\n       - INTERVAL '15' MINUTE);",
+    "lang": "sql",
+    "body": "A normal table does not depend on undo, so you can check it calmly."
+   },
+   {
+    "title": "Step 3: put back only missing rows",
+    "code": "INSERT INTO orders\n  SELECT r.*\n    FROM orders_recovered r\n   WHERE NOT EXISTS (\n     SELECT 1 FROM orders o\n      WHERE o.order_id = r.order_id);\nCOMMIT;",
+    "lang": "sql"
+   },
+   {
+    "title": "FLASHBACK TABLE: use with care",
+    "points": [
+     "Rewinds the whole table, losing later good changes",
+     "Needs ALTER TABLE ... ENABLE ROW MOVEMENT (else ORA-08189)",
+     "Cannot be rolled back; Enterprise Edition only",
+     "TO BEFORE DROP restores a dropped table from the recycle bin"
+    ]
+   },
+   {
+    "title": "Traps to avoid",
+    "points": [
+     "TRUNCATE or ALTER before recovery: ORA-01466",
+     "Waiting too long: undo reused, ORA-01555",
+     "Re-inserting all rows: ORA-00001 on the primary key"
+    ]
+   }
+  ]
+ }
+}
