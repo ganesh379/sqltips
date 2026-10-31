@@ -29,3 +29,4 @@
 - 2026-10-30 [Oracle] oracle identity column -> _drafts/2026-10-30-oracle-oracle-identity-column.json
 - 2026-10-30 [PostgreSQL] postgresql tablespace -> _drafts/2026-10-30-postgresql-postgresql-dba-part-9-tablespaces.json
 - 2026-10-31 [Oracle] how to recover deleted records in oracle after commit -> _drafts/2026-10-31-oracle-how-to-recover-deleted-records-in-oracle-after-commit.json
+- 2026-10-31 [PostgreSQL] postgresql lateral join -> _drafts/2026-10-31-postgresql-postgresql-lateral-join.json

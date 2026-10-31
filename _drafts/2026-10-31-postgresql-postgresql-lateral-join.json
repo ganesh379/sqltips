@@ -1,0 +1,798 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL LATERAL Join: Examples, Top-N per Group and Errors",
+ "slug": "postgresql-lateral-join",
+ "category": "postgresql",
+ "description": "Learn PostgreSQL LATERAL join with real examples: top-N per group, LEFT JOIN LATERAL ON true, functions, common errors and the index that makes it fast.",
+ "focusKeyword": "postgresql lateral join",
+ "tags": [
+  "postgresql",
+  "lateral-join",
+  "sql",
+  "joins",
+  "performance"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-distinct-on/",
+  "/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: Table Expressions (7.2.1.5 LATERAL Subqueries)",
+   "url": "https://www.postgresql.org/docs/current/queries-table-expressions.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: SELECT (FROM clause, LATERAL, examples)",
+   "url": "https://www.postgresql.org/docs/current/sql-select.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: EXPLAIN (BUFFERS included with ANALYZE)",
+   "url": "https://www.postgresql.org/docs/current/sql-explain.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes (EXPLAIN ANALYZE changes)",
+   "url": "https://www.postgresql.org/docs/current/release-18.html"
+  }
+ ],
+ "reviewNotes": "Regular Saturday article (not a series part). Docs followed: PostgreSQL 18.6 documentation. TESTED ON PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on Ubuntu 24.04.5 LTS, NOT 18: the PGDG repo was reachable, but postgresql-18 needs liburing2, which comes from the Ubuntu archive, and the sandbox could not reach that archive. All query results and error messages are real output from 16.15; LATERAL behaviour is unchanged between 16 and 18 per the docs and the 18 release notes. Please re-run the two EXPLAIN plans on 18 before publishing: on 18 the plans will include extra lines (index lookup count on the Index Scan node, and possibly fractional row counts), and the timings are from the sandbox and will differ. Slight overlap: DISTINCT ON article (latest row per group), linked rather than repeated.",
+ "generatedAt": "2026-10-31T13:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A <b>LATERAL join</b> in PostgreSQL lets a subquery in the <code class=\"inline-code\">FROM</code> clause use columns from tables listed before it. PostgreSQL runs that subquery once for each row on the left side, so you can write things like \"the latest 2 orders for each customer\" in one clear query. Without the <code class=\"inline-code\">LATERAL</code> keyword, the same subquery fails with an error."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial shows how LATERAL works, the two join forms you will use most (CROSS JOIN LATERAL and LEFT JOIN LATERAL), top-N per group, set-returning functions, the real error messages you will hit, and the one index that makes these queries fast. Every query below was run and the output is copied as it came out."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is a LATERAL join in PostgreSQL?",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Normally each subquery in <code class=\"inline-code\">FROM</code> is evaluated on its own. It cannot see any other table in the same <code class=\"inline-code\">FROM</code> list. Putting <code class=\"inline-code\">LATERAL</code> in front of the subquery removes that wall: the subquery may refer to columns of <code class=\"inline-code\">FROM</code> items that appear <i>before</i> it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of it as a loop. For each row of the left table, PostgreSQL plugs that row's values into the subquery, runs it, and joins whatever rows come back to that left row. Then it moves to the next left row. A correlated subquery in the <code class=\"inline-code\">SELECT</code> list works the same way, but it may return only one column and one row. A LATERAL subquery may return many columns and many rows."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Feature",
+      "Correlated subquery in SELECT",
+      "LATERAL subquery in FROM"
+     ],
+     [
+      "Columns returned",
+      "Exactly one",
+      "Any number"
+     ],
+     [
+      "Rows returned",
+      "At most one (else error)",
+      "Zero, one or many"
+     ],
+     [
+      "Can use ORDER BY ... LIMIT n",
+      "Only with LIMIT 1",
+      "Yes, any n"
+     ],
+     [
+      "Keeps left rows with no match",
+      "Yes (returns NULL)",
+      "Only with LEFT JOIN LATERAL ... ON true"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For a function call in <code class=\"inline-code\">FROM</code>, such as <code class=\"inline-code\">generate_series()</code> or <code class=\"inline-code\">unnest()</code>, the keyword is optional. The function's arguments can refer to earlier <code class=\"inline-code\">FROM</code> items anyway, so <code class=\"inline-code\">LATERAL</code> is only a noise word there. You need it for subqueries."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a scratch database with <code class=\"inline-code\">sudo -u postgres createdb shop</code>, connect with <code class=\"inline-code\">sudo -u postgres psql -d shop</code>, and run the script below. Customer 4 (Karan) has no orders on purpose, so you can see how each join form treats a customer with nothing to join."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE customers (\n  customer_id int PRIMARY KEY,\n  name        text NOT NULL,\n  city        text NOT NULL\n);\n\nCREATE TABLE orders (\n  order_id    int PRIMARY KEY,\n  customer_id int NOT NULL REFERENCES customers,\n  order_date  date NOT NULL,\n  amount      numeric(10,2) NOT NULL\n);\n\nINSERT INTO customers VALUES\n  (1, 'Asha',   'Pune'),\n  (2, 'Ravi',   'Chennai'),\n  (3, 'Meena',  'Delhi'),\n  (4, 'Karan',  'Mumbai');\n\nINSERT INTO orders VALUES\n  (101, 1, '2026-09-02', 1200.00),\n  (102, 1, '2026-09-18',  450.00),\n  (103, 1, '2026-10-05', 3100.00),\n  (104, 2, '2026-08-21',  990.00),\n  (105, 2, '2026-10-11', 2200.00),\n  (106, 3, '2026-10-01',  780.00),\n  (107, 3, '2026-10-20', 1500.00),\n  (108, 3, '2026-10-25',  300.00);",
+    "caption": "Sample customers and orders tables"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why the subquery fails without LATERAL",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Start with the mistake almost everyone makes first. You want each customer's two biggest orders, so you write a subquery in FROM that filters on the outer customer:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT c.name, o.order_id, o.amount\nFROM customers c,\n     (SELECT order_id, amount\n        FROM orders\n       WHERE orders.customer_id = c.customer_id\n       ORDER BY amount DESC\n       LIMIT 2) o;",
+    "caption": "A subquery in FROM that refers to c, without LATERAL"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  invalid reference to FROM-clause entry for table \"c\"\nLINE 5:        WHERE orders.customer_id = c.customer_id\n                                          ^\nDETAIL:  There is an entry for table \"c\", but it cannot be referenced from this part of the query.\nHINT:  To reference that table, you must mark this subquery with LATERAL.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The HINT tells you the fix. The subquery was evaluated on its own, so <code class=\"inline-code\">c</code> did not exist inside it. Adding <code class=\"inline-code\">LATERAL</code> is all it takes."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "CROSS JOIN LATERAL: top-N rows per group",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the most common use of LATERAL: the top N child rows for every parent row. The <code class=\"inline-code\">ORDER BY</code> and <code class=\"inline-code\">LIMIT</code> sit inside the subquery, so the limit applies <b>per customer</b>, not to the whole result."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT c.name, o.order_id, o.order_date, o.amount\nFROM customers c\nCROSS JOIN LATERAL (\n  SELECT order_id, order_date, amount\n    FROM orders\n   WHERE orders.customer_id = c.customer_id\n   ORDER BY amount DESC\n   LIMIT 2\n) o\nORDER BY c.name, o.amount DESC;",
+    "caption": "Two biggest orders for each customer"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " name  | order_id | order_date | amount  \n-------+----------+------------+---------\n Asha  |      103 | 2026-10-05 | 3100.00\n Asha  |      101 | 2026-09-02 | 1200.00\n Meena |      107 | 2026-10-20 | 1500.00\n Meena |      106 | 2026-10-01 |  780.00\n Ravi  |      105 | 2026-10-11 | 2200.00\n Ravi  |      104 | 2026-08-21 |  990.00\n(6 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each customer gets at most two rows, ordered by amount. Notice that <b>Karan is missing</b>. <code class=\"inline-code\">CROSS JOIN LATERAL</code> behaves like an inner join: when the subquery returns no rows for a customer, that customer drops out of the result."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can also write <code class=\"inline-code\">FROM customers c, LATERAL (...) o</code> with a comma. It means the same thing as <code class=\"inline-code\">CROSS JOIN LATERAL</code>; pick one style and use it consistently."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "LEFT JOIN LATERAL ... ON true: keep every left row",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To keep customers who have no orders, use <code class=\"inline-code\">LEFT JOIN LATERAL</code>. A left join needs a join condition, but the real filtering already happens inside the subquery, so the condition is simply <code class=\"inline-code\">ON true</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT c.name, last_order.order_id, last_order.order_date, last_order.amount\nFROM customers c\nLEFT JOIN LATERAL (\n  SELECT order_id, order_date, amount\n    FROM orders\n   WHERE orders.customer_id = c.customer_id\n   ORDER BY order_date DESC\n   LIMIT 1\n) last_order ON true\nORDER BY c.customer_id;",
+    "caption": "Latest order per customer, including customers with no orders"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " name  | order_id | order_date | amount  \n-------+----------+------------+---------\n Asha  |      103 | 2026-10-05 | 3100.00\n Ravi  |      105 | 2026-10-11 | 2200.00\n Meena |      108 | 2026-10-25 |  300.00\n Karan |          |            |        \n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Karan now appears with NULLs in the order columns. This \"latest row per group\" query is also something <code class=\"inline-code\">DISTINCT ON</code> can do; see <a href=\"/posts/postgresql/postgresql-distinct-on/\">PostgreSQL DISTINCT ON</a> for that approach. LATERAL wins when you need more than one row per group or want to keep groups with no rows."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "Use <code class=\"inline-code\">CROSS JOIN LATERAL</code> when a left row without matches should disappear, and <code class=\"inline-code\">LEFT JOIN LATERAL ... ON true</code> when it must stay. Most report queries want the LEFT form."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Return several computed columns per row",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A scalar subquery in the <code class=\"inline-code\">SELECT</code> list can return only one column. If you try two, PostgreSQL stops you:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT c.name,\n       (SELECT order_id, amount FROM orders\n         WHERE orders.customer_id = c.customer_id\n         ORDER BY order_date DESC LIMIT 1)\nFROM customers c;",
+    "caption": "Two columns from a scalar subquery"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  subquery must return only one column\nLINE 2:        (SELECT order_id, amount FROM orders\n               ^",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A LATERAL subquery returns as many columns as you like, and you compute them in one pass over each customer's orders instead of three separate subqueries:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT c.name, s.order_count, s.total_amount, s.first_order\nFROM customers c\nLEFT JOIN LATERAL (\n  SELECT count(*)        AS order_count,\n         sum(amount)     AS total_amount,\n         min(order_date) AS first_order\n    FROM orders\n   WHERE orders.customer_id = c.customer_id\n) s ON true\nORDER BY c.customer_id;",
+    "caption": "Order count, total and first order date per customer"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " name  | order_count | total_amount | first_order \n-------+-------------+--------------+-------------\n Asha  |           3 |      4750.00 | 2026-09-02\n Ravi  |           2 |      3190.00 | 2026-08-21\n Meena |           3 |      2580.00 | 2026-10-01\n Karan |           0 |              | \n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An aggregate without <code class=\"inline-code\">GROUP BY</code> always returns exactly one row, so Karan gets <code class=\"inline-code\">count = 0</code> and NULL for the sum and date. Wrap them in <code class=\"inline-code\">coalesce()</code> if your report needs 0 instead of NULL."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reuse a calculated value in the same query",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You cannot refer to a column alias from the <code class=\"inline-code\">SELECT</code> list elsewhere in that same <code class=\"inline-code\">SELECT</code> list. A chain of small LATERAL subqueries gets around this: each one can use the columns computed by the one before it. Here we work out 18% GST once and reuse it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT o.order_id, o.amount, t.gst, t.amount_with_gst\nFROM orders o\nCROSS JOIN LATERAL (\n  SELECT round(o.amount * 0.18, 2) AS gst\n) g\nCROSS JOIN LATERAL (\n  SELECT g.gst, o.amount + g.gst AS amount_with_gst\n) t\nWHERE o.customer_id = 2;",
+    "caption": "Compute once, reuse in the next step"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | amount  |  gst   | amount_with_gst \n----------+---------+--------+-----------------\n      104 |  990.00 | 178.20 |         1168.20\n      105 | 2200.00 | 396.00 |         2596.00\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each subquery without a <code class=\"inline-code\">FROM</code> returns exactly one row, so these joins never add or remove rows. They just give names to intermediate values, which keeps long formulas readable."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "LATERAL with set-returning functions",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A set-returning function returns several rows, like <code class=\"inline-code\">generate_series()</code>, <code class=\"inline-code\">unnest()</code> or <code class=\"inline-code\">jsonb_array_elements()</code>. Joining one to a table and passing a column as its argument is a lateral join. This example splits order 103 into three monthly EMI (instalment) rows:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT o.order_id, o.amount, emi.n AS installment,\n       (o.order_date + emi.n * interval '1 month')::date AS due_date,\n       round(o.amount / 3, 2) AS emi_amount\nFROM orders o\nCROSS JOIN LATERAL generate_series(1, 3) AS emi(n)\nWHERE o.order_id = 103;",
+    "caption": "Three monthly instalments for one order"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | amount  | installment |  due_date  | emi_amount \n----------+---------+-------------+------------+------------\n      103 | 3100.00 |           1 | 2026-11-05 |    1033.33\n      103 | 3100.00 |           2 | 2026-12-05 |    1033.33\n      103 | 3100.00 |           3 | 2027-01-05 |    1033.33\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For functions the <code class=\"inline-code\">LATERAL</code> keyword is optional: <code class=\"inline-code\">CROSS JOIN generate_series(1, 3) AS emi(n)</code> returns the same three rows. Many developers still write it so readers can see that the function runs per row. When the function's arguments use columns from the left table (for example <code class=\"inline-code\">unnest(o.tags)</code>), it is evaluated for each left row either way."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "1. Forgetting the LATERAL keyword on a subquery",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You get <code class=\"inline-code\">invalid reference to FROM-clause entry for table</code> with the HINT \"you must mark this subquery with LATERAL\". Add <code class=\"inline-code\">LATERAL</code> before the opening bracket."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "2. Leaving out ON true with LEFT JOIN LATERAL",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT c.name, x.order_id\nFROM customers c\nLEFT JOIN LATERAL (\n  SELECT order_id FROM orders WHERE orders.customer_id = c.customer_id LIMIT 1\n) x;",
+    "caption": "LEFT JOIN without a join condition"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  syntax error at or near \";\"\nLINE 5: ) x;\n           ^",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">LEFT JOIN</code> always needs <code class=\"inline-code\">ON</code> or <code class=\"inline-code\">USING</code>. Add <code class=\"inline-code\">ON true</code> after the alias. <code class=\"inline-code\">CROSS JOIN LATERAL</code> does not take a condition."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "3. Using RIGHT or FULL JOIN with a lateral reference",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT c.name, o.order_id\nFROM customers c\nRIGHT JOIN LATERAL (\n  SELECT order_id FROM orders WHERE orders.customer_id = c.customer_id\n) o ON true;",
+    "caption": "RIGHT JOIN to a LATERAL subquery that refers to c"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  invalid reference to FROM-clause entry for table \"c\"\nLINE 4: ...T order_id FROM orders WHERE orders.customer_id = c.customer...\n                                                             ^\nDETAIL:  The combining JOIN type must be INNER or LEFT for a LATERAL reference.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation explains why: the table supplying the columns must be INNER or LEFT joined to the LATERAL item, or there is no defined set of rows to run the subquery for. The syntax parses, but the reference is not allowed. Rewrite it as a LEFT JOIN with the tables swapped, or as a normal join."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "4. Putting LIMIT outside the subquery",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">LIMIT 2</code> after the final <code class=\"inline-code\">ORDER BY</code> limits the whole result to two rows. For \"two per customer\", the <code class=\"inline-code\">LIMIT</code> must be inside the LATERAL subquery."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "5. Referring to a table that comes later in FROM",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A LATERAL item can only see FROM items to its left (and, inside a JOIN, the left side of that JOIN). Put the table that supplies the values first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance: the index that makes LATERAL fast",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Because the subquery runs once per left row, its cost is multiplied by the number of left rows. The plan is usually a Nested Loop with the subquery on the inner side. If the inner side has to scan the whole child table, that gets slow quickly."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To show the effect, we built a larger copy of the data: 500 customers and 100,000 orders in tables <code class=\"inline-code\">customers_big</code> and <code class=\"inline-code\">orders_big</code>, then asked for each customer's latest order:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders_big AS\nSELECT g AS order_id,\n       (g % 500) + 1 AS customer_id,\n       date '2024-01-01' + (g % 1000) AS order_date,\n       (g % 5000)::numeric(10,2) AS amount\nFROM generate_series(1, 100000) AS g;\n\nCREATE TABLE customers_big AS\nSELECT g AS customer_id, 'cust_' || g AS name\nFROM generate_series(1, 500) AS g;\n\nANALYZE orders_big;\nANALYZE customers_big;",
+    "caption": "Test data: 500 customers, 200 orders each"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF)\nSELECT c.name, lo.order_id, lo.order_date\nFROM customers_big c\nLEFT JOIN LATERAL (\n  SELECT order_id, order_date FROM orders_big\n   WHERE orders_big.customer_id = c.customer_id\n   ORDER BY order_date DESC LIMIT 1\n) lo ON true;",
+    "caption": "Latest order per customer, no index on orders_big"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Nested Loop Left Join (actual time=138.301..2633.021 rows=500 loops=1)\n   ->  Seq Scan on customers_big c (actual time=0.019..0.540 rows=500 loops=1)\n   ->  Limit (actual time=4.992..4.992 rows=1 loops=500)\n         ->  Sort (actual time=4.986..4.986 rows=1 loops=500)\n               Sort Key: orders_big.order_date DESC\n               Sort Method: top-N heapsort  Memory: 25kB\n               ->  Seq Scan on orders_big (actual time=0.016..4.933 rows=200 loops=500)\n                     Filter: (customer_id = c.customer_id)\n                     Rows Removed by Filter: 99800\n Planning Time: 0.327 ms\n Execution Time: 2650.975 ms",
+    "caption": "Output (plan without the index)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read <code class=\"inline-code\">loops=500</code>: the inner Seq Scan ran 500 times, each time reading all 100,000 orders and throwing away 99,800 of them. Now add an index that matches both the filter and the sort:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_big_cust_date_idx\n    ON orders_big (customer_id, order_date DESC);",
+    "caption": "Composite index matching WHERE and ORDER BY"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Nested Loop Left Join (actual time=0.045..1.869 rows=500 loops=1)\n   ->  Seq Scan on customers_big c (actual time=0.011..0.060 rows=500 loops=1)\n   ->  Limit (actual time=0.003..0.003 rows=1 loops=500)\n         ->  Index Scan using orders_big_cust_date_idx on orders_big (actual time=0.003..0.003 rows=1 loops=500)\n               Index Cond: (customer_id = c.customer_id)\n Planning Time: 0.368 ms\n Execution Time: 1.923 ms",
+    "caption": "Output (same query after creating the index)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The Sort node is gone. Each of the 500 loops walks straight to the newest entry for that customer and stops after one row because of the <code class=\"inline-code\">LIMIT</code>. On our test machine the time dropped from about 2.6 seconds to about 2 milliseconds; your numbers will differ, but the shape of the plan is what matters."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "From PostgreSQL 18, <code class=\"inline-code\">EXPLAIN ANALYZE</code> includes buffer usage automatically, which is why the examples pass <code class=\"inline-code\">BUFFERS OFF</code> to keep the plan short. PostgreSQL 18 also reports the number of index lookups on index scan nodes, so you will see a few extra lines compared with older versions."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Drop the test tables when you are done with <code class=\"inline-code\">DROP TABLE orders_big, customers_big;</code>. Other practical points:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Rule of thumb for top-N per group: index the child table on (join column, sort column in the same direction), for example <code class=\"inline-code\">(customer_id, order_date DESC)</code>.",
+      "items": []
+     },
+     {
+      "content": "LATERAL shines when the left side is small or filtered and each group has many child rows: it reads only N rows per group.",
+      "items": []
+     },
+     {
+      "content": "When you need the top N for almost every group of a big table, a single pass with <code class=\"inline-code\">row_number() OVER (PARTITION BY ...)</code> can be cheaper than thousands of index lookups. Compare both with EXPLAIN ANALYZE on your own data.",
+      "items": []
+     },
+     {
+      "content": "Filter the left table as early as possible (in its WHERE clause), because every left row costs one execution of the subquery.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here is the window-function version of the earlier \"two biggest orders\" query, for comparison. It returns the same six rows. Learn more about window functions in <a href=\"/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/\">Mastering SQL Window Functions</a>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, order_id, order_date, amount\nFROM (\n  SELECT c.name, o.order_id, o.order_date, o.amount,\n         row_number() OVER (PARTITION BY o.customer_id\n                            ORDER BY o.amount DESC) AS rn\n    FROM customers c\n    JOIN orders o ON o.customer_id = c.customer_id\n) ranked\nWHERE rn <= 2\nORDER BY name, amount DESC;",
+    "caption": "Top 2 orders per customer with row_number()"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " name  | order_id | order_date | amount  \n-------+----------+------------+---------\n Asha  |      103 | 2026-10-05 | 3100.00\n Asha  |      101 | 2026-09-02 | 1200.00\n Meena |      107 | 2026-10-20 | 1500.00\n Meena |      106 | 2026-10-01 |  780.00\n Ravi  |      105 | 2026-10-11 | 2200.00\n Ravi  |      104 | 2026-08-21 |  990.00\n(6 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between LATERAL join and a subquery in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A plain subquery in FROM runs once, on its own, and cannot see other tables in the FROM list. A LATERAL subquery runs once per left row and can use that row's columns. Compared with a correlated subquery in SELECT, LATERAL can return many rows and many columns."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is LATERAL the same as CROSS APPLY in SQL Server or Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes, in effect. <code class=\"inline-code\">CROSS JOIN LATERAL</code> matches <code class=\"inline-code\">CROSS APPLY</code>, and <code class=\"inline-code\">LEFT JOIN LATERAL ... ON true</code> matches <code class=\"inline-code\">OUTER APPLY</code>. PostgreSQL does not accept the APPLY keywords, so rewrite them with LATERAL when you migrate."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why do I need ON true in a LEFT JOIN LATERAL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "SQL requires every LEFT JOIN to have a join condition. The matching is already done inside the subquery's WHERE clause, so <code class=\"inline-code\">ON true</code> simply says \"join every row the subquery returned\"."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is a LATERAL join slow?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It runs the subquery once per left row, so it is fast when each run is an index lookup and slow when each run scans a big table. Add an index on the columns the subquery filters and sorts on, and check the plan for an Index Scan on the inner side of the Nested Loop."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I use LATERAL with a function in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes. For a function call in FROM, such as <code class=\"inline-code\">generate_series()</code> or <code class=\"inline-code\">unnest()</code>, the LATERAL keyword is optional because the arguments can already refer to earlier tables. Writing it anyway is allowed and can make the query clearer."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">LATERAL</code> lets a subquery in FROM use columns from tables listed before it; it runs once per left row.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Without it you get \"invalid reference to FROM-clause entry\" and a HINT to add LATERAL.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">CROSS JOIN LATERAL</code> drops left rows with no matches; <code class=\"inline-code\">LEFT JOIN LATERAL (...) alias ON true</code> keeps them with NULLs.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Put <code class=\"inline-code\">ORDER BY ... LIMIT n</code> inside the subquery for top-N per group.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use LATERAL to return several computed columns at once, or to reuse a calculated value step by step.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "For set-returning functions the keyword is optional; for subqueries it is required.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Only INNER and LEFT joins may supply columns to a LATERAL item; RIGHT and FULL raise an error.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Index the child table on (join column, sort column), e.g. <code class=\"inline-code\">(customer_id, order_date DESC)</code>, and confirm an Index Scan with EXPLAIN ANALYZE.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your \"latest 2 orders per customer\" query fails with: invalid reference to FROM-clause entry. One keyword fixes it.\n\nThat keyword is LATERAL. It lets a subquery in FROM use columns from the tables before it, and PostgreSQL runs it once per row on the left.\n\nWhat to remember:\n→ CROSS JOIN LATERAL (...) works like an inner join: customers with no orders disappear.\n→ LEFT JOIN LATERAL (...) x ON true keeps them, with NULLs.\n→ Put ORDER BY ... LIMIT 2 inside the subquery. Then the limit applies per customer, not to the whole result.\n→ A LATERAL subquery can return many columns, which a scalar subquery in SELECT cannot (\"subquery must return only one column\").\n→ RIGHT JOIN LATERAL that refers to the left table is rejected: the join must be INNER or LEFT.\n\nPerformance: the subquery runs once per left row. Index the child table on (customer_id, order_date DESC). In our test plan, the per-customer Seq Scan plus Sort turned into a single Index Scan.\n\nComing from SQL Server or Oracle? CROSS APPLY maps to CROSS JOIN LATERAL, and OUTER APPLY maps to LEFT JOIN LATERAL ... ON true.\n\nFor top-N per group, which do you reach for first: LATERAL or row_number()?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #Database #DBA",
+  "slides": [
+   {
+    "title": "PostgreSQL LATERAL Join",
+    "body": "Top-N per group, many columns per row, and the index that keeps it fast"
+   },
+   {
+    "title": "The error LATERAL fixes",
+    "points": [
+     "A subquery in FROM cannot see other FROM tables",
+     "Result: invalid reference to FROM-clause entry",
+     "The HINT says: mark this subquery with LATERAL"
+    ]
+   },
+   {
+    "title": "Top 2 orders per customer",
+    "code": "SELECT c.name, o.order_id, o.amount\nFROM customers c\nCROSS JOIN LATERAL (\n  SELECT order_id, amount\n  FROM orders\n  WHERE orders.customer_id = c.customer_id\n  ORDER BY amount DESC\n  LIMIT 2\n) o;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Keep customers with no orders",
+    "code": "SELECT c.name, lo.order_id\nFROM customers c\nLEFT JOIN LATERAL (\n  SELECT order_id FROM orders\n  WHERE orders.customer_id = c.customer_id\n  ORDER BY order_date DESC\n  LIMIT 1\n) lo ON true;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Rules to remember",
+    "points": [
+     "CROSS JOIN LATERAL drops rows with no match",
+     "LEFT JOIN LATERAL needs ON true",
+     "LIMIT goes inside the subquery",
+     "Only INNER or LEFT joins can feed a LATERAL item"
+    ]
+   },
+   {
+    "title": "Make it fast",
+    "body": "The subquery runs once per left row. Index the child table on the filter and sort columns so every run is one Index Scan.",
+    "code": "CREATE INDEX orders_cust_date_idx\n  ON orders (customer_id, order_date DESC);",
+    "lang": "postgresql"
+   }
+  ]
+ }
+}
