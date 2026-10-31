@@ -16,3 +16,5 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-10-31 | 09:00 | LinkedIn | Carousel: PostgreSQL SQL | INSERT ... ON CONFLICT and EXCLUDED | 2026-10-31-0900 | 6ae474fc80f61ee5191032e6
 - 2026-10-30 | 17:15 | Instagram | Reel: PostgreSQL DBA | MVCC: UPDATE writes a new row version | reels/2026-10-30-1715 | 6ae477bcc56bf7afb3acc563
 - 2026-10-30 | 17:15 | LinkedIn | Reel: PostgreSQL DBA | MVCC: UPDATE writes a new row version | reels/2026-10-30-1715 | 6ae477bd1c1ab1e7bc307005
+- 2026-11-01 | 09:00 | Instagram | Carousel: Oracle SQL | MERGE for upserts | posts/2026-11-01-0900 | 6ae5c050a1145743499ba3a6
+- 2026-11-01 | 09:00 | LinkedIn | Carousel: Oracle SQL | MERGE for upserts | posts/2026-11-01-0900 | 6ae5c056406ab8a018b08a2e
