@@ -20,3 +20,5 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-01 | 09:00 | LinkedIn | Carousel: Oracle SQL | MERGE for upserts | posts/2026-11-01-0900 | 6ae5c056406ab8a018b08a2e
 - 2026-11-01 | 13:00 | Instagram | Reel: Oracle SQL | Empty string is NULL | reels/2026-11-01-1300 | 6ae5c20fb84259308bceaa57
 - 2026-11-01 | 13:00 | LinkedIn | Reel: Oracle SQL | Empty string is NULL | reels/2026-11-01-1300 | 6ae5c217406ab8a018b0f20e
+- 2026-11-01 | 20:00 | Instagram | Reel: PostgreSQL DBA | Part 2: what happens after COMMIT (WAL first, data pages later) | reels/2026-11-01-2000 | 6ae5c3e0ceb491e585eeeca2
+- 2026-11-01 | 20:00 | LinkedIn | Reel: PostgreSQL DBA | Part 2: what happens after COMMIT (WAL first, data pages later) | reels/2026-11-01-2000 | 6ae5c3e71891472093c8e1bc
