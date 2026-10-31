@@ -1,0 +1,11 @@
+One Oracle statement that updates existing rows and inserts new ones.
+
+That is MERGE. You point it at a target table, give it a source with USING, and match rows with ON. Rows that match go to WHEN MATCHED THEN UPDATE. Rows that don't match go to WHEN NOT MATCHED THEN INSERT.
+
+Each branch can take its own WHERE. The update WHERE can check source or target columns, the insert WHERE only source columns. DELETE WHERE can remove rows the MERGE just updated.
+
+Two errors worth knowing for an Oracle upsert: ORA-30926 when two source rows hit the same target row, and ORA-38104 when you try to update a column used in the ON clause.
+
+Save this for the next time you write an upsert in Oracle.
+
+#sql #oracle #plsql #oracledatabase #database
