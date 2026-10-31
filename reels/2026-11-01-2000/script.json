@@ -1,0 +1,15 @@
+[
+ {"say": "Your COMMIT returned. But your table file on disk may not have changed yet.", "cap": "Your *COMMIT* returned. Your table file may not have *changed* *yet.*"},
+ {"say": "Let's follow one UPDATE, step by step.", "cap": "Let's follow one *UPDATE,* step by step."},
+ {"say": "Order one oh one is NEW. We update it to SHIPPED, then COMMIT.", "cap": "Order 101 is NEW. Update to *SHIPPED,* then *COMMIT.*", "cue": "SHIPPED"},
+ {"say": "First, PostgreSQL finds the eight kilobyte page in shared buffers, its memory cache.", "cap": "PostgreSQL finds the 8 KB page in *shared* *buffers.*"},
+ {"say": "It adds a new row version to that page. Now the page is dirty: changed only in memory.", "cap": "It adds a *new* *row* *version.* The page is now *dirty.*", "cue": "dirty"},
+ {"say": "So is your data safe? Stay till the end.", "cap": "So is your data *safe?* Stay till the end."},
+ {"say": "PostgreSQL also writes a WAL record describing the change.", "cap": "PostgreSQL also writes a *WAL* *record* for the change.", "cue": "WAL"},
+ {"say": "On COMMIT, by default, it waits until that WAL is flushed to disk. Then COMMIT returns.", "cap": "On COMMIT it waits for the WAL to be *flushed* *to* *disk.*", "cue": "waits"},
+ {"say": "Check pg buffer cache right after the COMMIT. The page is still dirty.", "cap": "pg_buffercache after COMMIT: *isdirty* *=* *t*", "cue": "still"},
+ {"say": "The table file gets the page later, from the background writer or at a checkpoint.", "cap": "The table file gets it *later:* background writer or *checkpoint.*", "cue": "checkpoint"},
+ {"say": "So why is it safe? After a crash, PostgreSQL replays the WAL and redoes the change.", "cap": "After a crash, PostgreSQL *replays* the WAL and *redoes* the change.", "cue": "replays"},
+ {"say": "WAL first, data pages later. That's how COMMIT stays fast and safe.", "cap": "*WAL* *first,* data pages later. Fast *and* safe."},
+ {"say": "Follow for more SQL traps, and save this for later.", "cap": "*Follow* for more SQL traps, and *save* this for later."}
+]

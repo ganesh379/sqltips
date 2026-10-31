@@ -1,0 +1,11 @@
+Your COMMIT returned, but the table file on disk may not have changed yet. Part 2 of how PostgreSQL handles a query.
+
+An UPDATE adds a new row version to the 8 KB page in shared_buffers. The page is now dirty, changed only in memory. PostgreSQL also writes a WAL record for the change.
+
+With synchronous_commit = on (the default), COMMIT waits until that WAL is flushed to disk. The data page itself is written later by the background writer or at a checkpoint. Run pg_buffercache right after COMMIT and isdirty is still t.
+
+If the server crashes before that write, PostgreSQL replays the WAL and redoes the change. WAL first, data pages later.
+
+Save this for your next PostgreSQL DBA interview.
+
+#postgresql #sql #dba #postgres #database
