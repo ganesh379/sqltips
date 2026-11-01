@@ -1,0 +1,47 @@
+[
+ {
+  "say": "Second highest salary? One way fails.",
+  "cap": "2nd highest salary? One way *fails.*"
+ },
+ {
+  "say": "Ravi and Sita earn ninety thousand. Kiran, seventy five thousand.",
+  "cap": "Ravi and Sita earn *90000.* Kiran, *75000.*",
+  "cue": "Kiran"
+ },
+ {
+  "say": "So the answer is seventy five thousand.",
+  "cap": "So the answer is *75000.*"
+ },
+ {
+  "say": "Way one: the highest salary below the max. Seventy five thousand. Correct.",
+  "cap": "Way 1: the MAX below the MAX. *75000.* Correct.",
+  "cue": "Seventy"
+ },
+ {
+  "say": "Way two: sort descending, skip one row, take the next.",
+  "cap": "Way 2: sort, *skip* *1* *row,* take the next."
+ },
+ {
+  "say": "Ninety thousand. Wrong!",
+  "cap": "*90000.* *Wrong!*",
+  "cue": "Wrong"
+ },
+ {
+  "say": "The top salary is tied, so skipping one row skips only one of them.",
+  "cap": "Top salary is *tied.* Skip 1 row skips only *one* of them."
+ },
+ {
+  "say": "Add DISTINCT, so you skip values, not rows. Now it's seventy five thousand.",
+  "cap": "Add *DISTINCT:* skip values, not rows. Now *75000.*",
+  "cue": "Now"
+ },
+ {
+  "say": "Way three: DENSE RANK. Ties share rank one, so rank two is seventy five thousand.",
+  "cap": "Way 3: *DENSE_RANK.* Ties share rank 1, rank 2 is *75000.*",
+  "cue": "Ties"
+ },
+ {
+  "say": "Send this to a friend preparing for SQL interviews, and follow for more.",
+  "cap": "*Send* this to a friend preparing for SQL interviews, and *follow* for more."
+ }
+]

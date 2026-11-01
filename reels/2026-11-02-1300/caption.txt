@@ -1,0 +1,11 @@
+Second highest salary: one of these three answers returns the wrong number.
+
+This SQL interview question looks easy until the top salary is tied. Ravi and Sita both earn 90000, Kiran earns 75000, so the answer is 75000.
+
+MAX below MAX gets it right. ORDER BY salary DESC with OFFSET 1 ROWS FETCH NEXT 1 ROWS ONLY returns 90000, because skipping one row skips only one of the tied salaries. Add DISTINCT and it returns 75000.
+
+DENSE_RANK gives tied salaries the same rank, so rank 2 is 75000. All three run on PostgreSQL and on Oracle (OFFSET and FETCH need Oracle 12c or later).
+
+Send this to a friend preparing for SQL interviews.
+
+#sql #sqlinterview #oracle #postgresql #dataanalyst
