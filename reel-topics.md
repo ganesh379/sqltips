@@ -44,7 +44,7 @@ When a queue has fewer than 5 unchecked topics, add new broad-appeal ones that f
 - [x] How a SELECT travels inside PostgreSQL: "What happens after you press Enter?" (2026-10-31 20:00)
 - [x] MVCC: "UPDATE does not overwrite your row. It writes a new version." (2026-10-30 17:15)
 - [x] Part 2 of "How a SELECT travels inside PostgreSQL" (promised in the 2026-10-31 20:00 reel): what happens after you press Enter on an UPDATE and COMMIT, the write path (new row version in shared_buffers, WAL record, WAL flushed at COMMIT, data page written later). Hook: "Your COMMIT returned. Your table file on disk may not have changed yet." Make it work on its own too. (2026-11-01 20:00)
-- [ ] UPDATE without WHERE: "How a transaction saves you from your worst UPDATE."
+- [x] UPDATE without WHERE: "Your UPDATE just set every salary to zero." (psql autocommit, BEGIN first) (2026-11-02 20:00)
 - [ ] Quiz, TRUNCATE + ROLLBACK: "TRUNCATE, then ROLLBACK. Is the data back?"
 - [ ] Index not used: "You created the index. PostgreSQL still does a Seq Scan."
 - [ ] Deadlock: "Two transactions wait for each other. PostgreSQL cancels one."

@@ -26,3 +26,5 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-02 | 09:00 | LinkedIn | Carousel: Oracle PL/SQL | FORALL with SAVE EXCEPTIONS | posts/2026-11-02-0900 | 6ae7119621c807e9d5b17dd3
 - 2026-11-02 | 13:00 | Instagram | Reel: SQL interview | 2nd highest salary, 3 ways (one fails on ties) | reels/2026-11-02-1300 | 6ae7132bab019b9087528de2
 - 2026-11-02 | 13:00 | LinkedIn | Reel: SQL interview | 2nd highest salary, 3 ways (one fails on ties) | reels/2026-11-02-1300 | 6ae7132cab019b9087528e15
+- 2026-11-02 | 20:00 | Instagram | Reel: PostgreSQL DBA | UPDATE without WHERE: psql autocommit, BEGIN first | reels/2026-11-02-2000 | 6ae71567ab019b9087532cd5
+- 2026-11-02 | 20:00 | LinkedIn | Reel: PostgreSQL DBA | UPDATE without WHERE: psql autocommit, BEGIN first | reels/2026-11-02-2000 | 6ae71568cf3a3112f3f060a9
