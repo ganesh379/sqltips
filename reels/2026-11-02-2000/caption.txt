@@ -1,6 +1,6 @@
 You ran an UPDATE without a WHERE clause. Every salary is now 0. Can ROLLBACK save you?
 
-In psql, AUTOCOMMIT is on by default, so each statement is committed as soon as it succeeds. A ROLLBACK after that only prints "WARNING: there is no transaction in progress" and changes nothing.
+In psql, AUTOCOMMIT is on by default, so each statement is committed as soon as it succeeds. A ROLLBACK after that only prints "WARNING:  there is no transaction in progress" and changes nothing.
 
 The PostgreSQL DBA habit: type BEGIN before any risky UPDATE or DELETE. Run it, read the row count psql prints (UPDATE 4 when you expected 1), then ROLLBACK if it is wrong or COMMIT if it is right.
 
