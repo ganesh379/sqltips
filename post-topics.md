@@ -32,7 +32,7 @@ When a category has fewer than 5 unchecked topics, the task adds new practical o
 
 ## Oracle PL/SQL
 - [x] BULK COLLECT with LIMIT and FORALL (2026-10-28, listed as posted by the old weekly task)
-- [ ] FORALL with SAVE EXCEPTIONS
+- [x] FORALL with SAVE EXCEPTIONS (2026-11-02 09:00)
 - [ ] Exceptions: WHEN OTHERS, SQLERRM, DBMS_UTILITY.FORMAT_ERROR_BACKTRACE
 - [ ] Cursor FOR loops vs explicit cursors
 - [ ] Collections: associative arrays, nested tables, VARRAYs

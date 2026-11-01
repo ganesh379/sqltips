@@ -22,3 +22,5 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-01 | 13:00 | LinkedIn | Reel: Oracle SQL | Empty string is NULL | reels/2026-11-01-1300 | 6ae5c217406ab8a018b0f20e
 - 2026-11-01 | 20:00 | Instagram | Reel: PostgreSQL DBA | Part 2: what happens after COMMIT (WAL first, data pages later) | reels/2026-11-01-2000 | 6ae5c3e0ceb491e585eeeca2
 - 2026-11-01 | 20:00 | LinkedIn | Reel: PostgreSQL DBA | Part 2: what happens after COMMIT (WAL first, data pages later) | reels/2026-11-01-2000 | 6ae5c3e71891472093c8e1bc
+- 2026-11-02 | 09:00 | Instagram | Carousel: Oracle PL/SQL | FORALL with SAVE EXCEPTIONS | posts/2026-11-02-0900 | 6ae7119637c1acd2a0fa9afb
+- 2026-11-02 | 09:00 | LinkedIn | Carousel: Oracle PL/SQL | FORALL with SAVE EXCEPTIONS | posts/2026-11-02-0900 | 6ae7119621c807e9d5b17dd3
