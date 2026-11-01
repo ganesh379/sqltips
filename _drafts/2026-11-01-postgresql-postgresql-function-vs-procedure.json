@@ -1,0 +1,1023 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL Function vs Procedure: Differences With Examples",
+ "slug": "postgresql-function-vs-procedure",
+ "category": "postgresql",
+ "description": "PostgreSQL function vs procedure: how SELECT and CALL differ, OUT parameters, COMMIT in procedures, and the real errors you hit, with tested examples.",
+ "focusKeyword": "postgresql function vs procedure",
+ "tags": [
+  "postgresql",
+  "plpgsql",
+  "stored-procedures",
+  "functions",
+  "transactions"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-for-update-skip-locked-job-queue/",
+  "/posts/postgresql/postgresql-dba-part-7-roles-and-privileges/",
+  "/posts/postgresql/postgresql-upsert-on-conflict/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: User-Defined Procedures (xproc)",
+   "url": "https://www.postgresql.org/docs/current/xproc.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CREATE PROCEDURE",
+   "url": "https://www.postgresql.org/docs/current/sql-createprocedure.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CREATE FUNCTION",
+   "url": "https://www.postgresql.org/docs/current/sql-createfunction.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CALL",
+   "url": "https://www.postgresql.org/docs/current/sql-call.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: PL/pgSQL Transaction Management",
+   "url": "https://www.postgresql.org/docs/current/plpgsql-transactions.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: PL/pgSQL Control Structures (Returning from / Calling a Procedure)",
+   "url": "https://www.postgresql.org/docs/current/plpgsql-control-structures.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Function Volatility Categories",
+   "url": "https://www.postgresql.org/docs/current/xfunc-volatility.html"
+  },
+  {
+   "title": "PostgreSQL 14 release notes (OUT parameters for procedures, SQL-standard function bodies)",
+   "url": "https://www.postgresql.org/docs/release/14.0/"
+  }
+ ],
+ "reviewNotes": "Regular Sunday article (not a series part). Tested on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2, the official PGDG package) on Ubuntu 24.04.5 LTS; docs followed: PostgreSQL 18 (current) documentation plus the 14.0 release notes. Sandbox note: the Ubuntu archive was unreachable, so postgresql-18's dependency liburing2 could not be installed; the PGDG .debs were installed with dpkg --force-depends and a stub liburing.so.2 (io_method = worker, the default, so io_uring is never used). Every SQL statement in the article was re-run in article order on a fresh database and all outputs and error messages are real. Please check: (1) the Oracle comparison callout (autonomous transactions) is a general statement, not tested; (2) the claim that procedures arrived in PostgreSQL 11 is from general knowledge of the release history, not re-read from the 11 release notes; (3) GST 18% is just an example rate. No overlap with existing articles; links to Part 7 and the SKIP LOCKED article.",
+ "generatedAt": "2026-11-01T13:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The main difference between a function and a procedure in PostgreSQL is how you call them and what they can do with transactions. A <b>function</b> returns a value and runs inside a query, so you call it with <code class=\"inline-code\">SELECT</code> and can use it in a <code class=\"inline-code\">WHERE</code> clause. A <b>procedure</b> is run on its own with <code class=\"inline-code\">CALL</code>, returns data only through output parameters, and can <code class=\"inline-code\">COMMIT</code> or <code class=\"inline-code\">ROLLBACK</code> part-way through its work. A function cannot."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "That last point is the one that matters most in real systems. If you need to process a million rows in batches and commit after each batch, you need a procedure. If you need a calculation you can use inside queries, views or indexes, you need a function."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial shows both side by side on the same small table, with the real output and the real error messages from PostgreSQL 18, so you can see exactly where each one works and where it fails."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Function vs procedure: the short answer",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Procedures arrived in PostgreSQL 11. Before that, everything was a function, which is why a lot of older code uses functions that return <code class=\"inline-code\">void</code> for jobs that today would be procedures. The PostgreSQL documentation lists the differences, summarised here:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Feature",
+      "Function",
+      "Procedure"
+     ],
+     [
+      "Created with",
+      "CREATE FUNCTION",
+      "CREATE PROCEDURE"
+     ],
+     [
+      "How you run it",
+      "Inside a query: SELECT, WHERE, INSERT ... VALUES, and so on",
+      "On its own: CALL name(...)"
+     ],
+     [
+      "Return value",
+      "Yes, declared with RETURNS (a value, a row or a set of rows)",
+      "No RETURNS clause; data comes back through OUT or INOUT parameters"
+     ],
+     [
+      "COMMIT / ROLLBACK inside",
+      "Not allowed",
+      "Allowed, if the CALL is not inside an explicit transaction block"
+     ],
+     [
+      "Can change data (INSERT, UPDATE, DELETE)",
+      "Yes, if it is VOLATILE (the default)",
+      "Yes"
+     ],
+     [
+      "Volatility (IMMUTABLE, STABLE, VOLATILE), STRICT",
+      "Yes, used by the planner",
+      "Do not apply"
+     ],
+     [
+      "Usable in an index expression",
+      "Yes, if marked IMMUTABLE",
+      "No"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Together, functions and procedures are called <b>routines</b>. That is why <code class=\"inline-code\">ALTER ROUTINE</code> and <code class=\"inline-code\">DROP ROUTINE</code> work on both. There is no <code class=\"inline-code\">CREATE ROUTINE</code> command, though."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Coming from Oracle?",
+    "text": "In Oracle, a PL/SQL function can also be used in SQL and a procedure is run with EXECUTE or from a block, so the idea is similar. The big difference is transactions: an Oracle function can commit if it uses an autonomous transaction, but PostgreSQL has no autonomous transactions at all. In PostgreSQL only a procedure (or a <code class=\"inline-code\">DO</code> block) can commit, and only when it is called outside an explicit transaction."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a scratch database and an orders table. The examples were run in psql connected as the postgres user, with psql's default autocommit mode switched on."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders (\n  order_id    integer PRIMARY KEY,\n  customer    text    NOT NULL,\n  amount      numeric(10,2) NOT NULL,\n  status      text    NOT NULL DEFAULT 'new',\n  order_date  date    NOT NULL\n);\n\nINSERT INTO orders VALUES\n  (1, 'Asha',  1200.00, 'shipped',   '2026-09-02'),\n  (2, 'Ravi',   450.50, 'new',       '2026-09-15'),\n  (3, 'Asha',   899.00, 'shipped',   '2026-10-01'),\n  (4, 'Meena', 3150.00, 'cancelled', '2026-10-05'),\n  (5, 'Ravi',  2000.00, 'shipped',   '2026-10-20');\n\nCREATE TABLE orders_archive (LIKE orders INCLUDING ALL);",
+    "caption": "Sample tables used in every example"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">orders_archive</code> table has the same columns, defaults and primary key as <code class=\"inline-code\">orders</code>. We will use it later when a procedure moves old orders into it in batches."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Writing and using a function",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: a scalar function you can use in any query",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A scalar function takes arguments and returns one value. This one adds 18% GST to an amount:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE FUNCTION order_total_with_gst(p_amount numeric)\nRETURNS numeric\nLANGUAGE sql\nIMMUTABLE\nRETURN round(p_amount * 1.18, 2);",
+    "caption": "A function with a RETURNS clause"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">RETURN expression</code> body is the SQL-standard function body form, available since PostgreSQL 14. PostgreSQL parses it immediately when you create the function and tracks which objects it depends on. The older form, a body written as a string between <code class=\"inline-code\">$$</code> quotes, still works and is what PL/pgSQL needs."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">IMMUTABLE</code> tells the planner that the result depends only on the arguments: the same input always gives the same output, and the function never reads a table. Because a function is called inside a query, you can put it in the select list:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, amount, order_total_with_gst(amount) AS total_with_gst\n  FROM orders\n ORDER BY order_id;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | amount  | total_with_gst \n----------+---------+----------------\n        1 | 1200.00 |        1416.00\n        2 |  450.50 |         531.59\n        3 |  899.00 |        1060.82\n        4 | 3150.00 |        3717.00\n        5 | 2000.00 |        2360.00\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "And you can filter on it in a WHERE clause, which no procedure can do:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, customer\n  FROM orders\n WHERE order_total_with_gst(amount) > 2000;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | customer \n----------+----------\n        4 | Meena\n        5 | Ravi\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: a function that returns rows",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A function can also return a whole result set. With <code class=\"inline-code\">RETURNS TABLE</code> you name the output columns, and the caller treats the function like a table in the FROM clause:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE FUNCTION customer_summary(p_customer text)\nRETURNS TABLE (order_count bigint, total_spent numeric)\nLANGUAGE sql\nSTABLE\nAS $$\n  SELECT count(*), coalesce(sum(amount), 0)\n    FROM orders\n   WHERE customer = p_customer\n     AND status <> 'cancelled';\n$$;\n\nSELECT * FROM customer_summary('Asha');",
+    "caption": "A set-returning function used in FROM"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_count | total_spent \n-------------+-------------\n           2 |     2099.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This one is <code class=\"inline-code\">STABLE</code>, not <code class=\"inline-code\">IMMUTABLE</code>, because it reads the orders table. STABLE means it does not modify the database and returns the same result for the same arguments within one statement, but the result can change between statements as the data changes. Returning rows that callers can join, filter and sort is something only a function can do."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Writing and calling a procedure",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: a procedure with an OUT parameter",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A procedure has no <code class=\"inline-code\">RETURNS</code> clause. If it needs to send something back, it uses an <code class=\"inline-code\">OUT</code> (or <code class=\"inline-code\">INOUT</code>) parameter. This procedure cancels an order only if it is still new, and reports how many rows it changed:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE PROCEDURE cancel_order(p_order_id integer, OUT p_rows integer)\nLANGUAGE plpgsql\nAS $$\nBEGIN\n  UPDATE orders\n     SET status = 'cancelled'\n   WHERE order_id = p_order_id\n     AND status = 'new';\n  GET DIAGNOSTICS p_rows = ROW_COUNT;\nEND;\n$$;",
+    "caption": "A PL/pgSQL procedure that returns data through OUT"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">GET DIAGNOSTICS p_rows = ROW_COUNT</code> copies the number of rows touched by the last SQL statement into the output parameter. Now run it with <code class=\"inline-code\">CALL</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CALL cancel_order(2, NULL);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " p_rows \n--------\n      1\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Order 2 was new, so one row changed. Run the same call again and the result is 0, because the order is already cancelled:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CALL cancel_order(2, NULL);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " p_rows \n--------\n      0\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice the <code class=\"inline-code\">NULL</code> in the second position. When you use CALL from plain SQL, you must pass an argument for every parameter that has no default, including OUT parameters. PostgreSQL does not evaluate the value you pass for an OUT parameter, so the custom is to write NULL. The output values come back as a result row."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Older versions",
+    "text": "OUT parameters in procedures are new since PostgreSQL 14. In PostgreSQL 11 to 13, procedures could only return data through <code class=\"inline-code\">INOUT</code> parameters."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: calling a procedure from PL/pgSQL",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Inside PL/pgSQL (a function, a procedure or a <code class=\"inline-code\">DO</code> block), CALL works differently: each OUT or INOUT parameter must be matched by a variable, and PostgreSQL writes the result back into that variable after the procedure finishes."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DO $$\nDECLARE\n  v_rows integer;\nBEGIN\n  CALL cancel_order(5, v_rows);\n  RAISE NOTICE 'rows changed: %', v_rows;\nEND;\n$$;",
+    "caption": "Receiving an OUT parameter in a variable"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "NOTICE:  rows changed: 0\nDO",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Order 5 is already shipped, so the procedure's WHERE clause matched nothing and the variable holds 0."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The real difference: COMMIT inside a procedure",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Everything a function does is part of the statement that called it. If the calling statement or its transaction rolls back, the function's work rolls back too. That is usually what you want, but it is a problem for long batch jobs: one huge transaction holds row locks for a long time, keeps old row versions from being cleaned up, and loses all its work if it fails near the end."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A procedure can end the current transaction with COMMIT and carry on. PostgreSQL starts a new transaction automatically, so you do not write START TRANSACTION. Think of it like saving a long document every few pages instead of only at the end."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: archive old orders in committed batches",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This procedure moves orders older than a date into orders_archive, a small batch at a time, and commits after each batch:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE PROCEDURE archive_orders(p_before date, p_batch integer DEFAULT 2)\nLANGUAGE plpgsql\nAS $$\nDECLARE\n  v_moved integer;\nBEGIN\n  LOOP\n    WITH moved AS (\n      DELETE FROM orders\n       WHERE order_id IN (SELECT order_id\n                            FROM orders\n                           WHERE order_date < p_before\n                           ORDER BY order_id\n                           LIMIT p_batch)\n      RETURNING *\n    )\n    INSERT INTO orders_archive SELECT * FROM moved;\n\n    GET DIAGNOSTICS v_moved = ROW_COUNT;\n    EXIT WHEN v_moved = 0;\n\n    COMMIT;\n    RAISE NOTICE 'committed a batch of % rows', v_moved;\n  END LOOP;\nEND;\n$$;",
+    "caption": "Batch archiving with COMMIT after each batch"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">WITH moved AS (DELETE ... RETURNING *)</code> part deletes a batch and hands the deleted rows to the INSERT in the same statement, so a row is never lost between the two tables. The batch size is 2 here only so you can see several commits on five rows; in production you would use something like a few thousand."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CALL archive_orders('2026-10-10');",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "NOTICE:  committed a batch of 2 rows\nNOTICE:  committed a batch of 2 rows\nCALL",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two batches of two rows were moved and committed. Check both tables:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, customer, order_date FROM orders_archive ORDER BY order_id;\nSELECT order_id, customer, order_date FROM orders ORDER BY order_id;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | customer | order_date \n----------+----------+------------\n        1 | Asha     | 2026-09-02\n        2 | Ravi     | 2026-09-15\n        3 | Asha     | 2026-10-01\n        4 | Meena    | 2026-10-05\n(4 rows)\n\n order_id | customer | order_date \n----------+----------+------------\n        5 | Ravi     | 2026-10-20\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The four orders from before 10 October are in the archive, and only order 5 is left. If the job had failed during a later batch, the earlier committed batches would have stayed in place, and you could simply run the CALL again to finish the rest."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: the same COMMIT in a function fails",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Try the same idea as a function:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE FUNCTION archive_orders_fn(p_before date)\nRETURNS integer\nLANGUAGE plpgsql\nAS $$\nDECLARE\n  v_moved integer;\nBEGIN\n  DELETE FROM orders WHERE order_date < p_before;\n  GET DIAGNOSTICS v_moved = ROW_COUNT;\n  COMMIT;\n  RETURN v_moved;\nEND;\n$$;\n\nSELECT archive_orders_fn('2026-10-10');",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE FUNCTION\nERROR:  invalid transaction termination\nCONTEXT:  PL/pgSQL function archive_orders_fn(date) line 7 at COMMIT",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL accepts the function when you create it, because PL/pgSQL code is checked only for syntax at that point. The error appears when the COMMIT actually runs. The whole SELECT fails, and the DELETE before the COMMIT is rolled back with it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: CALL inside BEGIN ... COMMIT also blocks transaction control",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A procedure can only commit when the CALL runs in its own transaction. If you wrap the CALL in an explicit transaction block, you get the same error:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\nCALL archive_orders('2026-12-31');\nROLLBACK;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\nERROR:  invalid transaction termination\nCONTEXT:  PL/pgSQL function archive_orders(date,integer) line 20 at COMMIT\nROLLBACK",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This catches many people, because some client tools and drivers open a transaction for you without asking. If your application framework always wraps statements in a transaction, a procedure that commits will fail there. Run such procedures with autocommit on, for example from psql or a scheduled job, or turn autocommit on for that connection."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Transaction control is also allowed only when the chain of calls above the procedure is made of CALL or DO only. If a procedure is called from a function that was called from SELECT, the SELECT is in the way and COMMIT fails."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and their error messages",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Calling a function with CALL, or a procedure with SELECT",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CALL order_total_with_gst(100);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  order_total_with_gst(integer) is not a procedure\nLINE 1: CALL order_total_with_gst(100);\n             ^\nHINT:  To call a function, use SELECT.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The hint tells you the fix. Going the other way, a procedure is not found as a function at all, so the message is less helpful:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT cancel_order(2, NULL);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  function cancel_order(integer, unknown) does not exist\nLINE 1: SELECT cancel_order(2, NULL);\n               ^\nHINT:  No function matches the given name and argument types. You might need to add explicit type casts.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you see \"function ... does not exist\" for something you know you created, check whether it is a procedure. In psql, <code class=\"inline-code\">\\df</code> shows a Type column with func or proc (see the FAQ below)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Leaving out the OUT argument in CALL",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CALL cancel_order(2);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  procedure cancel_order(integer) does not exist\nLINE 1: CALL cancel_order(2);\n             ^\nHINT:  No procedure matches the given name and argument types. You might need to add explicit type casts.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In plain SQL, CALL needs a value for the OUT parameter too. Pass NULL: CALL cancel_order(2, NULL);"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Returning a value from a procedure",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE PROCEDURE bad_proc()\nLANGUAGE plpgsql\nAS $$\nBEGIN\n  RETURN 1;\nEND;\n$$;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  RETURN cannot have a parameter in a procedure\nLINE 5:   RETURN 1;\n                 ^",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A procedure can use RETURN with no value to exit early. To send a value back, declare an OUT parameter and assign to it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "COMMIT in a SECURITY DEFINER procedure",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A procedure that runs with its owner's privileges (<code class=\"inline-code\">SECURITY DEFINER</code>) cannot run transaction control statements. The same is true for a procedure with a <code class=\"inline-code\">SET</code> clause attached, such as SET search_path = ... . This is documented, and it fails at run time:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER PROCEDURE archive_orders(date, integer) SECURITY DEFINER;\nCALL archive_orders('2026-12-31');",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER PROCEDURE\nERROR:  invalid transaction termination\nCONTEXT:  PL/pgSQL function archive_orders(date,integer) line 20 at COMMIT",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Undo it with <code class=\"inline-code\">ALTER PROCEDURE archive_orders(date, integer) SECURITY INVOKER;</code>. If a batch procedure must run with extra privileges, grant the needed table privileges to the role that runs the job instead. Privileges are covered in <a href=\"/posts/postgresql/postgresql-dba-part-7-roles-and-privileges/\">PostgreSQL DBA Part 7: Roles, Users and Privileges</a>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Using a non-IMMUTABLE function in an index",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An expression index can only use IMMUTABLE functions. A function created without a volatility label is VOLATILE by default, so this fails:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE FUNCTION order_month(p_date date)\nRETURNS text\nLANGUAGE sql\nRETURN to_char(p_date, 'YYYY-MM');\n\nCREATE INDEX orders_month_idx ON orders (order_month(order_date));",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE FUNCTION\nERROR:  functions in index expression must be marked IMMUTABLE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Do not fix this by simply adding IMMUTABLE. The documentation warns that labelling a function IMMUTABLE when its result depends on a configuration setting, such as the time zone, is a common error that can give stale or wrong results. Mark a function IMMUTABLE only when its output truly depends on nothing but its arguments."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "When to use a function and when to use a procedure",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Use a function</b> for calculations, lookups and anything you want inside SELECT, WHERE, JOIN, views, CHECK constraints, defaults, triggers or index expressions. Trigger code in PostgreSQL is always a function (RETURNS trigger).",
+      "items": []
+     },
+     {
+      "content": "<b>Use a function</b> when the caller needs a set of rows to join or filter (RETURNS TABLE or RETURNS SETOF).",
+      "items": []
+     },
+     {
+      "content": "<b>Use a procedure</b> for batch jobs that should commit as they go: archiving, purging, backfilling a new column, moving data between tables.",
+      "items": []
+     },
+     {
+      "content": "<b>Use a procedure</b> for an action that does not belong in a query and only reports a status, such as \"cancel this order\", especially when porting Oracle procedures.",
+      "items": []
+     },
+     {
+      "content": "<b>Either works</b> for a single unit of work with no COMMIT. In that case pick the one that matches how it will be called.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Performance note",
+    "text": "Calling a function or a procedure costs about the same. The speed of a batch procedure comes from batch size: too small and you pay for many commits, too large and you are back to one long transaction. With the default synchronous_commit = on, each COMMIT waits for the write-ahead log to be flushed to disk, so commit every few thousand rows rather than after every row."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For job queues where several workers process rows at the same time, combine a batch procedure with row locking that skips busy rows, as shown in <a href=\"/posts/postgresql/postgresql-for-update-skip-locked-job-queue/\">PostgreSQL FOR UPDATE SKIP LOCKED: Build a Safe Job Queue</a>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can a PostgreSQL function return a value and a procedure not?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes. A function declares its result with RETURNS. A procedure has no return value, but it can send values back through OUT or INOUT parameters, which CALL shows as a result row."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can a PostgreSQL function do INSERT, UPDATE or DELETE?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes. A VOLATILE function (the default) can change data. What it cannot do is COMMIT or ROLLBACK. Its changes are committed or rolled back together with the statement that called it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I tell if a routine is a function or a procedure?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In psql, run <code class=\"inline-code\">\\df</code>. The Type column shows func or proc:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                           List of functions\n Schema |         Name         |                Result data type                |              Argument data types               | Type \n--------+----------------------+------------------------------------------------+------------------------------------------------+------\n public | archive_orders       |                                                | IN p_before date, IN p_batch integer DEFAULT 2 | proc\n public | archive_orders_fn    | integer                                        | p_before date                                  | func\n public | cancel_order         |                                                | IN p_order_id integer, OUT p_rows integer      | proc\n public | customer_summary     | TABLE(order_count bigint, total_spent numeric) | p_customer text                                | func\n public | order_month          | text                                           | p_date date                                    | func\n public | order_total_with_gst | numeric                                        | p_amount numeric                               | func\n(6 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In SQL, the <code class=\"inline-code\">prokind</code> column of <code class=\"inline-code\">pg_proc</code> holds f for a function and p for a procedure, and <code class=\"inline-code\">provolatile</code> holds i, s or v for IMMUTABLE, STABLE and VOLATILE:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT proname, prokind, provolatile\n  FROM pg_proc\n WHERE pronamespace = 'public'::regnamespace\n ORDER BY proname;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "       proname        | prokind | provolatile \n----------------------+---------+-------------\n archive_orders       | p       | v\n archive_orders_fn    | f       | v\n cancel_order         | p       | v\n customer_summary     | f       | s\n order_month          | f       | v\n order_total_with_gst | f       | i\n(6 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I call a procedure from a function?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes, a function can run CALL. But the procedure cannot COMMIT or ROLLBACK in that case, because the function's own calling query sits between it and the top level."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is a procedure faster than a function in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. Neither is faster by nature. Choose by what the routine has to do: return a value to a query (function) or control transactions (procedure)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "A function returns a value and is used inside queries with SELECT; a procedure is run with CALL.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "A procedure returns data only through OUT or INOUT parameters (OUT since PostgreSQL 14); in plain SQL pass NULL for OUT arguments.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Only a procedure can COMMIT or ROLLBACK, and only when CALL is not inside BEGIN ... COMMIT and not under a SELECT.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "COMMIT in a function, in a SECURITY DEFINER procedure or in a procedure with a SET clause fails with \"invalid transaction termination\".",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use IMMUTABLE, STABLE or VOLATILE correctly on functions; only IMMUTABLE functions can be used in index expressions.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use procedures for batch jobs that commit as they go, and functions for everything that belongs in a query.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your batch job deletes millions of rows in one transaction, fails near the end, and rolls everything back.\n\nIn PostgreSQL the fix is a procedure, not a function. The differences in short:\n\n→ A function returns a value and runs inside a query: SELECT order_total_with_gst(amount) FROM orders.\n→ A procedure runs on its own with CALL and sends data back only through OUT parameters (since PostgreSQL 14).\n→ Only a procedure can COMMIT part-way through, so a batch job can save its work every few thousand rows.\n→ COMMIT inside a function fails with \"invalid transaction termination\". So does CALL inside BEGIN ... COMMIT, and a SECURITY DEFINER procedure.\n→ From plain SQL you must still pass the OUT argument: CALL cancel_order(2, NULL);\n\nI wrote a tutorial with tested PostgreSQL 18 examples, the real error messages and when to choose each one.\n\nWhich do you use for batch jobs in your projects today: a function, a procedure, or a script outside the database?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #PLpgSQL #Database",
+  "slides": [
+   {
+    "title": "PostgreSQL: Function vs Procedure",
+    "body": "SELECT vs CALL, OUT parameters and COMMIT, with real errors"
+   },
+   {
+    "title": "A function lives inside a query",
+    "points": [
+     "Declares a result with RETURNS",
+     "Called with SELECT, usable in WHERE and JOIN",
+     "Can return one value or a set of rows"
+    ],
+    "code": "SELECT order_id,\n  order_total_with_gst(amount)\nFROM orders\nWHERE order_total_with_gst(amount) > 2000;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "A procedure runs on its own",
+    "points": [
+     "No RETURNS clause",
+     "Run with CALL",
+     "Returns data via OUT params (PostgreSQL 14+)",
+     "In plain SQL, pass NULL for OUT"
+    ],
+    "code": "-- plain SQL: NULL for the OUT arg\nCALL cancel_order(2, NULL);\n\n-- inside PL/pgSQL: pass a variable\nCALL cancel_order(2, v_rows);",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Only procedures can COMMIT",
+    "body": "A procedure can commit after each batch and carry on in a new transaction. A long archive or purge job then saves its progress instead of losing everything on failure."
+   },
+   {
+    "title": "Batch job with COMMIT",
+    "code": "LOOP\n  -- move one batch of rows\n  GET DIAGNOSTICS v_moved = ROW_COUNT;\n  EXIT WHEN v_moved = 0;\n  COMMIT;\nEND LOOP;",
+    "lang": "postgresql",
+    "points": [
+     "Batch size of a few thousand rows is typical"
+    ]
+   },
+   {
+    "title": "invalid transaction termination",
+    "points": [
+     "COMMIT inside a function",
+     "CALL inside BEGIN ... COMMIT",
+     "SECURITY DEFINER or SET clause on the procedure",
+     "Fix: use a procedure and CALL it in autocommit"
+    ]
+   }
+  ]
+ }
+}

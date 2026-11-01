@@ -31,3 +31,4 @@
 - 2026-10-31 [Oracle] how to recover deleted records in oracle after commit -> _drafts/2026-10-31-oracle-how-to-recover-deleted-records-in-oracle-after-commit.json
 - 2026-10-31 [PostgreSQL] postgresql lateral join -> _drafts/2026-10-31-postgresql-postgresql-lateral-join.json
 - 2026-11-01 [Oracle] dbms_stats.gather_table_stats example -> _drafts/2026-11-01-oracle-dbms-stats-gather-table-stats-example.json
+- 2026-11-01 [PostgreSQL] postgresql function vs procedure -> _drafts/2026-11-01-postgresql-postgresql-function-vs-procedure.json
