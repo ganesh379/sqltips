@@ -1,0 +1,45 @@
+[
+ {
+  "say": "Your UPDATE just set every salary to zero.",
+  "cap": "Your UPDATE just set every salary to *zero.*"
+ },
+ {
+  "say": "You forgot the WHERE. psql says UPDATE four.",
+  "cap": "You forgot the *WHERE.* psql says *UPDATE* *4.*",
+  "cue": "four"
+ },
+ {
+  "say": "In psql, autocommit is on by default. It is already committed.",
+  "cap": "psql autocommit is *on* by default. Already *committed.*",
+  "cue": "committed"
+ },
+ {
+  "say": "ROLLBACK now only gives a warning: there is no transaction in progress.",
+  "cap": "ROLLBACK now? *WARNING:* there is no transaction in progress.",
+  "cue": "warning"
+ },
+ {
+  "say": "The habit that saves you: type BEGIN first.",
+  "cap": "The habit that saves you: type *BEGIN* first.",
+  "cue": "BEGIN"
+ },
+ {
+  "say": "Run the UPDATE and read the row count. Four, not one?",
+  "cap": "Run it and read the count. *4,* not 1?",
+  "cue": "Four"
+ },
+ {
+  "say": "Type ROLLBACK, and every salary is back.",
+  "cap": "*ROLLBACK,* and every salary is *back.*",
+  "cue": "every"
+ },
+ {
+  "say": "Count looks right? Then COMMIT.",
+  "cap": "Count looks right? Then *COMMIT.*",
+  "cue": "COMMIT"
+ },
+ {
+  "say": "Send this to a DBA friend, and follow for more.",
+  "cap": "*Send* this to a DBA friend, and *follow* for more."
+ }
+]
