@@ -1,0 +1,11 @@
+One bad row should not kill your whole FORALL. Oracle PL/SQL can finish the batch and report the failures after.
+
+Without SAVE EXCEPTIONS, the first failing statement stops FORALL and the rest never run. Add SAVE EXCEPTIONS and each failure is saved instead. When FORALL is done, Oracle raises one error, ORA-24381.
+
+Catch it, then loop over SQL%BULK_EXCEPTIONS. ERROR_INDEX tells you which statement failed. ERROR_CODE is the error number, and SQLERRM(-ERROR_CODE) gives you the message.
+
+In the Oracle docs example, the good rows get updated and committed, and only the row that was too long for VARCHAR2(18) stays as it was.
+
+Send this to a friend who writes PL/SQL bulk loads.
+
+#oracle #plsql #sql #oracledatabase #sqldeveloper
