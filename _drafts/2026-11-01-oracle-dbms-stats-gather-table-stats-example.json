@@ -1,0 +1,1096 @@
+{
+  "schemaVersion": 1,
+  "title": "DBMS_STATS.GATHER_TABLE_STATS Example: Oracle Table Statistics",
+  "slug": "dbms-stats-gather-table-stats-example",
+  "category": "plsql",
+  "description": "A dbms_stats.gather_table_stats example on a real table: syntax, histograms, index and partition stats, stale stats checks and common errors in Oracle.",
+  "focusKeyword": "dbms_stats.gather_table_stats example",
+  "tags": [
+    "oracle",
+    "performance",
+    "optimizer-statistics",
+    "dbms-stats"
+  ],
+  "related": [
+    "/posts/plsql/how-to-read-explain-plan-in-oracle/",
+    "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/",
+    "/posts/plsql/oracle-global-temporary-table/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle 19c PL/SQL Packages and Types Reference: DBMS_STATS",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_STATS.html"
+    },
+    {
+      "title": "Oracle 19c SQL Tuning Guide: Gathering Optimizer Statistics",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/tgsql/gathering-optimizer-statistics.html"
+    },
+    {
+      "title": "Oracle 19c SQL Tuning Guide: Optimizer Statistics Concepts",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/tgsql/optimizer-statistics-concepts.html"
+    }
+  ],
+  "reviewNotes": "All examples written from the Oracle 19c docs and not executed; they need a test run. Check in particular: (1) the expected outputs (NUM_ROWS, NUM_DISTINCT, histogram type FREQUENCY with 3 buckets, STALE_STATS = YES after a 15% update, USER_TAB_MODIFICATIONS counts); (2) that the first gather really shows HISTOGRAM = NONE on a fresh, unqueried table (SIZE AUTO depends on column usage, so this may vary); (3) the method_opt string combining FOR ALL COLUMNS SIZE AUTO with FOR COLUMNS status SIZE 254; (4) the PK index name SYS_C0012345 is a placeholder; (5) exact wording of ORA-20005 as printed by your version (docs say 'Object statistics are locked'). (6) The site's banned-word check rejects a word inside the name of the procedure that removes a statistics lock (DBMS_STATS.UN + LOCK_TABLE_STATS, same ownname/tabname arguments), so the article does not name it; please add that procedure name by hand in the 'Lock statistics' section and in mistake 2. The LinkedIn hook is a generic scenario, not a real incident.",
+  "generatedAt": "2026-11-01T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To gather optimizer statistics for one table in Oracle, run <code class=\"inline-code\">EXEC DBMS_STATS.GATHER_TABLE_STATS('HR', 'ORDERS');</code> with the schema name and table name. With no other arguments, Oracle uses its recommended defaults: an automatic sample size, automatic histograms, and an automatic decision about index statistics."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This tutorial shows a complete <b>dbms_stats.gather_table_stats example</b> on a small orders table. You will check the statistics before and after, control histograms with <code class=\"inline-code\">method_opt</code>, gather index and partition statistics, find stale tables, and fix the errors people hit most often. The examples follow the Oracle 19c documentation and also apply to 21c and 23ai unless noted."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What DBMS_STATS.GATHER_TABLE_STATS does",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The Oracle optimizer chooses an execution plan by estimating how many rows each step returns. It bases those estimates on <b>optimizer statistics</b>: the number of rows and blocks in a table, the number of distinct values and nulls in each column, histograms that describe skewed data, and index details such as distinct keys and clustering factor."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">GATHER_TABLE_STATS</code> reads the table and writes these numbers to the data dictionary. The documentation describes it as gathering \"table, column, and index statistics\". If the numbers are missing or out of date, the optimizer guesses, and a bad guess can turn an index lookup into a full scan or pick the wrong join order."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle already runs an automatic statistics job in the nightly maintenance window. You gather stats manually when you cannot wait for that job, for example right after a large load or delete, or after you add an index or change a table's structure and want correct plans immediately."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Syntax and the parameters you will actually use",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The full signature has many parameters, but almost all of them default to a table, schema or database preference. Here is the 19c syntax with the commonly used parameters:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DBMS_STATS.GATHER_TABLE_STATS (\n   ownname          VARCHAR2,\n   tabname          VARCHAR2,\n   partname         VARCHAR2 DEFAULT NULL,\n   estimate_percent NUMBER   DEFAULT to_estimate_percent_type(get_param('ESTIMATE_PERCENT')),\n   block_sample     BOOLEAN  DEFAULT FALSE,\n   method_opt       VARCHAR2 DEFAULT get_param('METHOD_OPT'),\n   degree           NUMBER   DEFAULT to_degree_type(get_param('DEGREE')),\n   granularity      VARCHAR2 DEFAULT get_param('GRANULARITY'),\n   cascade          BOOLEAN  DEFAULT to_cascade_type(get_param('CASCADE')),\n   no_invalidate    BOOLEAN  DEFAULT to_no_invalidate_type(get_param('NO_INVALIDATE')),\n   force            BOOLEAN  DEFAULT FALSE,\n   options          VARCHAR2 DEFAULT get_param('OPTIONS'));",
+        "caption": "Partial syntax (19c). stattab, statid, statown, stattype and context are left out"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Parameter",
+            "What it controls",
+            "Default (unless changed by preferences)"
+          ],
+          [
+            "ownname",
+            "Schema that owns the table",
+            "Required"
+          ],
+          [
+            "tabname",
+            "Table name",
+            "Required"
+          ],
+          [
+            "partname",
+            "One partition to gather",
+            "NULL (whole table)"
+          ],
+          [
+            "estimate_percent",
+            "Percentage of rows to sample, 0.000001 to 100",
+            "DBMS_STATS.AUTO_SAMPLE_SIZE"
+          ],
+          [
+            "method_opt",
+            "Which columns get statistics and histograms",
+            "FOR ALL COLUMNS SIZE AUTO"
+          ],
+          [
+            "degree",
+            "Degree of parallelism",
+            "NULL (the table's own DEGREE setting)"
+          ],
+          [
+            "granularity",
+            "Global, partition or subpartition stats",
+            "AUTO"
+          ],
+          [
+            "cascade",
+            "Gather index statistics too",
+            "DBMS_STATS.AUTO_CASCADE"
+          ],
+          [
+            "no_invalidate",
+            "When dependent cursors are invalidated",
+            "DBMS_STATS.AUTO_INVALIDATE"
+          ],
+          [
+            "force",
+            "Gather even if statistics are locked",
+            "FALSE"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To run it you must own the table or have the <code class=\"inline-code\">ANALYZE ANY</code> system privilege. For objects owned by SYS you need <code class=\"inline-code\">ANALYZE ANY DICTIONARY</code> or SYSDBA."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Create a small orders table with 1,000 rows. The status column is deliberately skewed: almost every order is DELIVERED, and only a few are PENDING or CANCELLED. Skew like this is exactly where good statistics matter."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE orders (\n  order_id    NUMBER        PRIMARY KEY,\n  customer_id NUMBER        NOT NULL,\n  status      VARCHAR2(10)  NOT NULL,\n  order_date  DATE          NOT NULL,\n  amount      NUMBER(10,2)\n);\n\nINSERT INTO orders (order_id, customer_id, status, order_date, amount)\nSELECT level,\n       MOD(level, 100) + 1,\n       CASE WHEN level <= 970 THEN 'DELIVERED'\n            WHEN level <= 990 THEN 'PENDING'\n            ELSE 'CANCELLED' END,\n       DATE '2026-01-01' + MOD(level, 300),\n       100 + MOD(level * 37, 5000)\n  FROM dual\nCONNECT BY level <= 1000;\n\nCOMMIT;\n\nCREATE INDEX orders_status_ix ON orders (status);",
+        "caption": "Sample table: 970 DELIVERED, 20 PENDING, 10 CANCELLED"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is a normal (conventional) INSERT into the table, so Oracle does not gather statistics during the load. Online statistics gathering only happens for direct-path loads, such as CREATE TABLE AS SELECT or INSERT /*+ APPEND */ into an empty table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 1: gather table statistics and check the result",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: look at the statistics before gathering",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT table_name, num_rows, last_analyzed\n  FROM user_tables\n WHERE table_name = 'ORDERS';",
+        "caption": "Table statistics before gathering"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "TABLE_NAME",
+            "NUM_ROWS",
+            "LAST_ANALYZED"
+          ],
+          [
+            "ORDERS",
+            "",
+            ""
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). NUM_ROWS and LAST_ANALYZED are empty because nobody has gathered statistics on the table yet. If the optimizer runs a query against it now, it has to rely on dynamic sampling or built-in guesses."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: run GATHER_TABLE_STATS",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The simplest call passes only the owner and the table. <code class=\"inline-code\">USER</code> returns your own schema name, which saves typing it."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "EXEC DBMS_STATS.GATHER_TABLE_STATS(USER, 'ORDERS');",
+        "caption": "Simplest call, using every default"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">EXEC</code> is a SQL*Plus and SQL Developer shortcut for a one-line PL/SQL block. When you want named parameters on several lines, use an anonymous block instead. It is easier to read and you avoid line-continuation characters:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  DBMS_STATS.GATHER_TABLE_STATS(\n    ownname          => USER,\n    tabname          => 'ORDERS',\n    estimate_percent => DBMS_STATS.AUTO_SAMPLE_SIZE,\n    method_opt       => 'FOR ALL COLUMNS SIZE AUTO',\n    cascade          => TRUE);\nEND;\n/",
+        "caption": "Same call with named parameters"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 3: check again",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT table_name, num_rows, last_analyzed\n  FROM user_tables\n WHERE table_name = 'ORDERS';",
+        "caption": "Table statistics after gathering"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "TABLE_NAME",
+            "NUM_ROWS",
+            "LAST_ANALYZED"
+          ],
+          [
+            "ORDERS",
+            "1000",
+            "01-NOV-26"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output; the date is the day you run it). NUM_ROWS now matches the real row count. With AUTO_SAMPLE_SIZE, Oracle uses a hash-based algorithm that reads all rows and produces statistics that are nearly as accurate as a 100% sample, so on a table this small the count is exact."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 2: column statistics and histograms with method_opt",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Column statistics tell the optimizer how selective a filter is. Look at them in <code class=\"inline-code\">USER_TAB_COL_STATISTICS</code>:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT column_name, num_distinct, num_nulls, histogram\n  FROM user_tab_col_statistics\n WHERE table_name = 'ORDERS'\n ORDER BY column_name;",
+        "caption": "Column statistics"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "COLUMN_NAME",
+            "NUM_DISTINCT",
+            "NUM_NULLS",
+            "HISTOGRAM"
+          ],
+          [
+            "AMOUNT",
+            "1000",
+            "0",
+            "NONE"
+          ],
+          [
+            "CUSTOMER_ID",
+            "100",
+            "0",
+            "NONE"
+          ],
+          [
+            "ORDER_DATE",
+            "300",
+            "0",
+            "NONE"
+          ],
+          [
+            "ORDER_ID",
+            "1000",
+            "0",
+            "NONE"
+          ],
+          [
+            "STATUS",
+            "3",
+            "0",
+            "NONE"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). The optimizer now knows STATUS has 3 distinct values. Without a histogram it assumes they are evenly spread, so it estimates about 1000 / 3 = 333 rows for <code class=\"inline-code\">WHERE status = 'PENDING'</code>, when the real answer is 20."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Why is there no histogram? With <code class=\"inline-code\">SIZE AUTO</code>, Oracle creates histograms based on the data distribution <i>and</i> the workload, meaning columns that have actually been used in predicates. On a brand new table that nobody has queried, it often creates none. After the application runs queries filtering on status, the next gather is likely to add one."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Forcing a histogram on one column",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If you know a column is skewed and is filtered often, ask for a histogram directly. <code class=\"inline-code\">method_opt</code> accepts a FOR ALL clause and a FOR COLUMNS clause in combination:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  DBMS_STATS.GATHER_TABLE_STATS(\n    ownname    => USER,\n    tabname    => 'ORDERS',\n    method_opt => 'FOR ALL COLUMNS SIZE AUTO FOR COLUMNS status SIZE 254');\nEND;\n/\n\nSELECT column_name, num_distinct, num_buckets, histogram\n  FROM user_tab_col_statistics\n WHERE table_name = 'ORDERS'\n   AND column_name = 'STATUS';",
+        "caption": "Request a histogram on STATUS"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "COLUMN_NAME",
+            "NUM_DISTINCT",
+            "NUM_BUCKETS",
+            "HISTOGRAM"
+          ],
+          [
+            "STATUS",
+            "3",
+            "3",
+            "FREQUENCY"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). With only 3 distinct values and up to 254 buckets allowed, Oracle can store the exact count of every value in a <b>frequency histogram</b>. Now the estimate for <code class=\"inline-code\">status = 'PENDING'</code> is close to 20, and the optimizer is far more likely to use ORDERS_STATUS_IX for that query while still full-scanning for DELIVERED."
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "SIZE option",
+            "Meaning"
+          ],
+          [
+            "SIZE 1",
+            "No histogram, only basic column statistics"
+          ],
+          [
+            "SIZE n (1 to 2048)",
+            "Up to n histogram buckets"
+          ],
+          [
+            "SIZE AUTO",
+            "Oracle decides from data distribution and column usage"
+          ],
+          [
+            "SIZE SKEWONLY",
+            "Oracle decides from data distribution only"
+          ],
+          [
+            "SIZE REPEAT",
+            "Only columns that already have histograms"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "",
+        "text": "Collect extended statistics for columns that are filtered together, such as a city and a state column, with a column group: method_opt => 'FOR COLUMNS (city, state)'. This helps the optimizer when the two columns are correlated."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 3: index statistics with cascade",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Index statistics (B-tree levels, leaf blocks, distinct keys, clustering factor) are stored separately. The <code class=\"inline-code\">cascade</code> parameter decides whether GATHER_TABLE_STATS also gathers them. The default, <code class=\"inline-code\">DBMS_STATS.AUTO_CASCADE</code>, lets Oracle decide. Setting <code class=\"inline-code\">cascade => TRUE</code> is the same as running GATHER_INDEX_STATS on every index of the table."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  DBMS_STATS.GATHER_TABLE_STATS(USER, 'ORDERS', cascade => TRUE);\nEND;\n/\n\nSELECT index_name, num_rows, distinct_keys, last_analyzed\n  FROM user_indexes\n WHERE table_name = 'ORDERS'\n ORDER BY index_name;",
+        "caption": "Gather and check index statistics"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "INDEX_NAME",
+            "NUM_ROWS",
+            "DISTINCT_KEYS",
+            "LAST_ANALYZED"
+          ],
+          [
+            "ORDERS_STATUS_IX",
+            "1000",
+            "3",
+            "01-NOV-26"
+          ],
+          [
+            "SYS_C0012345",
+            "1000",
+            "1000",
+            "01-NOV-26"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). The primary key index has a system-generated name, so yours will differ. Use <code class=\"inline-code\">cascade => TRUE</code> after you rebuild or create indexes in the same maintenance step, so table and index statistics are taken at the same moment."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 4: large tables, parallel degree and partitions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Gathering a big table in parallel",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On a large table, gathering can take a long time. The <code class=\"inline-code\">degree</code> parameter runs it in parallel. Oracle recommends <code class=\"inline-code\">DBMS_STATS.AUTO_DEGREE</code>, which picks a degree based on the object size and your parallel settings, and may still run serially when the object is small."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  DBMS_STATS.GATHER_TABLE_STATS(\n    ownname => USER,\n    tabname => 'ORDERS',\n    degree  => DBMS_STATS.AUTO_DEGREE);\nEND;\n/",
+        "caption": "Let Oracle choose the degree of parallelism"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Leave estimate_percent at AUTO_SAMPLE_SIZE even on big tables. Hard-coding a small percentage looks faster, but you lose what AUTO_SAMPLE_SIZE enables: the hash-based algorithm (which the docs describe as much faster than sampling), incremental statistics, concurrent statistics and the newer histogram types."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Gathering one partition",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "For a partitioned table, pass the partition name in <code class=\"inline-code\">partname</code>. Here is a small range-partitioned sales table:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE TABLE sales_p (\n  sale_id   NUMBER,\n  sale_date DATE,\n  amount    NUMBER(10,2)\n)\nPARTITION BY RANGE (sale_date) (\n  PARTITION p_2026_09 VALUES LESS THAN (DATE '2026-10-01'),\n  PARTITION p_2026_10 VALUES LESS THAN (DATE '2026-11-01')\n);\n\n-- after loading October data:\nBEGIN\n  DBMS_STATS.GATHER_TABLE_STATS(\n    ownname     => USER,\n    tabname     => 'SALES_P',\n    partname    => 'P_2026_10',\n    granularity => 'PARTITION');\nEND;\n/",
+        "caption": "Gather statistics for one partition"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">granularity => 'PARTITION'</code> gathers only partition-level statistics, so the global (whole table) numbers are not refreshed. Queries that touch many partitions use the global statistics, so in most cases keep the default <code class=\"inline-code\">AUTO</code>, and consider incremental statistics (the INCREMENTAL table preference) for very large partitioned tables."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 5: find tables with stale statistics",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle tracks approximately how many rows were inserted, updated and deleted since the last gather. When more than <code class=\"inline-code\">STALE_PERCENT</code> of the rows have changed (10% by default), the statistics are marked stale. Update 150 of the 1,000 orders and check:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "UPDATE orders\n   SET status = 'CANCELLED'\n WHERE order_id BETWEEN 801 AND 950;\nCOMMIT;\n\nSELECT table_name, num_rows, last_analyzed, stale_stats\n  FROM user_tab_statistics\n WHERE table_name = 'ORDERS';",
+        "caption": "Make 15% of the rows change, then check staleness"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "TABLE_NAME",
+            "NUM_ROWS",
+            "LAST_ANALYZED",
+            "STALE_STATS"
+          ],
+          [
+            "ORDERS",
+            "1000",
+            "01-NOV-26",
+            "YES"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). STALE_STATS is YES because 15% of the rows changed, which is more than the 10% threshold. NO means the statistics are current, and an empty value means statistics were never gathered. You can see the change counts behind this decision:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT table_name, inserts, updates, deletes, truncated\n  FROM user_tab_modifications\n WHERE table_name = 'ORDERS';",
+        "caption": "DML tracked since the last gather"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "TABLE_NAME",
+            "INSERTS",
+            "UPDATES",
+            "DELETES",
+            "TRUNCATED"
+          ],
+          [
+            "ORDERS",
+            "0",
+            "150",
+            "0",
+            "NO"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). From Oracle 12.2 onward these views include changes still held in memory, so you no longer need to call DBMS_STATS.FLUSH_DATABASE_MONITORING_INFO first. To list every stale table in your schema, filter on <code class=\"inline-code\">stale_stats = 'YES'</code>."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT table_name, last_analyzed\n  FROM user_tab_statistics\n WHERE stale_stats = 'YES'\n   AND object_type = 'TABLE'\n ORDER BY last_analyzed;",
+        "caption": "All tables with stale statistics in your schema"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Lock, set preferences and restore statistics",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Set a table preference instead of repeating parameters",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If one table always needs a special setting, store it as a preference. Every later gather, including the automatic nightly job, then uses it. <code class=\"inline-code\">GET_PREFS</code> shows the value in effect."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "EXEC DBMS_STATS.SET_TABLE_PREFS(USER, 'ORDERS', 'STALE_PERCENT', '5');\n\nSELECT DBMS_STATS.GET_PREFS('STALE_PERCENT', USER, 'ORDERS') AS stale_pct\n  FROM dual;",
+        "caption": "Mark ORDERS stale after 5% change"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "STALE_PCT"
+          ],
+          [
+            "5"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output)."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Lock statistics on a table you manage yourself",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">LOCK_TABLE_STATS</code> freezes the current statistics (including column, histogram and index statistics). The automatic job and GATHER_SCHEMA_STATS skip locked tables. A direct GATHER_TABLE_STATS on a locked table raises an error unless you pass <code class=\"inline-code\">force => TRUE</code>."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "EXEC DBMS_STATS.LOCK_TABLE_STATS(USER, 'ORDERS');",
+        "caption": "Lock table statistics"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To allow normal gathering again, remove the lock with the matching release procedure in DBMS_STATS (it takes the same owner and table arguments). Note that locking at table level also locks the table's partitions and indexes."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Restore the previous statistics if a plan gets worse",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Each time statistics change, Oracle saves the old version. If a fresh gather makes a query slower, you can put back the statistics as they were at a point in time:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  DBMS_STATS.RESTORE_TABLE_STATS(\n    ownname         => USER,\n    tabname         => 'ORDERS',\n    as_of_timestamp => SYSTIMESTAMP - INTERVAL '1' DAY);\nEND;\n/",
+        "caption": "Restore statistics as of yesterday"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If no history exists for that time, the procedure raises ORA-20006 (statistics history not available)."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "1. Running it in the middle of your own transaction",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Most DBMS_STATS procedures commit the current transaction, do their work, and commit again. If you call GATHER_TABLE_STATS inside a PL/SQL block after uncommitted DML, that DML is committed too, and a later ROLLBACK will not undo it. Gather statistics as a separate step, after your load has finished and committed."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "",
+        "text": "Never put DBMS_STATS.GATHER_TABLE_STATS inside a transaction you might want to roll back. The implicit commit happens before the statistics are gathered."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "2. ORA-20005: object statistics are locked",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The table, or one of its partitions, has locked statistics. Check <code class=\"inline-code\">stattype_locked</code> in USER_TAB_STATISTICS. Either remove the lock with the matching DBMS_STATS procedure, or, if the lock is intentional and you really need new numbers once, pass <code class=\"inline-code\">force => TRUE</code>. Ask why the lock exists before removing it; someone may have locked a volatile table on purpose."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "3. ORA-20000: table does not exist or insufficient privileges",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The owner or table name is wrong, or you lack the ANALYZE ANY privilege for another schema's table. Pass the owner explicitly when gathering in a different schema, and check the name in DBA_TABLES."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "4. Hard-coding estimate_percent",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Old scripts often use estimate_percent => 10 or 30. A sample gives less accurate distinct-value counts than the default AUTO_SAMPLE_SIZE, which reads all rows with a fast hash-based algorithm and is what Oracle recommends. Remove the parameter unless you have tested a specific reason to keep it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "5. Using ANALYZE TABLE ... COMPUTE STATISTICS",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "ANALYZE is the legacy command. For optimizer statistics, use DBMS_STATS, which supports parallel gathering, partitions, histograms, preferences and history. ANALYZE still has other uses, such as VALIDATE STRUCTURE."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "6. Forcing immediate cursor invalidation",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Setting no_invalidate => FALSE invalidates every cached cursor on the table at once, so all of them are hard parsed on their next run. On a busy OLTP system this can cause a parse spike. The default, AUTO_INVALIDATE, spreads the invalidations over time."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Best practices",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Let the automatic statistics job handle routine maintenance. Gather manually only after events that change data a lot: bulk loads, large deletes, truncate and reload, or a new index.",
+            "items": []
+          },
+          {
+            "content": "Keep defaults for estimate_percent, method_opt, granularity and cascade unless you have tested a reason to change them.",
+            "items": []
+          },
+          {
+            "content": "Put per-table exceptions in SET_TABLE_PREFS so the nightly job follows the same rules as your scripts.",
+            "items": []
+          },
+          {
+            "content": "After a direct-path load into an empty table, basic statistics already exist but histograms do not. Run GATHER_TABLE_STATS with options => 'GATHER AUTO' to add only what is missing.",
+            "items": []
+          },
+          {
+            "content": "Compare execution plans before and after gathering on critical queries. If a plan regresses, RESTORE_TABLE_STATS gives you a quick way back while you investigate.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "",
+        "text": "Gathering statistics does not change a query's plan by itself. It gives the optimizer new inputs; the plan changes the next time the statement is parsed. Use DBMS_XPLAN to compare estimated rows with actual rows."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I check when statistics were last gathered on a table?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Query LAST_ANALYZED in USER_TABLES, ALL_TABLES or DBA_TABLES, or in USER_TAB_STATISTICS together with STALE_STATS. For indexes, use LAST_ANALYZED in USER_INDEXES."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Does dbms_stats.gather_table_stats gather index statistics?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Yes, it can. With the default cascade setting (AUTO_CASCADE), Oracle decides whether index statistics need gathering. Pass cascade => TRUE to always gather statistics on every index of the table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Does gather_table_stats commit?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Yes. Most DBMS_STATS procedures commit the current transaction before and after the operation, so any pending DML in your session is committed."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the default estimate_percent in Oracle 19c?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "DBMS_STATS.AUTO_SAMPLE_SIZE, unless a DBA changed the ESTIMATE_PERCENT preference. Check the value in effect with SELECT DBMS_STATS.GET_PREFS('ESTIMATE_PERCENT') FROM dual."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between gather_table_stats and gather_schema_stats?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "GATHER_TABLE_STATS works on one table (and its columns and indexes). GATHER_SCHEMA_STATS works on every object in a schema and, with options => 'GATHER STALE' or 'GATHER AUTO', only on objects whose statistics are stale or missing."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "Run EXEC DBMS_STATS.GATHER_TABLE_STATS(owner, table) and keep the defaults in most cases.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Check results in USER_TABLES, USER_TAB_COL_STATISTICS and USER_INDEXES.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use method_opt to request histograms on skewed, frequently filtered columns.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use cascade => TRUE when you want index statistics refreshed in the same step.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Find stale tables with STALE_STATS = 'YES' in USER_TAB_STATISTICS.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Store per-table settings with SET_TABLE_PREFS; lock or restore statistics when plans must stay stable.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Never gather statistics inside a transaction you might roll back.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your query was fast yesterday. Today it full-scans the whole table. Often the cause is old optimizer statistics.\n\nOracle picks a plan from table statistics: row counts, distinct values, histograms. When those are missing or stale, it guesses.\n\nWhat to know about DBMS_STATS.GATHER_TABLE_STATS:\n\n→ The basic call is enough most of the time: EXEC DBMS_STATS.GATHER_TABLE_STATS(USER, 'ORDERS');\n→ Keep estimate_percent at AUTO_SAMPLE_SIZE. Hard-coding 10% is an old habit and usually less accurate.\n→ A skewed column (970 DELIVERED, 20 PENDING) needs a histogram, or Oracle assumes an even spread.\n→ Check STALE_STATS in USER_TAB_STATISTICS. YES means more than 10% of rows changed since the last gather.\n→ It commits your open transaction. Never call it in the middle of DML you may roll back.\n\nBonus: if a new gather makes a plan worse, DBMS_STATS.RESTORE_TABLE_STATS puts the old numbers back.\n\nDo you gather stats manually after big loads, or leave it to the nightly job?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #OracleDBA",
+    "slides": [
+      {
+        "title": "DBMS_STATS.GATHER_TABLE_STATS",
+        "body": "Gather Oracle table statistics the right way, with examples"
+      },
+      {
+        "title": "Why statistics matter",
+        "points": [
+          "The optimizer estimates rows from statistics",
+          "Missing or stale stats lead to bad guesses",
+          "Bad guesses mean wrong indexes and join orders"
+        ]
+      },
+      {
+        "title": "The basic call",
+        "body": "Owner and table name are all you need. Defaults use auto sample size, auto histograms and auto index stats.",
+        "code": "EXEC DBMS_STATS.GATHER_TABLE_STATS(\n  USER, 'ORDERS');",
+        "lang": "plsql"
+      },
+      {
+        "title": "Histogram on a skewed column",
+        "code": "BEGIN\n  DBMS_STATS.GATHER_TABLE_STATS(\n    ownname    => USER,\n    tabname    => 'ORDERS',\n    method_opt =>\n      'FOR ALL COLUMNS SIZE AUTO '||\n      'FOR COLUMNS status SIZE 254');\nEND;\n/",
+        "lang": "plsql"
+      },
+      {
+        "title": "Find stale statistics",
+        "code": "SELECT table_name, last_analyzed\n  FROM user_tab_statistics\n WHERE stale_stats = 'YES'\n   AND object_type = 'TABLE';",
+        "lang": "sql"
+      },
+      {
+        "title": "Mistakes to avoid",
+        "points": [
+          "Calling it mid-transaction: it commits your DML",
+          "Hard-coding estimate_percent => 10",
+          "ORA-20005: stats are locked, check before forcing",
+          "no_invalidate => FALSE on a busy system"
+        ]
+      }
+    ]
+  }
+}
