@@ -30,3 +30,5 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-02 | 20:00 | LinkedIn | Reel: PostgreSQL DBA | UPDATE without WHERE: psql autocommit, BEGIN first | reels/2026-11-02-2000 | 6ae71568cf3a3112f3f060a9
 - 2026-11-03 | 09:00 | Instagram | Carousel: Oracle vs PostgreSQL | Sequences and identity columns | posts/2026-11-03-0900 | 6ae866eabc7258b27b3fed16
 - 2026-11-03 | 09:00 | LinkedIn | Carousel: Oracle vs PostgreSQL | Sequences and identity columns | posts/2026-11-03-0900 | 6ae866ea3931d5366937929c
+- 2026-11-03 | 13:00 | Instagram | Reel: SQL quiz | Quiz, COUNT(*) vs COUNT(col) vs COUNT(DISTINCT col) | reels/2026-11-03-1300 | 6ae867bcb0da614b5540ff9f
+- 2026-11-03 | 13:00 | LinkedIn | Reel: SQL quiz | Quiz, COUNT(*) vs COUNT(col) vs COUNT(DISTINCT col) | reels/2026-11-03-1300 | 6ae867bdc100ba337af4a29b

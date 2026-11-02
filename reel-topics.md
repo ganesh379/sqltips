@@ -11,7 +11,7 @@ When a queue has fewer than 5 unchecked topics, add new broad-appeal ones that f
 - [x] Empty string is NULL: "In Oracle, '' = '' is not TRUE." (2026-11-01 13:00)
 - [x] ROWNUM + ORDER BY (dropped: the ROWNUM vs LIMIT carousel covers it, 2026-10-31)
 - [x] 2nd highest salary: "Second highest salary? One way fails." (3 ways, ties trap) (2026-11-02 13:00)
-- [ ] Quiz, COUNT(*) vs COUNT(col) vs COUNT(DISTINCT col): "Same table, three COUNTs, three answers."
+- [x] Quiz, COUNT(*) vs COUNT(col) vs COUNT(DISTINCT col): "Same table, three COUNTs, three answers." (2026-11-03 13:00)
 - [ ] SQL execution order: "SQL does not run your query top to bottom." (why a column alias fails in WHERE)
 - [ ] LEFT JOIN that lost rows: "Your LEFT JOIN quietly became an INNER JOIN." (a WHERE filter on the right table)
 - [ ] WHERE vs HAVING: "WHERE filters rows. HAVING filters groups."
