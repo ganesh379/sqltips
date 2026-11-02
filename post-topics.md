@@ -72,7 +72,7 @@ When a category has fewer than 5 unchecked topics, the task adds new practical o
 
 ## Oracle vs PostgreSQL
 - [x] ROWNUM vs LIMIT / OFFSET and FETCH FIRST (2026-10-31, listed as posted by the old weekly task)
-- [ ] Sequences and identity columns
+- [x] Sequences and identity columns (2026-11-03 09:00)
 - [x] Empty string vs NULL (moved to reels)
 - [ ] What's new in PostgreSQL 19 (only after checking whether 19 is released; GA was planned for 2026-11-19)
 - [ ] SYSDATE vs now() and date arithmetic
