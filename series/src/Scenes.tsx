@@ -344,7 +344,7 @@ export const Outro: React.FC<P<Extract<Scene, { type: "outro" }>>> = ({ s, t }) 
     <div style={{ position: "absolute", left: 60, top: STAGE.top + 80, width: W - 120, display: "flex", flexDirection: "column", alignItems: "center", gap: 40 }}>
       {s.next ? (
         <div style={{ width: "100%", ...glowBox(C.blue, 1), padding: "40px 44px", boxSizing: "border-box", opacity: rise(t, a, 0.4), scale: String(pop(t, a)) }}>
-          <div style={{ fontFamily: FONT, fontSize: 32, fontWeight: 800, letterSpacing: 3, color: C.blue }}>NEXT EPISODE · TOMORROW</div>
+          <div style={{ fontFamily: FONT, fontSize: 32, fontWeight: 800, letterSpacing: 3, color: C.blue }}>NEXT EPISODE</div>
           <div style={{ marginTop: 18, fontFamily: FONT, fontSize: 56, fontWeight: 900, color: C.ink, lineHeight: 1.12 }}>{s.next}</div>
         </div>
       ) : null}
@@ -353,7 +353,7 @@ export const Outro: React.FC<P<Extract<Scene, { type: "outro" }>>> = ({ s, t }) 
         <div style={{ padding: "26px 40px", borderRadius: 999, border: "4px solid #fff", fontFamily: FONT, fontSize: 42, fontWeight: 800, color: "#fff" }}>Send to a friend</div>
       </div>
       <div style={{ fontFamily: FONT, fontSize: 38, color: C.mute, textAlign: "center", lineHeight: 1.35, opacity: rise(t, a + 1.0, 0.4) }}>
-        A new PostgreSQL DBA episode every day
+        New PostgreSQL DBA episodes every day
       </div>
     </div>
   );

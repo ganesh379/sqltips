@@ -1,7 +1,7 @@
 # PostgreSQL DBA Series: 140 daily episodes
 
-Source: Ganesh's plan "PostgreSQL_DBA_Instagram_Reels_Daily_Series.xlsx" (2026-11-03). One episode per day on Instagram at 20:00 IST, starting 2026-11-04.
-The nightly task builds the episode for TOMORROW's date, then marks it [x] with "(posted <date> 20:00, Buffer <id>)".
+Source: Ganesh's plan "PostgreSQL_DBA_Instagram_Reels_Daily_Series.xlsx" (2026-11-03). Episode 1 on 2026-11-04 at 20:00 IST; from 2026-11-05, TWO episodes a day on Instagram, at 13:00 and 20:00 IST.
+Episodes go out strictly in order: each daily task takes the FIRST unchecked episode, then marks it [x] with "(posted <date> <HH:MM>, Buffer <id>)". The dates below are the original one-a-day plan and no longer decide the order.
 Format per the plan: vertical 1080x1920, 30 fps, 90 to 180 seconds, animated explainer + real terminal/SQL demo + DBA perspective, Sarvam voice.
 Accuracy rule (from the plan): verify every claim against the official PostgreSQL docs for the version shown, and test every command on a disposable instance. Never show real passwords, keys, customer data, production hostnames or private IPs.
 
