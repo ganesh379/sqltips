@@ -12,10 +12,18 @@ TAG=$(printf "ep%03d" "$EP")
 
 # 1. voice + timing (cached per line in $DIR/voice/)
 python3 - "$DIR" <<'PY'
-import json, sys
+import json, os, shutil, sys
 d = sys.argv[1]
 e = json.load(open(f"{d}/episode.json"))
-json.dump(e["lines"], open(f"{d}/script.json", "w"), ensure_ascii=False, indent=1)
+new = json.dumps(e["lines"], ensure_ascii=False, indent=1)
+old = open(f"{d}/script.json").read() if os.path.exists(f"{d}/script.json") else None
+if old is not None and old != new:
+    # the spoken script changed: voice clips are cached per line index, so start fresh
+    shutil.rmtree(f"{d}/voice", ignore_errors=True)
+    for f in ("timing.json", "voice.wav"):
+        if os.path.exists(f"{d}/{f}"):
+            os.remove(f"{d}/{f}")
+open(f"{d}/script.json", "w").write(new)
 PY
 if [ ! -f "$DIR/timing.json" ] || [ "$DIR/episode.json" -nt "$DIR/timing.json" ]; then
   TTS_PACE="${TTS_PACE:-1.15}" python3 "$MAKE_VOICE" "$DIR" en-IN kalpit_en_edtech
