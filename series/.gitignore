@@ -1,0 +1,9 @@
+node_modules/
+public/*.wav
+episodes/*/voice/
+episodes/*/stills/
+episodes/*/render.mp4
+episodes/*/final.mp4
+episodes/*/props.json
+episodes/*/script.json
+episodes/*/sheet.jpg

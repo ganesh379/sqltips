@@ -1,0 +1,597 @@
+# PostgreSQL DBA Series: 140 daily episodes
+
+Source: Ganesh's plan "PostgreSQL_DBA_Instagram_Reels_Daily_Series.xlsx" (2026-11-03). One episode per day on Instagram at 20:00 IST, starting 2026-11-04.
+The nightly task builds the episode for TOMORROW's date, then marks it [x] with "(posted <date> 20:00, Buffer <id>)".
+Format per the plan: vertical 1080x1920, 30 fps, 90 to 180 seconds, animated explainer + real terminal/SQL demo + DBA perspective, Sarvam voice.
+Accuracy rule (from the plan): verify every claim against the official PostgreSQL docs for the version shown, and test every command on a disposable instance. Never show real passwords, keys, customer data, production hostnames or private IPs.
+
+
+## Foundations
+
+- [ ] Ep 001 | 2026-11-04 | PostgreSQL DBA Series: What a DBA Actually Does
+  - Objective: Explain the DBA role across availability, security, performance, backup, recovery and capacity.
+  - Format: Explainer + role map · Level: Beginner
+  - Hook: What does a PostgreSQL DBA really do every day?
+- [ ] Ep 002 | 2026-11-05 | PostgreSQL Explained: Database vs DBMS vs SQL
+  - Objective: Define database, DBMS, relational database and SQL; distinguish PostgreSQL from SQL.
+  - Format: Animated analogy · Level: Beginner
+  - Hook: PostgreSQL, SQL and database — are they the same thing?
+- [ ] Ep 003 | 2026-11-06 | PostgreSQL Architecture: The Big Picture
+  - Objective: Show client/server model, postmaster, backend processes, shared memory, storage and background workers.
+  - Format: Animated architecture walkthrough · Level: Beginner
+  - Hook: A query travels through more components than you think.
+- [ ] Ep 004 | 2026-11-07 | What Happens When You Run SELECT?
+  - Objective: Trace connection, parse, analyze, rewrite, plan, execute and return rows; note cache/storage paths.
+  - Format: Query journey animation · Level: Beginner
+  - Hook: What happens inside PostgreSQL after you press Enter?
+- [ ] Ep 005 | 2026-11-08 | PostgreSQL Processes: Postmaster, Backend and Workers
+  - Objective: Explain process-based architecture and common background processes without implying every process exists in every configuration.
+  - Format: Process map · Level: Beginner
+  - Hook: Why does PostgreSQL create multiple processes?
+- [ ] Ep 006 | 2026-11-09 | Cluster, Instance, Database and Schema
+  - Objective: Clarify PostgreSQL cluster terminology and hierarchy; explain that one server instance can host multiple databases.
+  - Format: Layered diagram · Level: Beginner
+  - Hook: Cluster vs database vs schema — don't confuse these.
+- [ ] Ep 007 | 2026-11-10 | PostgreSQL Data Directory: What Lives Inside PGDATA?
+  - Objective: Introduce base, global, pg_wal, pg_tblspc and configuration files; caution against manual file edits.
+  - Format: Directory tour · Level: Beginner
+  - Hook: What is actually stored inside PGDATA?
+- [ ] Ep 008 | 2026-11-11 | Tables, Rows, Pages and Tuples
+  - Objective: Explain logical rows versus physical heap pages and tuple storage at a conceptual level.
+  - Format: Storage visualization · Level: Beginner
+  - Hook: A table is not stored as one giant file.
+- [ ] Ep 009 | 2026-11-12 | PostgreSQL Data Types You Should Know
+  - Objective: Cover numeric, text, boolean, date/time, UUID, JSONB and arrays; selection considerations.
+  - Format: Type comparison · Level: Beginner
+  - Hook: Choosing the wrong data type can hurt later.
+- [ ] Ep 010 | 2026-11-13 | psql: The Essential PostgreSQL Command-Line Tool
+  - Objective: Connect, list databases/roles, describe objects, change output and use help/meta-commands.
+  - Format: Live terminal demo · Level: Beginner
+  - Hook: Five psql commands every DBA should know.
+- [ ] Ep 011 | 2026-11-14 | PostgreSQL Configuration Files
+  - Objective: Explain postgresql.conf, pg_hba.conf, pg_ident.conf and include directives; show safe inspection.
+  - Format: Config walkthrough · Level: Beginner
+  - Hook: Three PostgreSQL config files you must understand.
+- [ ] Ep 012 | 2026-11-15 | PostgreSQL Versions and Release Types
+  - Objective: Explain major/minor releases, support lifecycle concepts, compatibility and upgrade planning; verify current version policy before publishing.
+  - Format: Version explainer · Level: Beginner
+  - Hook: Can you upgrade PostgreSQL by changing one number?
+
+## Installation & Administration
+
+- [ ] Ep 013 | 2026-11-16 | Install PostgreSQL on Linux: Packages and Service
+  - Objective: Demonstrate package-based installation on a chosen supported distro, service checks and version verification.
+  - Format: Terminal walkthrough · Level: Beginner
+  - Hook: From zero to a running PostgreSQL service.
+- [ ] Ep 014 | 2026-11-17 | Initialize a PostgreSQL Cluster
+  - Objective: Explain initdb, locale, encoding, checksums and data directory; distinguish package-managed cluster setup.
+  - Format: Terminal + diagram · Level: Beginner
+  - Hook: What does initdb really create?
+- [ ] Ep 015 | 2026-11-18 | Start, Stop, Restart and Reload PostgreSQL
+  - Objective: Compare service actions and configuration reload behavior; mention parameter context and safe maintenance.
+  - Format: Terminal demo · Level: Beginner
+  - Hook: Restart or reload? A DBA must know the difference.
+- [ ] Ep 016 | 2026-11-19 | Create and Drop Databases Safely
+  - Objective: Use CREATE DATABASE, template, owner and connection restrictions; explain destructive-operation precautions.
+  - Format: SQL demo · Level: Beginner
+  - Hook: Creating a database is easy; deleting one safely matters.
+- [ ] Ep 017 | 2026-11-20 | Schemas and Search Path
+  - Objective: Explain schema namespaces, search_path resolution, security implications and qualified names.
+  - Format: Animated namespace · Level: Beginner
+  - Hook: Why did PostgreSQL find the wrong table?
+- [ ] Ep 018 | 2026-11-21 | Roles vs Users: PostgreSQL Role Model
+  - Objective: Explain roles, LOGIN, INHERIT, role membership and least privilege; user is a role with LOGIN.
+  - Format: Role hierarchy animation · Level: Beginner
+  - Hook: PostgreSQL users and roles are not two separate systems.
+- [ ] Ep 019 | 2026-11-22 | Create Read-Only Users Correctly
+  - Objective: Demonstrate CONNECT, USAGE, SELECT, default privileges and sequence access; scope grants carefully.
+  - Format: Practical SQL demo · Level: Beginner
+  - Hook: How to create a genuinely read-only PostgreSQL user.
+- [ ] Ep 020 | 2026-11-23 | GRANT, REVOKE and Default Privileges
+  - Objective: Explain object privileges versus default privileges and why grants do not automatically cover future objects.
+  - Format: Privilege matrix · Level: Intermediate
+  - Hook: Why can't my user read tomorrow's tables?
+- [ ] Ep 021 | 2026-11-24 | pg_hba.conf: Client Authentication
+  - Objective: Explain record order, connection types, address, auth method and safe reload/testing.
+  - Format: Config animation · Level: Intermediate
+  - Hook: One pg_hba.conf line can block your application.
+- [ ] Ep 022 | 2026-11-25 | Password Authentication and SCRAM
+  - Objective: Explain password storage/authentication at a high level, SCRAM-SHA-256 and migration considerations.
+  - Format: Security explainer · Level: Intermediate
+  - Hook: Is your PostgreSQL password authentication secure?
+- [ ] Ep 023 | 2026-11-26 | Connection Limits and max_connections
+  - Objective: Explain connection slots, reserved slots where applicable, memory implications and pooling alternatives.
+  - Format: Capacity visual · Level: Intermediate
+  - Hook: Why increasing max_connections may make things worse.
+- [ ] Ep 024 | 2026-11-27 | Connection Pooling with PgBouncer
+  - Objective: Explain client/server pooling modes, transaction pooling caveats, prepared statements and session state.
+  - Format: Animated pool · Level: Intermediate
+  - Hook: How connection pooling protects PostgreSQL.
+- [ ] Ep 025 | 2026-11-28 | Tablespaces: When and Why
+  - Objective: Explain tablespace mapping, storage placement, permissions and operational risks; avoid treating tablespaces as automatic performance tuning.
+  - Format: Storage map · Level: Intermediate
+  - Hook: Should you move PostgreSQL tables to another disk?
+- [ ] Ep 026 | 2026-11-29 | Extensions: Install, Create and Manage
+  - Objective: Explain extension availability versus CREATE EXTENSION, privileges, versioning and controlled rollout.
+  - Format: Extension demo · Level: Intermediate
+  - Hook: PostgreSQL extensions: plug-ins for your database.
+- [ ] Ep 027 | 2026-11-30 | Useful PostgreSQL Catalogs and Information Schema
+  - Objective: Introduce pg_database, pg_class, pg_namespace, pg_roles and information_schema; distinguish catalog internals from stable interfaces.
+  - Format: Catalog explorer · Level: Intermediate
+  - Hook: Where does PostgreSQL keep metadata about your tables?
+
+## SQL & Transactions
+
+- [ ] Ep 028 | 2026-12-01 | Transactions: BEGIN, COMMIT and ROLLBACK
+  - Objective: Show atomic transaction lifecycle and practical multi-statement example.
+  - Format: Transaction animation · Level: Beginner
+  - Hook: How does PostgreSQL keep multiple SQL statements together?
+- [ ] Ep 029 | 2026-12-02 | ACID Properties in PostgreSQL
+  - Objective: Explain atomicity, consistency, isolation and durability with a bank-transfer example.
+  - Format: Animated analogy · Level: Beginner
+  - Hook: What does ACID actually protect?
+- [ ] Ep 030 | 2026-12-03 | MVCC: Multi-Version Concurrency Control
+  - Objective: Explain row versions, snapshots and concurrent readers/writers; avoid claiming readers always see latest committed data.
+  - Format: Versioned-row animation · Level: Intermediate
+  - Hook: How can two users read and update the same table safely?
+- [ ] Ep 031 | 2026-12-04 | Transaction Isolation Levels
+  - Objective: Compare Read Committed, Repeatable Read, Serializable and PostgreSQL behavior; demonstrate anomalies where appropriate.
+  - Format: Timeline animation · Level: Intermediate
+  - Hook: Why can the same query return different results?
+- [ ] Ep 032 | 2026-12-05 | Locks: Table Locks and Row Locks
+  - Objective: Explain lock modes, conflicts, implicit locks and explicit locking clauses.
+  - Format: Lock matrix animation · Level: Intermediate
+  - Hook: What happens when two sessions update one row?
+- [ ] Ep 033 | 2026-12-06 | Deadlocks: Detect, Diagnose and Prevent
+  - Objective: Show cycle in wait graph, log clues, pg_stat_activity and prevention patterns; PostgreSQL aborts one transaction.
+  - Format: Animated wait graph · Level: Intermediate
+  - Hook: Two transactions waiting forever? Meet the deadlock.
+- [ ] Ep 034 | 2026-12-07 | Long-Running Transactions and Their Impact
+  - Objective: Explain old snapshots, vacuum cleanup delay, xmin horizons and monitoring.
+  - Format: Timeline + SQL · Level: Intermediate
+  - Hook: The hidden cost of a transaction left open all day.
+- [ ] Ep 035 | 2026-12-08 | Savepoints and Error Recovery
+  - Objective: Demonstrate SAVEPOINT, ROLLBACK TO and transaction state after errors.
+  - Format: Terminal demo · Level: Intermediate
+  - Hook: Recover part of a transaction without losing everything.
+- [ ] Ep 036 | 2026-12-09 | Sequences and Identity Columns
+  - Objective: Compare sequences, serial and identity columns; explain non-transactional sequence gaps.
+  - Format: SQL demo · Level: Beginner
+  - Hook: Why did my ID skip numbers?
+- [ ] Ep 037 | 2026-12-10 | Constraints: Primary, Foreign, Unique and Check
+  - Objective: Explain integrity enforcement, deferrable constraints and indexing implications.
+  - Format: Constraint diagram · Level: Beginner
+  - Hook: Let the database protect data quality.
+- [ ] Ep 038 | 2026-12-11 | Views and Materialized Views
+  - Objective: Compare stored query definitions with persisted results; refresh behavior and use cases.
+  - Format: Before/after animation · Level: Intermediate
+  - Hook: A view is not a saved copy of the data.
+- [ ] Ep 039 | 2026-12-12 | JSONB for DBAs
+  - Objective: Explain JSON vs JSONB, operators, indexing basics and when relational columns are preferable.
+  - Format: Data visualization · Level: Intermediate
+  - Hook: Should you store everything in JSONB?
+- [ ] Ep 040 | 2026-12-13 | Partitioning: Why and When
+  - Objective: Introduce declarative partitioning, range/list/hash, pruning, maintenance and trade-offs.
+  - Format: Partition animation · Level: Intermediate
+  - Hook: One huge table? Partitioning may help — but not always.
+
+## Storage, WAL & Durability
+
+- [ ] Ep 041 | 2026-12-14 | Heap Storage and the 8 KB Page Concept
+  - Objective: Explain page layout conceptually, page headers, line pointers and tuples; note block size is build-time configurable, commonly 8 KB.
+  - Format: Page anatomy animation · Level: Intermediate
+  - Hook: Inside a PostgreSQL data page.
+- [ ] Ep 042 | 2026-12-15 | WAL: Write-Ahead Logging Explained
+  - Objective: Explain WAL-before-data rule, WAL records, durability and crash recovery at a high level.
+  - Format: Cinematic data flow · Level: Intermediate
+  - Hook: How can PostgreSQL recover data after a crash?
+- [ ] Ep 043 | 2026-12-16 | What Happens During an INSERT?
+  - Objective: Trace tuple creation, WAL generation, commit record and eventual data-page write; distinguish commit durability from checkpoint writes.
+  - Format: Step-by-step animation · Level: Intermediate
+  - Hook: An INSERT is much more than writing a row.
+- [ ] Ep 044 | 2026-12-17 | WAL Segments, LSN and pg_wal
+  - Objective: Explain segment files, log sequence numbers and safe inspection commands.
+  - Format: Terminal + animation · Level: Intermediate
+  - Hook: How PostgreSQL tracks every change with an LSN.
+- [ ] Ep 045 | 2026-12-18 | Checkpoints: Purpose and Behavior
+  - Objective: Explain checkpoint triggers, dirty buffers, checkpoint completion and tuning trade-offs.
+  - Format: Timeline animation · Level: Intermediate
+  - Hook: Why does PostgreSQL periodically flush data pages?
+- [ ] Ep 046 | 2026-12-19 | Background Writer vs Checkpointer
+  - Objective: Differentiate their responsibilities and avoid outdated simplifications; show relevant stats views.
+  - Format: Process comparison · Level: Intermediate
+  - Hook: Two background processes, two different jobs.
+- [ ] Ep 047 | 2026-12-20 | Full Page Writes and Torn-Page Protection
+  - Objective: Explain first modification after checkpoint and full_page_writes; discuss checksums as a separate mechanism.
+  - Format: Page recovery animation · Level: Advanced
+  - Hook: How does PostgreSQL protect against torn pages?
+- [ ] Ep 048 | 2026-12-21 | WAL Archiving and archive_command
+  - Objective: Explain archive_mode, archive_command, archive_timeout, archive status and monitoring failed archives.
+  - Format: Config + flow · Level: Intermediate
+  - Hook: Your WAL archive is only useful if it is actually working.
+- [ ] Ep 049 | 2026-12-22 | WAL Retention and Replication Slots
+  - Objective: Explain retention risks, slot restart_lsn, disk growth and monitoring safeguards.
+  - Format: Disk growth animation · Level: Advanced
+  - Hook: How can one inactive replication slot fill your disk?
+- [ ] Ep 050 | 2026-12-23 | Synchronous vs Asynchronous Commit
+  - Objective: Explain durability/latency trade-off and synchronous_commit scope; distinguish synchronous replication settings.
+  - Format: Timeline comparison · Level: Advanced
+  - Hook: Can PostgreSQL acknowledge a commit before it reaches disk?
+- [ ] Ep 051 | 2026-12-24 | TOAST: Storing Large Values
+  - Objective: Explain out-of-line storage, compression and external storage for large values; inspect relation size.
+  - Format: Storage animation · Level: Advanced
+  - Hook: Where does PostgreSQL store very large column values?
+- [ ] Ep 052 | 2026-12-25 | Free Space Map and Visibility Map
+  - Objective: Explain FSM and VM roles in locating free space and enabling index-only scans/vacuum optimization.
+  - Format: Page map animation · Level: Advanced
+  - Hook: Two hidden maps that help PostgreSQL work efficiently.
+- [ ] Ep 053 | 2026-12-26 | Relation Files, Forks and Segment Files
+  - Objective: Explain main, FSM, VM and init forks plus relation file segmentation; use pg_relation_filepath safely.
+  - Format: File system tour · Level: Advanced
+  - Hook: Why can one PostgreSQL table have multiple files?
+- [ ] Ep 054 | 2026-12-27 | Data Checksums and Page Verification
+  - Objective: Explain initdb checksum choice, verification tooling and limitations; distinguish checksums from backups.
+  - Format: Integrity explainer · Level: Advanced
+  - Hook: Can PostgreSQL detect silent data corruption?
+
+## Vacuum & Maintenance
+
+- [ ] Ep 055 | 2026-12-28 | Why VACUUM Exists
+  - Objective: Explain dead tuples from MVCC, cleanup and space reuse versus returning disk space to OS.
+  - Format: Tuple lifecycle animation · Level: Intermediate
+  - Hook: DELETE does not immediately remove a row from disk.
+- [ ] Ep 056 | 2026-12-29 | VACUUM vs VACUUM FULL
+  - Objective: Compare ordinary vacuum with rewrite/exclusive lock and disk-space behavior of VACUUM FULL.
+  - Format: Side-by-side animation · Level: Intermediate
+  - Hook: VACUUM FULL is not just a stronger VACUUM.
+- [ ] Ep 057 | 2026-12-30 | Autovacuum: How It Decides to Run
+  - Objective: Explain thresholds, scale factors, worker limits and table-level overrides; parameters vary by version.
+  - Format: Threshold animation · Level: Intermediate
+  - Hook: Who cleans your database when the DBA is asleep?
+- [ ] Ep 058 | 2026-12-31 | Monitor Autovacuum and Vacuum Progress
+  - Objective: Use pg_stat_user_tables, pg_stat_progress_vacuum and logs; explain interpretation.
+  - Format: Live SQL demo · Level: Intermediate
+  - Hook: How to know whether autovacuum is keeping up.
+- [ ] Ep 059 | 2027-01-01 | Transaction ID Wraparound
+  - Objective: Explain XID age, freezing, anti-wraparound vacuum and emergency risk; show monitoring query.
+  - Format: Countdown visual · Level: Advanced
+  - Hook: The PostgreSQL outage risk every DBA must monitor.
+- [ ] Ep 060 | 2027-01-02 | Freeze and Visibility: VACUUM FREEZE
+  - Objective: Explain freezing and visibility horizon without recommending manual freeze as routine fix.
+  - Format: Tuple lifecycle · Level: Advanced
+  - Hook: Why does PostgreSQL freeze old transaction IDs?
+- [ ] Ep 061 | 2027-01-03 | Table and Index Bloat
+  - Objective: Explain dead space, page density, measurement caveats and causes; avoid equating file size directly with bloat.
+  - Format: Bloat visualization · Level: Advanced
+  - Hook: Why is your table growing even after deleting rows?
+- [ ] Ep 062 | 2027-01-04 | REINDEX: When and How
+  - Objective: Explain rebuild use cases, locking options, concurrent rebuild limitations and disk-space planning.
+  - Format: Index rebuild animation · Level: Advanced
+  - Hook: When should a DBA rebuild an index?
+- [ ] Ep 063 | 2027-01-05 | ANALYZE and Planner Statistics
+  - Objective: Explain sampled statistics, histograms, most-common values and stale-statistics symptoms.
+  - Format: Planner visualization · Level: Intermediate
+  - Hook: PostgreSQL cannot choose a good plan without good statistics.
+- [ ] Ep 064 | 2027-01-06 | Routine Maintenance Strategy
+  - Objective: Build a practical checklist for vacuum, analyze, reindex decisions, logs and capacity; avoid blanket scheduling.
+  - Format: Checklist reel · Level: Intermediate
+  - Hook: A practical weekly PostgreSQL maintenance routine.
+- [ ] Ep 065 | 2027-01-07 | pg_repack: Online Table Maintenance
+  - Objective: Explain extension prerequisites, limitations, locks, disk headroom and testing before production use.
+  - Format: Maintenance animation · Level: Advanced
+  - Hook: Can you reduce bloat with less downtime?
+
+## Indexes & Performance
+
+- [ ] Ep 066 | 2027-01-08 | How PostgreSQL Uses an Index
+  - Objective: Explain index lookup, heap fetch and planner cost; index is not automatically faster.
+  - Format: Query path animation · Level: Intermediate
+  - Hook: Why doesn't PostgreSQL use my index?
+- [ ] Ep 067 | 2027-01-09 | B-tree Index Internals
+  - Objective: Explain balanced tree, root/internal/leaf pages and equality/range searches.
+  - Format: Tree animation · Level: Intermediate
+  - Hook: How does a B-tree find a row so quickly?
+- [ ] Ep 068 | 2027-01-10 | Hash Indexes
+  - Objective: Explain equality-only use, WAL-logged modern hash indexes and trade-offs; compare with B-tree.
+  - Format: Index comparison · Level: Advanced
+  - Hook: When does a hash index make sense?
+- [ ] Ep 069 | 2027-01-11 | GIN Indexes
+  - Objective: Explain inverted index and array/JSONB/full-text use cases; discuss write and maintenance costs.
+  - Format: Inverted index animation · Level: Advanced
+  - Hook: How does GIN index a JSONB document?
+- [ ] Ep 070 | 2027-01-12 | GiST Indexes
+  - Objective: Explain extensible balanced-tree framework and spatial/range/operator-class use cases.
+  - Format: Index visualization · Level: Advanced
+  - Hook: The index type behind many advanced search problems.
+- [ ] Ep 071 | 2027-01-13 | BRIN Indexes
+  - Objective: Explain block range summaries, correlation and large append-oriented tables.
+  - Format: Block map animation · Level: Advanced
+  - Hook: A tiny index for enormous tables? Meet BRIN.
+- [ ] Ep 072 | 2027-01-14 | Partial and Expression Indexes
+  - Objective: Demonstrate predicates and indexed expressions; explain query predicate matching and immutability requirements.
+  - Format: SQL + diagram · Level: Advanced
+  - Hook: Index only the rows and expressions you need.
+- [ ] Ep 073 | 2027-01-15 | Covering Indexes and INCLUDE
+  - Objective: Explain index-only scans, visibility map dependency and included columns.
+  - Format: Index-only animation · Level: Advanced
+  - Hook: Can PostgreSQL answer a query without visiting the table?
+- [ ] Ep 074 | 2027-01-16 | Composite Index Column Order
+  - Objective: Explain leading-column behavior, equality/range patterns and workload-based design.
+  - Format: Index navigation · Level: Intermediate
+  - Hook: Does column order matter in a multicolumn index?
+- [ ] Ep 075 | 2027-01-17 | EXPLAIN: Read a Query Plan
+  - Objective: Explain plan tree, node types, cost estimates, rows and width.
+  - Format: Plan walkthrough · Level: Intermediate
+  - Hook: Learn to read PostgreSQL query plans.
+- [ ] Ep 076 | 2027-01-18 | EXPLAIN ANALYZE: Actual vs Estimated
+  - Objective: Explain execution, actual rows/time/loops, buffers and side effects of executing statements; use safe SELECT examples.
+  - Format: Terminal demo · Level: Intermediate
+  - Hook: The most useful command for diagnosing slow queries.
+- [ ] Ep 077 | 2027-01-19 | Sequential Scan vs Index Scan vs Bitmap Scan
+  - Objective: Compare access paths and why planner may choose each.
+  - Format: Animated scan comparison · Level: Intermediate
+  - Hook: A sequential scan isn't always a bad thing.
+- [ ] Ep 078 | 2027-01-20 | Nested Loop, Hash Join and Merge Join
+  - Objective: Explain join algorithms and conditions where each may be efficient.
+  - Format: Join animation · Level: Advanced
+  - Hook: How PostgreSQL joins two large tables.
+- [ ] Ep 079 | 2027-01-21 | Sort, Aggregate and Hash Operations
+  - Objective: Explain sort methods, hash aggregate, memory use and spill-to-disk clues.
+  - Format: Execution animation · Level: Advanced
+  - Hook: Why did your query suddenly start using temporary files?
+- [ ] Ep 080 | 2027-01-22 | work_mem: Useful but Dangerous
+  - Objective: Explain per-operation/per-session implications, concurrency multiplication and safe tuning methodology.
+  - Format: Memory budget visual · Level: Advanced
+  - Hook: One work_mem setting can multiply across many queries.
+- [ ] Ep 081 | 2027-01-23 | pg_stat_statements for Workload Analysis
+  - Objective: Enable extension, inspect query IDs, calls, total/mean time and planning stats where supported.
+  - Format: Dashboard + SQL · Level: Intermediate
+  - Hook: Find the SQL statements consuming the most database time.
+- [ ] Ep 082 | 2027-01-24 | Slow Query Troubleshooting Workflow
+  - Objective: Demonstrate symptom → identify query → plan → buffers → stats → fix → verify; avoid tuning by guesswork.
+  - Format: Incident walkthrough · Level: Advanced
+  - Hook: A repeatable method to investigate slow queries.
+- [ ] Ep 083 | 2027-01-25 | JIT, Parallel Query and Planner Settings
+  - Objective: Introduce JIT and parallel query decisions; explain when they help and why changing planner switches blindly is risky.
+  - Format: Execution animation · Level: Advanced
+  - Hook: Should you enable parallel query for every workload?
+
+## Monitoring & Troubleshooting
+
+- [ ] Ep 084 | 2027-01-26 | pg_stat_activity: Live Session Monitoring
+  - Objective: Inspect active sessions, wait events, query age and state; protect sensitive query text in shared outputs.
+  - Format: Live dashboard · Level: Intermediate
+  - Hook: What is your PostgreSQL doing right now?
+- [ ] Ep 085 | 2027-01-27 | Wait Events: Find What Sessions Are Waiting For
+  - Objective: Explain wait_event_type and wait_event, including Lock, IO and Client categories; interpret in context.
+  - Format: Wait-state animation · Level: Advanced
+  - Hook: A busy database may actually be waiting.
+- [ ] Ep 086 | 2027-01-28 | Blocking and Blocked Sessions
+  - Objective: Build query using pg_blocking_pids and pg_stat_activity; safe diagnostic approach before termination.
+  - Format: Lock graph + SQL · Level: Advanced
+  - Hook: Find who is blocking your production query.
+- [ ] Ep 087 | 2027-01-29 | Terminate vs Cancel Backend
+  - Objective: Compare pg_cancel_backend and pg_terminate_backend, permissions and operational caution.
+  - Format: Decision flow · Level: Intermediate
+  - Hook: Should you cancel a query or terminate its session?
+- [ ] Ep 088 | 2027-01-30 | Database and Table Size Monitoring
+  - Objective: Use pg_database_size, pg_total_relation_size and pg_size_pretty; explain indexes/TOAST inclusion.
+  - Format: Storage dashboard · Level: Beginner
+  - Hook: Which database and table are consuming your disk?
+- [ ] Ep 089 | 2027-01-31 | Connection and Session Monitoring
+  - Objective: Monitor active/idle/idle-in-transaction sessions, limits and pooler metrics.
+  - Format: Dashboard · Level: Intermediate
+  - Hook: Spot connection exhaustion before the application fails.
+- [ ] Ep 090 | 2027-02-01 | Logs: Configure and Read PostgreSQL Logging
+  - Objective: Explain log_destination, logging_collector, log_line_prefix, duration and slow statement logging; privacy/cost cautions.
+  - Format: Log walkthrough · Level: Intermediate
+  - Hook: Your PostgreSQL logs are telling you what went wrong.
+- [ ] Ep 091 | 2027-02-02 | pg_stat_database and Cache Hit Ratio
+  - Objective: Explain counters, resets, workload context and why cache hit ratio alone is not a tuning target.
+  - Format: Metrics explainer · Level: Intermediate
+  - Hook: Is a 99% cache hit ratio always good?
+- [ ] Ep 092 | 2027-02-03 | I/O and CPU Bottleneck Diagnosis
+  - Objective: Correlate OS metrics, PostgreSQL waits, query plans and storage latency; do not infer from one metric.
+  - Format: Incident dashboard · Level: Advanced
+  - Hook: Is your database slow because of CPU, memory or disk?
+- [ ] Ep 093 | 2027-02-04 | Temp Files and Disk Spills
+  - Objective: Explain log_temp_files, sorts/hashes spilling and query-plan diagnosis.
+  - Format: Disk spill animation · Level: Advanced
+  - Hook: Why is PostgreSQL filling your disk with temporary files?
+- [ ] Ep 094 | 2027-02-05 | Out of Memory and OOM Troubleshooting
+  - Objective: Explain Linux OOM killer, PostgreSQL memory consumers, logs and safe sizing approach.
+  - Format: Incident story · Level: Advanced
+  - Hook: Why did Linux kill the PostgreSQL process?
+- [ ] Ep 095 | 2027-02-06 | PostgreSQL Health Check: Daily DBA Checklist
+  - Objective: Create a daily operational review: service, connections, replication, backups, disk, errors, vacuum and alerts.
+  - Format: Checklist reel · Level: Intermediate
+  - Hook: The 10-minute PostgreSQL DBA morning health check.
+- [ ] Ep 096 | 2027-02-07 | Build a Read-Only DBA Monitoring User
+  - Objective: Demonstrate least-privilege monitoring access, predefined roles such as pg_monitor where suitable and scope review.
+  - Format: SQL demo · Level: Intermediate
+  - Hook: Give monitoring tools access without giving them write permissions.
+
+## Backup, Restore & DR
+
+- [ ] Ep 097 | 2027-02-08 | Backup Strategy: RPO and RTO
+  - Objective: Define RPO/RTO, business impact, backup frequency, restore objectives and validation.
+  - Format: Disaster scenario · Level: Beginner
+  - Hook: A backup is useless if you cannot restore it.
+- [ ] Ep 098 | 2027-02-09 | Logical vs Physical Backup
+  - Objective: Compare portability/object-level flexibility with cluster-level physical recovery and PITR.
+  - Format: Comparison animation · Level: Beginner
+  - Hook: Logical backup or physical backup — which one do you need?
+- [ ] Ep 099 | 2027-02-10 | pg_dump: Database Logical Backup
+  - Objective: Show custom format, schema/data options, jobs and consistency; use secure credential handling.
+  - Format: Terminal demo · Level: Beginner
+  - Hook: Back up a PostgreSQL database with pg_dump.
+- [ ] Ep 100 | 2027-02-11 | pg_restore: Restore and Selective Recovery
+  - Objective: Demonstrate list, clean, create, jobs and selective object restore; caution about dependencies and target database.
+  - Format: Terminal demo · Level: Beginner
+  - Hook: How to restore only what you need.
+- [ ] Ep 101 | 2027-02-12 | pg_dumpall: Roles and Global Objects
+  - Objective: Explain cluster-wide globals and how to combine with per-database backups; distinguish from physical backup.
+  - Format: Terminal demo · Level: Intermediate
+  - Hook: Why pg_dump alone may not capture your roles.
+- [ ] Ep 102 | 2027-02-13 | Physical Base Backups with pg_basebackup
+  - Objective: Explain base backup, WAL requirements, standby use and consistency.
+  - Format: Backup flow animation · Level: Intermediate
+  - Hook: How to take a physical PostgreSQL backup.
+- [ ] Ep 103 | 2027-02-14 | Point-in-Time Recovery (PITR)
+  - Objective: Explain base backup + continuous WAL archive + recovery target; show recovery timeline conceptually.
+  - Format: Timeline animation · Level: Advanced
+  - Hook: Recover your database to one minute before disaster.
+- [ ] Ep 104 | 2027-02-15 | pgBackRest Architecture
+  - Objective: Explain repository, stanza, backup types, retention and WAL archiving; verify commands against selected version.
+  - Format: Architecture animation · Level: Advanced
+  - Hook: How pgBackRest protects PostgreSQL production databases.
+- [ ] Ep 105 | 2027-02-16 | pgBackRest Full, Differential and Incremental Backups
+  - Objective: Compare backup types and dependency chains; demonstrate info and backup commands safely.
+  - Format: Backup chain visualization · Level: Advanced
+  - Hook: Full vs differential vs incremental — understand the difference.
+- [ ] Ep 106 | 2027-02-17 | Test Your Backups: Restore Drills
+  - Objective: Create a non-production restore validation checklist, checksum/consistency checks and measured restore time.
+  - Format: Disaster drill · Level: Advanced
+  - Hook: When was the last time you actually tested your backup?
+- [ ] Ep 107 | 2027-02-18 | Backup Retention and Repository Capacity
+  - Objective: Explain retention policy, archive retention, storage growth, encryption and offsite copies.
+  - Format: Capacity visualization · Level: Advanced
+  - Hook: How long should you keep PostgreSQL backups?
+- [ ] Ep 108 | 2027-02-19 | Disaster Recovery Runbook
+  - Objective: Build an ordered recovery checklist: declare incident, isolate, select recovery point, restore, validate, reconnect and review.
+  - Format: Runbook animation · Level: Advanced
+  - Hook: What should a DBA do in the first 15 minutes of a database disaster?
+- [ ] Ep 109 | 2027-02-20 | Backup Security: Encryption and Access Control
+  - Objective: Cover secrets, repository permissions, encryption at rest/in transit, immutable/offsite copies and key recovery.
+  - Format: Security explainer · Level: Advanced
+  - Hook: Your backup must survive ransomware and credential compromise.
+- [ ] Ep 110 | 2027-02-21 | Restore a Single Table: Recovery Options
+  - Objective: Compare logical restore, PITR to temporary cluster and export/import; explain limitations of physical backups.
+  - Format: Recovery decision tree · Level: Advanced
+  - Hook: How do you recover one accidentally deleted table?
+
+## Replication, HA & Upgrades
+
+- [ ] Ep 111 | 2027-02-22 | Streaming Replication: Primary and Standby
+  - Objective: Explain WAL sender/receiver, streaming and replay; distinguish physical replication from logical replication.
+  - Format: Architecture animation · Level: Intermediate
+  - Hook: How does a PostgreSQL standby stay updated?
+- [ ] Ep 112 | 2027-02-23 | Configure Physical Streaming Replication
+  - Objective: Show prerequisites, replication role, pg_hba, primary_conninfo and standby setup; use version-specific procedure.
+  - Format: Terminal walkthrough · Level: Advanced
+  - Hook: Build a PostgreSQL primary-standby setup.
+- [ ] Ep 113 | 2027-02-24 | Synchronous Replication and Commit Guarantees
+  - Objective: Explain synchronous_standby_names, sync states, latency and failure trade-offs.
+  - Format: Timeline comparison · Level: Advanced
+  - Hook: Does synchronous replication mean zero data loss?
+- [ ] Ep 114 | 2027-02-25 | Replication Slots: Physical and Logical
+  - Objective: Explain slot retention, confirmed_flush_lsn, restart_lsn and monitoring disk risk.
+  - Format: Slot animation · Level: Advanced
+  - Hook: Why replication slots need constant monitoring.
+- [ ] Ep 115 | 2027-02-26 | Replication Lag: Measure and Troubleshoot
+  - Objective: Use replay LSN/time metrics, sender/receiver stats and distinguish transport lag from replay lag.
+  - Format: Lag dashboard · Level: Advanced
+  - Hook: Your standby is behind — where do you start?
+- [ ] Ep 116 | 2027-02-27 | Promote a Standby and Understand Failover
+  - Objective: Explain promotion, timeline changes, fencing and split-brain prevention; never promote casually.
+  - Format: Failover simulation · Level: Advanced
+  - Hook: What happens when the PostgreSQL primary server goes down?
+- [ ] Ep 117 | 2027-02-28 | Switchover vs Failover
+  - Objective: Compare planned role change with unplanned recovery and validation steps.
+  - Format: Side-by-side flow · Level: Advanced
+  - Hook: Switchover and failover are not the same.
+- [ ] Ep 118 | 2027-03-01 | Logical Replication: Publications and Subscriptions
+  - Objective: Explain publisher, subscriber, publications, subscriptions, initial copy and replication identity.
+  - Format: Data flow animation · Level: Advanced
+  - Hook: Replicate selected tables between PostgreSQL databases.
+- [ ] Ep 119 | 2027-03-02 | Logical Replication Limitations and DDL
+  - Objective: Cover schema changes, sequences, large objects and operational differences; check release-specific behavior.
+  - Format: Caveat explainer · Level: Advanced
+  - Hook: What logical replication does not replicate automatically.
+- [ ] Ep 120 | 2027-03-03 | High Availability Architecture Choices
+  - Objective: Compare built-in streaming replication with orchestration/failover tooling; explain monitoring, quorum and fencing concepts.
+  - Format: Architecture comparison · Level: Advanced
+  - Hook: Replication alone is not a complete HA solution.
+- [ ] Ep 121 | 2027-03-04 | Patroni: HA Concepts and Architecture
+  - Objective: Explain DCS, leader lock, health checks, watchdog/fencing concepts and configuration validation.
+  - Format: HA architecture · Level: Advanced
+  - Hook: How Patroni manages PostgreSQL high availability.
+- [ ] Ep 122 | 2027-03-05 | PostgreSQL Major Version Upgrade
+  - Objective: Compare pg_upgrade and logical migration approaches; plan extensions, compatibility, downtime and rollback.
+  - Format: Upgrade roadmap · Level: Advanced
+  - Hook: Can you upgrade PostgreSQL without losing your data?
+- [ ] Ep 123 | 2027-03-06 | pg_upgrade: Checks and Execution Plan
+  - Objective: Explain old/new binaries, check mode, link/copy modes, extension compatibility and post-upgrade analyze.
+  - Format: Terminal walkthrough · Level: Advanced
+  - Hook: A practical pg_upgrade checklist.
+- [ ] Ep 124 | 2027-03-07 | Minor Version Updates and Patch Management
+  - Objective: Explain minor releases, testing, backups, extension compatibility, rolling/standby considerations and maintenance window.
+  - Format: Release workflow · Level: Intermediate
+  - Hook: Why PostgreSQL minor updates still matter.
+- [ ] Ep 125 | 2027-03-08 | Connection Routing After Failover
+  - Objective: Explain VIP/proxy/DNS/service discovery, pooler reconnect behavior and application retry design.
+  - Format: Network flow · Level: Advanced
+  - Hook: Your standby is promoted — how do applications find it?
+- [ ] Ep 126 | 2027-03-09 | PostgreSQL on Linux: Kernel and OS Basics
+  - Objective: Cover filesystem, ulimits, huge pages conceptually, swappiness, I/O scheduler and distro-specific validation; avoid universal tuning recipes.
+  - Format: OS + DB visual · Level: Advanced
+  - Hook: A PostgreSQL DBA must understand the operating system too.
+
+## Security, Automation & Career
+
+- [ ] Ep 127 | 2027-03-10 | PostgreSQL Security Baseline
+  - Objective: Review least privilege, network exposure, TLS, auth, patching, logging and backup security.
+  - Format: Security checklist · Level: Intermediate
+  - Hook: A practical PostgreSQL production security baseline.
+- [ ] Ep 128 | 2027-03-11 | TLS/SSL Connections to PostgreSQL
+  - Objective: Explain server certificates, client verification, sslmode choices and certificate rotation.
+  - Format: Handshake animation · Level: Advanced
+  - Hook: Is your PostgreSQL traffic encrypted?
+- [ ] Ep 129 | 2027-03-12 | Row-Level Security (RLS)
+  - Objective: Explain policies, ENABLE/FORCE ROW LEVEL SECURITY, role behavior and testing as application roles.
+  - Format: Policy animation · Level: Advanced
+  - Hook: Can PostgreSQL restrict which rows each user sees?
+- [ ] Ep 130 | 2027-03-13 | Audit Logging and pgAudit
+  - Objective: Explain native logging vs extension-based auditing, scope, overhead, retention and privacy.
+  - Format: Audit trail animation · Level: Advanced
+  - Hook: Who changed that record? Build an audit trail.
+- [ ] Ep 131 | 2027-03-14 | SQL Injection: DBA Perspective
+  - Objective: Explain parameterized queries, least privilege and why string concatenation is dangerous; focus on defensive practices.
+  - Format: Attack/defense diagram · Level: Intermediate
+  - Hook: A database permission mistake can turn SQL injection into disaster.
+- [ ] Ep 132 | 2027-03-15 | Automate DBA Checks with Bash
+  - Objective: Build safe read-only checks for service, connections, disk, replication and backups; robust error handling.
+  - Format: Terminal demo · Level: Intermediate
+  - Hook: Automate repetitive PostgreSQL DBA checks.
+- [ ] Ep 133 | 2027-03-16 | Automate PostgreSQL Monitoring with Python
+  - Objective: Use psycopg, environment variables, timeouts and read-only credentials to collect health metrics.
+  - Format: Code + dashboard · Level: Intermediate
+  - Hook: Build your first PostgreSQL monitoring script in Python.
+- [ ] Ep 134 | 2027-03-17 | Schedule DBA Jobs Safely
+  - Objective: Compare cron, pg_cron and external schedulers; logging, overlap prevention, permissions and failure alerts.
+  - Format: Scheduler animation · Level: Intermediate
+  - Hook: How should a DBA schedule routine database jobs?
+- [ ] Ep 135 | 2027-03-18 | PostgreSQL Monitoring Tools Overview
+  - Objective: Compare pg_stat views, Prometheus exporters, Grafana and managed monitoring; focus on metrics and alert design.
+  - Format: Dashboard tour · Level: Intermediate
+  - Hook: What should a PostgreSQL DBA monitor?
+- [ ] Ep 136 | 2027-03-19 | Capacity Planning: CPU, RAM, Disk and Growth
+  - Objective: Explain baseline, trend, headroom, WAL growth, backup growth and workload peaks.
+  - Format: Capacity dashboard · Level: Advanced
+  - Hook: Will your PostgreSQL server survive next month's growth?
+- [ ] Ep 137 | 2027-03-20 | Production Incident: Database Is Down
+  - Objective: Walk through service status, logs, disk, config, port, recovery state and escalation; do not blindly restart.
+  - Format: Incident simulation · Level: Advanced
+  - Hook: Production PostgreSQL is down. What do you check first?
+- [ ] Ep 138 | 2027-03-21 | Production Incident: Disk Is 100% Full
+  - Objective: Diagnose data/WAL/log/temp/backup growth, replication slots and safe remediation; never delete pg_wal files manually.
+  - Format: Incident simulation · Level: Advanced
+  - Hook: Never delete files from pg_wal to free disk space.
+- [ ] Ep 139 | 2027-03-22 | Production Incident: Too Many Connections
+  - Objective: Investigate sessions, pools, idle transactions and app behavior; apply controlled mitigation.
+  - Format: Incident simulation · Level: Advanced
+  - Hook: Too many connections: fix the cause, not just the number.
+- [ ] Ep 140 | 2027-03-23 | PostgreSQL DBA Interview: 15 Core Questions
+  - Objective: Answer architecture, WAL, MVCC, vacuum, indexes, backups, replication and monitoring questions accurately.
+  - Format: Interview rapid lesson · Level: Intermediate
+  - Hook: Can you answer these 15 PostgreSQL DBA questions?
