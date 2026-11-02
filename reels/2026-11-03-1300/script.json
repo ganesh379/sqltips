@@ -1,0 +1,47 @@
+[
+ {
+  "say": "Three COUNTs. Three answers.",
+  "cap": "Three *COUNTs.* Three *answers.*"
+ },
+ {
+  "say": "Employees has five rows. Two have a NULL department.",
+  "cap": "Employees has *5* rows. Two have a *NULL* dept.",
+  "cue": "Two"
+ },
+ {
+  "say": "COUNT star. COUNT dept. COUNT DISTINCT dept.",
+  "cap": "COUNT(∗). COUNT(dept). COUNT(*DISTINCT* dept).",
+  "cue": "DISTINCT"
+ },
+ {
+  "say": "Pause and guess all three numbers.",
+  "cap": "*Pause* and guess all three numbers."
+ },
+ {
+  "say": "Hint: two of them skip NULLs.",
+  "cap": "Hint: two of them *skip* *NULLs.*"
+ },
+ {
+  "say": "COUNT star counts every row. Five.",
+  "cap": "COUNT(∗) counts every row. *5.*",
+  "cue": "Five"
+ },
+ {
+  "say": "COUNT dept skips the NULLs. Three.",
+  "cap": "COUNT(dept) skips the NULLs. *3.*",
+  "cue": "Three"
+ },
+ {
+  "say": "COUNT DISTINCT also drops the repeated IT. Two.",
+  "cap": "COUNT(DISTINCT) also drops the repeated *IT.* *2.*",
+  "cue": "Two"
+ },
+ {
+  "say": "Same result in Oracle and PostgreSQL.",
+  "cap": "Same result in *Oracle* and *PostgreSQL.*"
+ },
+ {
+  "say": "Comment your answer, and send this to a friend who'd get it wrong.",
+  "cap": "*Comment* your answer, and *send* this to a friend who'd get it wrong."
+ }
+]

@@ -1,0 +1,11 @@
+COUNT(*), COUNT(dept), COUNT(DISTINCT dept) on the same table. Did you guess 5, 3 and 2?
+
+This SQL interview question looks easy until NULLs show up. Our employees table has 5 rows, and 2 of them have a NULL dept.
+
+COUNT(*) counts every row, NULLs included: 5. COUNT(dept) counts only rows where dept is not NULL: 3. COUNT(DISTINCT dept) also drops the repeated IT, leaving IT and HR: 2.
+
+Same result in Oracle and PostgreSQL. Tested on PostgreSQL 16, Oracle behaviour checked against the Oracle COUNT documentation.
+
+Comment your answer before you watched, and send this to a friend who'd get it wrong.
+
+#sql #sqlinterview #oracle #postgresql #database
