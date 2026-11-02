@@ -1,0 +1,819 @@
+{
+  "schemaVersion": 1,
+  "title": "Oracle JSON_TABLE Example: Nested Arrays, Errors and Views",
+  "slug": "oracle-json-table-example",
+  "category": "plsql",
+  "description": "Oracle JSON_TABLE example: turn JSON into rows and columns, flatten nested arrays with NESTED PATH, handle missing fields and catch silent NULL errors.",
+  "focusKeyword": "oracle json_table example",
+  "tags": [
+    "oracle",
+    "json",
+    "sql",
+    "json_table"
+  ],
+  "related": [
+    "/posts/plsql/how-to-read-explain-plan-in-oracle/",
+    "/posts/interview-questions/mastering-oracle-sql-joins-the-ultimate-guide-to-data-retrieval-and-performance/",
+    "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle 19c SQL Language Reference: JSON_TABLE",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/JSON_TABLE.html"
+    },
+    {
+      "title": "Oracle 19c JSON Developer's Guide: SQL/JSON Function JSON_TABLE",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/adjsn/function-JSON_TABLE.html"
+    },
+    {
+      "title": "Oracle 19c JSON Developer's Guide: SQL/JSON Path Expressions",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/adjsn/json-path-expressions.html"
+    },
+    {
+      "title": "Oracle 19c JSON Developer's Guide: SQL/JSON Function JSON_VALUE",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/adjsn/function-JSON_VALUE.html"
+    },
+    {
+      "title": "Oracle 26ai JSON Developer's Guide: Using JSON_TABLE with JSON Arrays",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/26/adjsn/using-json_table-json-arrays.html"
+    }
+  ],
+  "reviewNotes": "All examples written from the Oracle 19c docs and not executed; please run them on 19c (and ideally 23ai). Check in particular: (1) Example 5 Option A, capture the exact ORA- error raised by ERROR ON ERROR for qty 'two' (deliberately not quoted in the text); (2) that a non-numeric string into a NUMBER column returns NULL under the default NULL ON ERROR, and that an oversized VARCHAR2 value also returns NULL (warning callout); (3) FORMAT JSON output whitespace in Example 6; (4) FOR ORDINALITY inside NESTED PATH restarting per parent (stated in Oracle's blog, not the 19c reference page); (5) the version claims in the FAQ (JSON_TABLE in 12.1.0.2, JSON type in 21c). Output blocks are hand-written expected output, column widths approximate.",
+  "generatedAt": "2026-11-02T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">JSON_TABLE</code> turns JSON stored in a column into ordinary rows and columns, so you can query it with normal SQL. You put it in the <code class=\"inline-code\">FROM</code> clause, give it a row path such as <code class=\"inline-code\">'$'</code>, and list the columns you want, each with its own path like <code class=\"inline-code\">'$.customer.name'</code>. Arrays inside the document become extra rows through <code class=\"inline-code\">NESTED PATH</code>."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This tutorial is a complete <b>oracle json_table example</b> on a small orders table. You will flatten simple fields, turn an array of line items into rows, number those rows, handle missing fields, catch bad data that Oracle hides by default, and wrap it all in a view. The examples follow the Oracle 19c documentation and also work in 21c and 23ai."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How JSON_TABLE works",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle describes JSON_TABLE as a <b>row source</b>. For every JSON value matched by the row path expression, it produces one row of a virtual table. The COLUMNS clause then reads values out of that matched JSON using column path expressions."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "When you write <code class=\"inline-code\">FROM orders o, JSON_TABLE(o.order_doc, ...)</code>, the JSON_TABLE call is joined laterally to the orders table. That means it runs once per order row and can see that row's document. Each order can produce zero, one or many output rows."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Here are the parts you will use most:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Part",
+            "What it does"
+          ],
+          [
+            "Row path, e.g. '$'",
+            "Picks what one output row is. '$' means the whole document, so one row per document."
+          ],
+          [
+            "PATH '$.field'",
+            "Reads a single scalar value into a typed column, with JSON_VALUE rules."
+          ],
+          [
+            "NESTED PATH '$.arr[*]'",
+            "Turns each array element into its own row, outer joined to the parent."
+          ],
+          [
+            "FOR ORDINALITY",
+            "Generates row numbers (type NUMBER) starting at 1."
+          ],
+          [
+            "EXISTS PATH",
+            "Returns 'true' or 'false' depending on whether the path exists."
+          ],
+          [
+            "FORMAT JSON",
+            "Returns a JSON fragment (object or array) as text instead of a scalar."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Path expressions use JavaScript style. Array indexes start at 0, and [*] means every element. Field names are matched case-sensitively, which causes one of the most common mistakes covered later."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Create an orders table that stores each order as a JSON document in a CLOB column. The <code class=\"inline-code\">IS JSON</code> check constraint makes Oracle reject text that is not well-formed JSON. It is optional for JSON_TABLE, but it is good practice."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE orders (\n  order_id   NUMBER PRIMARY KEY,\n  order_doc  CLOB CONSTRAINT orders_doc_is_json CHECK (order_doc IS JSON)\n);\n\nINSERT INTO orders VALUES (1,\n  '{\"customer\":{\"name\":\"Asha Rao\",\"city\":\"Pune\"},\n    \"status\":\"SHIPPED\",\n    \"items\":[{\"sku\":\"KB-101\",\"qty\":2,\"price\":1500},\n             {\"sku\":\"MS-220\",\"qty\":1,\"price\":650}]}');\n\nINSERT INTO orders VALUES (2,\n  '{\"customer\":{\"name\":\"Vikram Shah\",\"city\":\"Mumbai\"},\n    \"status\":\"PENDING\",\n    \"coupon\":\"DIWALI10\",\n    \"items\":[{\"sku\":\"MN-400\",\"qty\":1,\"price\":12500}]}');\n\nINSERT INTO orders VALUES (3,\n  '{\"customer\":{\"name\":\"Neha Iyer\",\"city\":\"Chennai\"},\n    \"status\":\"CANCELLED\",\n    \"items\":[]}');\n\nCOMMIT;",
+        "caption": "Sample orders table with JSON documents"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Order 1 has two line items, order 2 has one item and a coupon, and order 3 has an empty items array. These three shapes are enough to show every behaviour that matters."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "",
+        "text": "In Oracle 21c and later you can declare the column with the native <code class=\"inline-code\">JSON</code> data type instead of CLOB with a check constraint. The JSON_TABLE queries below are the same either way."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 1: flatten simple fields into columns",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Start with one row per order. The row path is '$', the whole document, and each column reads one field."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT o.order_id, jt.customer_name, jt.city, jt.status\n  FROM orders o,\n       JSON_TABLE(o.order_doc, '$'\n         COLUMNS (\n           customer_name VARCHAR2(50) PATH '$.customer.name',\n           city          VARCHAR2(30) PATH '$.customer.city',\n           status        VARCHAR2(20) PATH '$.status'\n         )) jt\n ORDER BY o.order_id;",
+        "caption": "One row per order"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORDER_ID CUSTOMER_NAME  CITY     STATUS\n-------- -------------- -------- ---------\n       1 Asha Rao       Pune     SHIPPED\n       2 Vikram Shah    Mumbai   PENDING\n       3 Neha Iyer      Chennai  CANCELLED",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Each document matched '$' once, so each order produced one row. The path <code class=\"inline-code\">'$.customer.name'</code> walks into the nested customer object. You choose the SQL type of every column, so <code class=\"inline-code\">jt.city</code> is a real VARCHAR2 you can filter, sort and join on."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 2: turn a JSON array into rows with NESTED PATH",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Line items live in an array. To get one row per item, add a <code class=\"inline-code\">NESTED PATH</code> with its own COLUMNS clause. Parent columns repeat on every item row."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT o.order_id, jt.customer_name, jt.line_no,\n       jt.sku, jt.qty, jt.price\n  FROM orders o,\n       JSON_TABLE(o.order_doc, '$'\n         COLUMNS (\n           customer_name VARCHAR2(50) PATH '$.customer.name',\n           NESTED PATH '$.items[*]'\n             COLUMNS (\n               line_no FOR ORDINALITY,\n               sku     VARCHAR2(20) PATH '$.sku',\n               qty     NUMBER       PATH '$.qty',\n               price   NUMBER       PATH '$.price'\n             )\n         )) jt\n ORDER BY o.order_id, jt.line_no;",
+        "caption": "One row per line item"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORDER_ID CUSTOMER_NAME  LINE_NO SKU     QTY  PRICE\n-------- -------------- ------- ------- ---- ------\n       1 Asha Rao             1 KB-101     2   1500\n       1 Asha Rao             2 MS-220     1    650\n       2 Vikram Shah          1 MN-400     1  12500\n       3 Neha Iyer",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Three things to notice in this result:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Order 1 appears twice</b> because its items array has two elements. The customer name is repeated on each item row.",
+            "items": []
+          },
+          {
+            "content": "<b>Order 3 is still there</b> with NULL item columns. Oracle joins a parent COLUMNS clause to a nested one with an outer join, the parent being the outer side. An empty array does not remove the parent row.",
+            "items": []
+          },
+          {
+            "content": "<b>line_no restarts at 1 for each order.</b> FOR ORDINALITY inside the nested clause numbers the items within their parent document, not across the whole result.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Why not use '$.items[*]' as the row path?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You can make the array itself the row path. It is shorter, but it changes the result:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT o.order_id, jt.sku, jt.qty\n  FROM orders o,\n       JSON_TABLE(o.order_doc, '$.items[*]'\n         COLUMNS (\n           sku VARCHAR2(20) PATH '$.sku',\n           qty NUMBER       PATH '$.qty'\n         )) jt\n ORDER BY o.order_id;",
+        "caption": "Array as the row path"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORDER_ID SKU     QTY\n-------- ------- ----\n       1 KB-101     2\n       1 MS-220     1\n       2 MN-400     1",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Order 3 has disappeared. When the row path matches nothing, JSON_TABLE returns no rows for that document, and the comma join drops the order. Also, inside the COLUMNS clause the context is now one item, so you cannot reach <code class=\"inline-code\">$.customer.name</code> from there. Use '$' plus NESTED PATH when you need parent fields or want to keep orders with no items."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 3: handle optional fields",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Real documents are not uniform. Only order 2 has a coupon. A missing field returns NULL by default, but you can supply a default with <code class=\"inline-code\">DEFAULT ... ON EMPTY</code>, and test for presence with <code class=\"inline-code\">EXISTS PATH</code>."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT o.order_id, jt.coupon, jt.has_coupon\n  FROM orders o,\n       JSON_TABLE(o.order_doc, '$'\n         COLUMNS (\n           coupon     VARCHAR2(20) PATH '$.coupon'\n                      DEFAULT 'NONE' ON EMPTY,\n           has_coupon VARCHAR2(5)  EXISTS PATH '$.coupon'\n         )) jt\n ORDER BY o.order_id;",
+        "caption": "Default values and existence checks"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORDER_ID COUPON    HAS_COUPON\n-------- --------- ----------\n       1 NONE      false\n       2 DIWALI10  true\n       3 NONE      false",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "ON EMPTY applies only when the path finds nothing. If the field exists but holds a value that cannot be converted, that is an error, not an empty result, and ON ERROR decides what happens. The next example shows why that difference matters."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 4: aggregate values from the array",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Once JSON is rows, all of SQL is available. Here is the order total and the number of line items, grouped by order:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT o.order_id, jt.status,\n       COUNT(jt.sku)                    AS item_lines,\n       NVL(SUM(jt.qty * jt.price), 0)   AS order_total\n  FROM orders o,\n       JSON_TABLE(o.order_doc, '$'\n         COLUMNS (\n           status VARCHAR2(20) PATH '$.status',\n           NESTED PATH '$.items[*]'\n             COLUMNS (\n               sku   VARCHAR2(20) PATH '$.sku',\n               qty   NUMBER       PATH '$.qty',\n               price NUMBER       PATH '$.price'\n             )\n         )) jt\n GROUP BY o.order_id, jt.status\n ORDER BY o.order_id;",
+        "caption": "Order totals computed from the items array"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORDER_ID STATUS     ITEM_LINES ORDER_TOTAL\n-------- ---------- ---------- -----------\n       1 SHIPPED             2        3650\n       2 PENDING             1       12500\n       3 CANCELLED           0           0",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Order 1 is 2 x 1500 + 1 x 650 = 3650. Order 3 keeps its row because of the nested outer join, and <code class=\"inline-code\">COUNT(jt.sku)</code> correctly gives 0 since COUNT of a column ignores NULLs. <code class=\"inline-code\">COUNT(*)</code> would have returned 1 for order 3, which is wrong."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 5: catch bad data that becomes NULL silently",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The default error handler for JSON_TABLE, at both row and column level, is NULL ON ERROR. A value that cannot be converted to the column type does not raise an error. It becomes NULL. Add an order where the quantity was stored as text:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "INSERT INTO orders VALUES (4,\n  '{\"customer\":{\"name\":\"Rahul Verma\",\"city\":\"Delhi\"},\n    \"status\":\"PENDING\",\n    \"items\":[{\"sku\":\"KB-101\",\"qty\":\"two\",\"price\":1500}]}');\nCOMMIT;",
+        "caption": "A valid JSON document with a bad quantity"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The check constraint accepts it, because the document is well-formed JSON. Run Example 4 again and order 4 shows an order total of 0 with one item line, because qty became NULL and so did qty * price. Nothing tells you the data was wrong."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Option A: fail loudly with ERROR ON ERROR",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT o.order_id, jt.qty\n  FROM orders o,\n       JSON_TABLE(o.order_doc, '$'\n         COLUMNS (\n           NESTED PATH '$.items[*]'\n             COLUMNS (\n               qty NUMBER PATH '$.qty' ERROR ON ERROR\n             )\n         )) jt;",
+        "caption": "Raise an error instead of returning NULL"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now the query stops with an error when it reaches order 4 instead of returning a wrong answer. You can also put ERROR ON ERROR right before COLUMNS to make it the default for every column. This is the safer setting for loading jobs and for testing a new query."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Option B: find the bad rows",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To list the offending documents without failing, read the same field twice: once as NUMBER and once as text."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT o.order_id, jt.sku, jt.qty_raw\n  FROM orders o,\n       JSON_TABLE(o.order_doc, '$'\n         COLUMNS (\n           NESTED PATH '$.items[*]'\n             COLUMNS (\n               sku     VARCHAR2(20) PATH '$.sku',\n               qty     NUMBER       PATH '$.qty',\n               qty_raw VARCHAR2(20) PATH '$.qty'\n             )\n         )) jt\n WHERE jt.qty IS NULL\n   AND jt.qty_raw IS NOT NULL;",
+        "caption": "Rows where qty exists but is not numeric"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORDER_ID SKU     QTY_RAW\n-------- ------- -------\n       4 KB-101  two",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "",
+        "text": "The same silent NULL happens when a string is longer than the VARCHAR2 size you declared. If a column comes back NULL and you are sure the field exists, check the declared size first. Add TRUNCATE after the type if you prefer a cut-off value to a NULL."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 6: return a whole array with FORMAT JSON",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Sometimes you want the raw array as one value, for example to pass it to an API. A normal PATH column must target a scalar. Add <code class=\"inline-code\">FORMAT JSON</code> to get the JSON text instead:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT o.order_id, jt.items_json\n  FROM orders o,\n       JSON_TABLE(o.order_doc, '$'\n         COLUMNS (\n           items_json VARCHAR2(400) FORMAT JSON PATH '$.items'\n         )) jt\n WHERE o.order_id = 2;",
+        "caption": "Project the items array as JSON text"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORDER_ID ITEMS_JSON\n-------- -------------------------------------------\n       2 [{\"sku\":\"MN-400\",\"qty\":1,\"price\":12500}]",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle may return the JSON text without the original spaces and line breaks, as shown here. Without FORMAT JSON, this column would be NULL, because an array is not a scalar."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 7: hide the JSON behind a view",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The Oracle documentation calls a view over JSON_TABLE a common pattern. Report writers and other developers then query plain columns and never see a path expression."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE OR REPLACE VIEW order_items_v AS\nSELECT o.order_id, jt.*\n  FROM orders o,\n       JSON_TABLE(o.order_doc, '$'\n         COLUMNS (\n           customer_name VARCHAR2(50) PATH '$.customer.name',\n           city          VARCHAR2(30) PATH '$.customer.city',\n           status        VARCHAR2(20) PATH '$.status',\n           NESTED PATH '$.items[*]'\n             COLUMNS (\n               line_no FOR ORDINALITY,\n               sku     VARCHAR2(20) PATH '$.sku',\n               qty     NUMBER       PATH '$.qty',\n               price   NUMBER       PATH '$.price'\n             )\n         )) jt;\n\nSELECT order_id, customer_name, qty\n  FROM order_items_v\n WHERE sku = 'KB-101'\n ORDER BY order_id;",
+        "caption": "A relational view over JSON documents"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORDER_ID CUSTOMER_NAME  QTY\n-------- -------------- ----\n       1 Asha Rao          2\n       4 Rahul Verma",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Order 4 appears with a NULL quantity, the same silent NULL from Example 5. If the JSON structure changes later, you only redefine the view. The stored documents stay as they are."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Wrong case in the path",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Path matching is case-sensitive. <code class=\"inline-code\">'$.Customer.Name'</code> does not match a field called name, and with the default NULL ON ERROR you just get NULL. Copy field names exactly from a sample document."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Losing parent rows",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Using the array as the row path, or a comma join when the document itself is NULL, drops the parent row. If a document is NULL, JSON_TABLE returns no rows for it. To keep every order, use '$' with NESTED PATH, or the form the documentation recommends: <code class=\"inline-code\">FROM orders o LEFT OUTER JOIN JSON_TABLE(o.order_doc, ...) jt ON 1 = 1</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Trusting the default error handling",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "NULL ON ERROR is convenient for exploring data and dangerous for totals. Use ERROR ON ERROR, or the two-column check from Example 5, before you build reports on a new feed."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Counting with COUNT(*) after NESTED PATH",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "An order with an empty array still produces one row with NULL item columns. COUNT(*) counts that row. Count a nested column, such as COUNT(jt.sku), instead."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Forgetting ORDER BY",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Like any query, JSON_TABLE output has no guaranteed order without ORDER BY. Sort by the parent key and the ordinality column when item order matters."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Performance tips",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>One JSON_TABLE instead of many JSON_VALUE calls.</b> The documentation points out that JSON_TABLE parses the document once for all its columns. Several JSON_VALUE calls on the same column each read the document separately.",
+            "items": []
+          },
+          {
+            "content": "<b>Filter on relational columns first.</b> A predicate such as WHERE o.order_id = 2 or a date column on the base table cuts rows before any JSON is parsed.",
+            "items": []
+          },
+          {
+            "content": "<b>Index fields you filter on often.</b> A function-based index on an expression such as <code class=\"inline-code\">JSON_VALUE(order_doc, '$.status')</code> lets Oracle find matching documents without parsing every row. Your query must use the same expression.",
+            "items": []
+          },
+          {
+            "content": "<b>Materialize heavy reporting views.</b> Oracle supports materialized views built on JSON_TABLE, which pays the flattening cost once instead of on every report run.",
+            "items": []
+          },
+          {
+            "content": "<b>Declare realistic column sizes.</b> Oversized VARCHAR2 columns waste memory in large sorts, and undersized ones return silent NULLs. Size them from the data.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Check the plan with DBMS_XPLAN to confirm what Oracle does. Our guide on <a href=\"/posts/plsql/how-to-read-explain-plan-in-oracle/\">how to read an explain plan in Oracle</a> covers that step."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is JSON_TABLE in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "It is a SQL function used in the FROM clause that projects JSON data as a virtual relational table. You give it a JSON expression, a row path and a list of typed columns, and it returns rows you can join, filter and aggregate."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Which Oracle version supports JSON_TABLE?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "JSON_TABLE arrived with Oracle's SQL/JSON support in 12c Release 1 (12.1.0.2). The examples here use 19c syntax, which also runs in 21c and 23ai. Oracle 21c added the native JSON data type, but JSON_TABLE works the same on CLOB, VARCHAR2 and BLOB columns."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I read a nested array with JSON_TABLE?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Add NESTED PATH '$.array_name[*]' with its own COLUMNS clause. Each element becomes a row, parent columns repeat, and parents with an empty array are kept with NULLs. Nested arrays inside the array can have their own NESTED PATH, since the clause is recursive."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between JSON_VALUE and JSON_TABLE?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "JSON_VALUE returns one scalar value per call and is used in the SELECT list or WHERE clause. JSON_TABLE returns many columns, and many rows for arrays, from one call. Use JSON_VALUE for one or two fields, and JSON_TABLE when you need several fields or array elements."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can I use JSON_TABLE in PL/SQL?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Yes. The first argument can be a PL/SQL variable, so you can loop over a JSON string you received without storing it in a table:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  l_doc CLOB := '{\"items\":[{\"sku\":\"KB-101\",\"qty\":2},\n                           {\"sku\":\"MS-220\",\"qty\":1}]}';\nBEGIN\n  FOR r IN (SELECT jt.sku, jt.qty\n              FROM JSON_TABLE(l_doc, '$.items[*]'\n                     COLUMNS (sku VARCHAR2(20) PATH '$.sku',\n                              qty NUMBER       PATH '$.qty')) jt)\n  LOOP\n    DBMS_OUTPUT.PUT_LINE(r.sku || ' x ' || r.qty);\n  END LOOP;\nEND;\n/",
+        "caption": "JSON_TABLE over a PL/SQL variable"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "KB-101 x 2\nMS-220 x 1",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "Put JSON_TABLE in the FROM clause, joined to the table that holds the documents.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use '$' as the row path when you need parent fields, and NESTED PATH '$.items[*]' for arrays.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use FOR ORDINALITY to number array elements within each parent.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Remember that paths are case-sensitive and failed conversions return NULL by default.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Switch to ERROR ON ERROR for loads and tests, or compare a NUMBER and a VARCHAR2 copy of the field to find bad data.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Count nested columns, not COUNT(*), after an outer-joined NESTED PATH.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Wrap stable JSON_TABLE queries in a view so others can query plain columns.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your JSON report says the order total is 0. The data is fine. Oracle quietly turned a bad value into NULL.\n\nJSON_TABLE turns JSON in a column into normal rows and columns. A few things to get right:\n\n→ Put it in the FROM clause with row path '$' and one typed column per field, like status VARCHAR2(20) PATH '$.status'\n→ Use NESTED PATH '$.items[*]' to get one row per array element. Orders with an empty array are kept, with NULLs\n→ FOR ORDINALITY numbers the items, restarting at 1 for every order\n→ The default is NULL ON ERROR. \"qty\": \"two\" into a NUMBER column gives NULL, not an error. Add ERROR ON ERROR for loads and tests\n→ Paths are case-sensitive. '$.Customer' will not match \"customer\"\n\nBonus: after NESTED PATH, use COUNT(sku) instead of COUNT(*), or empty orders count as 1 item.\n\nDo you store JSON in Oracle tables, or flatten it before it reaches the database?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #JSON",
+    "slides": [
+      {
+        "title": "Oracle JSON_TABLE, explained with examples",
+        "body": "Turn JSON documents into rows and columns you can query"
+      },
+      {
+        "title": "What JSON_TABLE does",
+        "points": [
+          "Runs in the FROM clause, once per document",
+          "Row path picks what one output row is",
+          "Each column reads one field into a SQL type"
+        ]
+      },
+      {
+        "title": "Flatten simple fields",
+        "code": "SELECT o.order_id, jt.*\n  FROM orders o,\n  JSON_TABLE(o.order_doc, '$'\n    COLUMNS (\n      name VARCHAR2(50)\n        PATH '$.customer.name',\n      status VARCHAR2(20)\n        PATH '$.status')) jt;",
+        "lang": "sql"
+      },
+      {
+        "title": "Arrays become rows",
+        "code": "JSON_TABLE(o.order_doc, '$'\n  COLUMNS (\n    status VARCHAR2(20) PATH '$.status',\n    NESTED PATH '$.items[*]'\n      COLUMNS (\n        line_no FOR ORDINALITY,\n        sku VARCHAR2(20) PATH '$.sku',\n        qty NUMBER PATH '$.qty'))) jt",
+        "lang": "sql"
+      },
+      {
+        "title": "Silent NULLs are the default",
+        "points": [
+          "Default error handling is NULL ON ERROR",
+          "\"qty\": \"two\" into NUMBER gives NULL, not an error",
+          "Too long for your VARCHAR2 size also gives NULL",
+          "Add ERROR ON ERROR for loads and tests"
+        ]
+      },
+      {
+        "title": "Mistakes to avoid",
+        "points": [
+          "Paths are case-sensitive: '$.Customer' is not 'customer'",
+          "Row path '$.items[*]' drops orders with no items",
+          "Use COUNT(sku), not COUNT(*), after NESTED PATH",
+          "Add ORDER BY, row order is not guaranteed"
+        ]
+      }
+    ]
+  }
+}
