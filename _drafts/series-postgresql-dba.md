@@ -8,3 +8,4 @@
 - Part 7 | postgresql-dba-part-7-roles-and-privileges | 2026-10-27
 - Part 8 | postgresql-dba-part-8-databases-schemas-search-path | 2026-10-28
 - Part 9 | postgresql-dba-part-9-tablespaces | 2026-10-30
+- Part 10 | postgresql-dba-part-10-connections-sessions | 2026-11-02

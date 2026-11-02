@@ -1,0 +1,1749 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 10: Connections, Sessions and pg_stat_activity",
+ "slug": "postgresql-dba-part-10-connections-sessions",
+ "category": "postgresql",
+ "description": "Check max_connections, see who is connected with pg_stat_activity, and safely cancel or kill PostgreSQL sessions. Tested on PostgreSQL 18 on Ubuntu.",
+ "focusKeyword": "postgresql kill session",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "pg-stat-activity",
+  "connections",
+  "administration"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-9-tablespaces/",
+  "/posts/postgresql/postgresql-deadlock-detected/",
+  "/posts/postgresql/postgresql-dba-part-7-roles-and-privileges/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 19.3 Connections and Authentication (max_connections, reserved_connections, superuser_reserved_connections)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-connection.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 27.2 The Cumulative Statistics System (pg_stat_activity, wait events)",
+   "url": "https://www.postgresql.org/docs/current/monitoring-stats.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 9.28 System Administration Functions (pg_cancel_backend, pg_terminate_backend)",
+   "url": "https://www.postgresql.org/docs/current/functions-admin.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.11 Client Connection Defaults (statement_timeout, transaction_timeout, idle timeouts)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-client.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.8 Error Reporting and Logging (log_connections, log_disconnections)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-logging.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CREATE ROLE (CONNECTION LIMIT)",
+   "url": "https://www.postgresql.org/docs/current/sql-createrole.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: ALTER ROLE",
+   "url": "https://www.postgresql.org/docs/current/sql-alterrole.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: ALTER DATABASE (ALLOW_CONNECTIONS, CONNECTION LIMIT)",
+   "url": "https://www.postgresql.org/docs/current/sql-alterdatabase.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CREATE DATABASE (connection limit notes)",
+   "url": "https://www.postgresql.org/docs/current/sql-createdatabase.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: DROP DATABASE (WITH FORCE)",
+   "url": "https://www.postgresql.org/docs/current/sql-dropdatabase.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 18.5 Shutting Down the Server (SIGKILL warning, terminating a single session)",
+   "url": "https://www.postgresql.org/docs/current/server-shutdown.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes (log_connections options, pg_signal_autovacuum_worker)",
+   "url": "https://www.postgresql.org/docs/current/release-18.html"
+  },
+  {
+   "title": "PostgreSQL 17 release notes (transaction_timeout)",
+   "url": "https://www.postgresql.org/docs/17/release-17.html"
+  },
+  {
+   "title": "PostgreSQL 16 release notes (reserved_connections, pg_use_reserved_connections)",
+   "url": "https://www.postgresql.org/docs/16/release-16.html"
+  }
+ ],
+ "reviewNotes": "Series part 10. Part 9 is live, so the intro links to it. Tested on real PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) from the PGDG repository on Ubuntu 24.04.5 LTS; followed the PostgreSQL 18 documentation (docs/current). All outputs are real. SANDBOX CAVEATS: (1) The postgresql-18 package depends on liburing2, which comes from archive.ubuntu.com and is blocked in this sandbox (this is why Parts 4-9 were tested on 16). This time I built a small local stub package named liburing2 (io_uring functions return ENOSYS) so the real PGDG postgresql-18 package could install; this only affects io_method=io_uring, which is not the default (io_method=worker) and is not used in this article. (2) The sandbox has no systemd, so restarts/reloads were done with pg_ctlcluster 18 main restart / pg_reload_conf(); the article shows sudo systemctl restart|reload postgresql@18-main as on a real Ubuntu server. The pg_lsclusters output in Step 11 is from the sandbox. (3) The sandbox also had a pre-existing 16 main cluster, moved to port 5434; it is not mentioned. (4) The four test sessions were driven by background psql processes fed through pipes rather than interactive terminals, so the client-side messages after termination ('SSL connection has been closed unexpectedly / connection to server was lost') are what a non-interactive psql prints; interactive psql additionally tries to reset the connection. SSL appears because Ubuntu's default config has ssl = on with the snakeoil certificate. (5) PIDs 3207/3212/3216/3221 are consistent across Steps 4-9; Step 6 uses a later webapp session (3293), Step 11 refusals and Step 12-13 timestamps come from separate runs. (6) The kill -9 log lines in the danger callout are real output from a test kill of an idle backend (PID 3026) on the sandbox; the advice itself follows server-shutdown.html. (7) The 10min / 30s timeout values are labelled in the text as examples to agree with the app team, not documentation recommendations. (8) Version notes checked against release notes: reserved_connections and pg_use_reserved_connections new in 16, transaction_timeout new in 17, log_connections option list and setup_durations and pg_signal_autovacuum_worker new in 18; DROP DATABASE WITH (FORCE) available since 13 (stated from memory of the 13 release; the 18 DROP DATABASE page was read for the behaviour). Optional FAQ left out. Length: about 3,500 words of prose including tables (slightly above the 3,200 target) because the part has 13 procedural steps; Step 6 or Step 13 could be trimmed if needed.",
+ "generatedAt": "2026-11-02T13:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 10 of the PostgreSQL DBA series. In <a href=\"/posts/postgresql/postgresql-dba-part-9-tablespaces/\">Part 9 we covered tablespaces</a>, which decide where PostgreSQL stores data on disk. This part is about the people and programs using that data: the <b>connections</b> and <b>sessions</b> open on your server right now."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The short answer to the most searched question in this area: to kill a PostgreSQL session, find its process ID in <code class=\"inline-code\">pg_stat_activity</code> and run <code class=\"inline-code\">SELECT pg_terminate_backend(pid);</code>. If you only want to stop the running query and keep the session, use <code class=\"inline-code\">pg_cancel_backend(pid)</code> instead. By the end of this part you will also be able to check <code class=\"inline-code\">max_connections</code> and how many slots are free, read every important column of <code class=\"inline-code\">pg_stat_activity</code>, find blocked and long idle sessions, limit connections per role and per database, keep emergency slots for DBAs, and set timeouts so forgotten sessions clean themselves up."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "How PostgreSQL turns each connection into its own server process, and what <code class=\"inline-code\">max_connections</code> really limits",
+      "items": []
+     },
+     {
+      "content": "How to list sessions with <code class=\"inline-code\">pg_stat_activity</code> and read the <code class=\"inline-code\">state</code> and wait columns",
+      "items": []
+     },
+     {
+      "content": "The difference between <code class=\"inline-code\">pg_cancel_backend</code> and <code class=\"inline-code\">pg_terminate_backend</code>, and why you never use <code class=\"inline-code\">kill -9</code>",
+      "items": []
+     },
+     {
+      "content": "How to disconnect everyone from one database before maintenance",
+      "items": []
+     },
+     {
+      "content": "How to set connection limits per role and per database, and reserve slots with <code class=\"inline-code\">reserved_connections</code>",
+      "items": []
+     },
+     {
+      "content": "How to use <code class=\"inline-code\">idle_in_transaction_session_timeout</code>, <code class=\"inline-code\">statement_timeout</code> and the PostgreSQL 18 <code class=\"inline-code\">log_connections</code> options",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 9 of this series. You need <a href=\"/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/\">Part 5</a> (reload vs restart), <a href=\"/posts/postgresql/postgresql-dba-part-6-pg-hba-conf-authentication/\">Part 6</a> (pg_hba.conf) and <a href=\"/posts/postgresql/postgresql-dba-part-7-roles-and-privileges/\">Part 7</a> (roles and GRANT) most.",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server with PostgreSQL 18 from the PGDG repository and the cluster <code class=\"inline-code\">18 main</code> running on port 5432, as installed in Part 2.",
+      "items": []
+     },
+     {
+      "content": "A user with sudo rights, so you can run commands as the <code class=\"inline-code\">postgres</code> operating system user.",
+      "items": []
+     },
+     {
+      "content": "Four or five terminal windows (or tmux panes) on the server. Each one will act as a different application user.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL uses one operating system process per connection. When a client connects, the main server process (the <b>postmaster</b>, which you met in Part 1) starts a new child process just for that client. The documentation calls this child a <b>backend</b>. A <b>session</b> is the life of that connection, from login until it disconnects."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A simple comparison: the postmaster is the receptionist at a bank, and each backend is a teller who serves exactly one customer for as long as that customer stays at the counter. More customers means more tellers, and every teller needs a desk and some memory."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "That is why there is a hard limit. <code class=\"inline-code\">max_connections</code> is the number of connection slots (desks). The default is 100. It can only be changed with a server restart, because PostgreSQL sizes some shared memory from it when it starts. Part of those slots are kept back:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "Default",
+      "What it does"
+     ],
+     [
+      "max_connections",
+      "100",
+      "Maximum number of concurrent connections to the server. Restart required."
+     ],
+     [
+      "superuser_reserved_connections",
+      "3",
+      "Last slots kept for superusers only, for emergencies. Restart required."
+     ],
+     [
+      "reserved_connections",
+      "0",
+      "Slots kept for roles with privileges of pg_use_reserved_connections (added in PostgreSQL 16). Restart required."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With the defaults, normal users can open 97 connections. When those are used up, the next normal login fails, but a superuser can still log in and fix the problem. Background processes such as the checkpointer and the PostgreSQL 18 I/O workers are not client connections; they show up in <code class=\"inline-code\">pg_stat_activity</code> with a different <code class=\"inline-code\">backend_type</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every session is always in one <b>state</b>. These are the values the <code class=\"inline-code\">state</code> column of <code class=\"inline-code\">pg_stat_activity</code> can show:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "state",
+      "Meaning"
+     ],
+     [
+      "active",
+      "The backend is running a query right now."
+     ],
+     [
+      "idle",
+      "Connected, waiting for the next command. No transaction is open."
+     ],
+     [
+      "idle in transaction",
+      "A transaction is open (BEGIN was run) but no query is running. Locks are still held."
+     ],
+     [
+      "idle in transaction (aborted)",
+      "Same, but a statement in the transaction failed. The client must ROLLBACK."
+     ],
+     [
+      "starting",
+      "The backend is starting up; client authentication happens in this phase."
+     ],
+     [
+      "fastpath function call",
+      "The backend is running a fast-path function."
+     ],
+     [
+      "disabled",
+      "track_activities is turned off for this backend."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Finally, there are two ways to stop someone. <code class=\"inline-code\">pg_cancel_backend(pid)</code> sends the SIGINT signal: the current query stops with an error, but the session stays connected. <code class=\"inline-code\">pg_terminate_backend(pid)</code> sends SIGTERM: the whole session ends, and any open transaction is rolled back. Think of cancel as tapping the teller on the shoulder to stop the current task, and terminate as closing that teller's counter."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Checking connection limits and usage",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Check the connection settings",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, as the <code class=\"inline-code\">postgres</code> operating system user (through sudo). This query reads the three settings from the <code class=\"inline-code\">pg_settings</code> view you used in Part 5."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SELECT name, setting, context FROM pg_settings WHERE name IN ('max_connections','superuser_reserved_connections','reserved_connections') ORDER BY name;\"",
+    "caption": "Show the connection slot settings"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "              name              | setting |  context\n--------------------------------+---------+------------\n max_connections                | 100     | postmaster\n reserved_connections           | 0       | postmaster\n superuser_reserved_connections | 3       | postmaster\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "These are the defaults. The <code class=\"inline-code\">context</code> value <code class=\"inline-code\">postmaster</code> means the setting can only change at server start, so a reload is not enough. You can also see the lines in <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "max_connections = 100\t\t\t# (change requires restart)\n#reserved_connections = 0\t\t# (change requires restart)\n#superuser_reserved_connections = 3\t# (change requires restart)",
+    "caption": "/etc/postgresql/18/main/postgresql.conf (default)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> <code class=\"inline-code\">SHOW max_connections;</code> in psql returns the same 100."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Count how many connections are in use",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on the database server, in psql as the <code class=\"inline-code\">postgres</code> user (<code class=\"inline-code\">sudo -u postgres psql</code>). The first query compares used slots with what is left for normal users."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT count(*) AS used,\n       current_setting('max_connections')::int AS max_conn,\n       current_setting('superuser_reserved_connections')::int\n     + current_setting('reserved_connections')::int AS reserved,\n       current_setting('max_connections')::int\n     - current_setting('superuser_reserved_connections')::int\n     - current_setting('reserved_connections')::int\n     - count(*) AS free_for_normal_users\n  FROM pg_stat_activity\n WHERE backend_type = 'client backend';",
+    "caption": "Used and free connection slots"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " used | max_conn | reserved | free_for_normal_users\n------+----------+----------+-----------------------\n    1 |      100 |        3 |                    96\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only your own psql session is connected, so 96 slots are free for normal users. The filter <code class=\"inline-code\">backend_type = 'client backend'</code> keeps out background processes. This is a good query to put in a monitoring script: alert when <code class=\"inline-code\">free_for_normal_users</code> gets close to zero."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see where connections come from, group them by database and user:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT datname, usename, count(*)\n  FROM pg_stat_activity\n WHERE backend_type = 'client backend'\n GROUP BY 1, 2\n ORDER BY 3 DESC;",
+    "caption": "Connections per database and user"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " datname  | usename  | count\n----------+----------+-------\n postgres | postgres |     1\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Seeing who is connected with pg_stat_activity",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Create a test database and open four sessions",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To have something to look at, create an application role, a database and a small <code class=\"inline-code\">orders</code> table. <b>Where:</b> on the server, as the <code class=\"inline-code\">postgres</code> user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"CREATE ROLE app_user LOGIN PASSWORD 'App#2026pass';\"\nsudo -u postgres psql -c \"CREATE DATABASE shopdb OWNER app_user;\"",
+    "caption": "Create the test role and database"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE ROLE\nCREATE DATABASE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now connect as <code class=\"inline-code\">app_user</code> over TCP to localhost (the default Ubuntu <code class=\"inline-code\">pg_hba.conf</code> from Part 6 allows scram-sha-256 there) and create the table:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql -h localhost -U app_user -d shopdb",
+    "caption": "Connect as app_user (enter the password when asked)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders (\n  order_id    integer PRIMARY KEY,\n  customer    text NOT NULL,\n  amount      numeric(10,2) NOT NULL,\n  status      text NOT NULL DEFAULT 'NEW'\n);\nINSERT INTO orders VALUES\n  (1, 'Asha',  1200.00, 'NEW'),\n  (2, 'Ravi',   850.50, 'PAID'),\n  (3, 'Meena', 4300.00, 'NEW');",
+    "caption": "Sample table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLE\nINSERT 0 3",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Next, open four terminals. In each one, start psql with a different application name so you can tell the sessions apart. The <code class=\"inline-code\">PGAPPNAME</code> environment variable sets <code class=\"inline-code\">application_name</code> for that connection."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-h localhost",
+      "Connect over TCP to the host localhost instead of the Unix socket"
+     ],
+     [
+      "-U app_user",
+      "Connect as the database user app_user"
+     ],
+     [
+      "-d shopdb",
+      "Connect to the database shopdb"
+     ],
+     [
+      "PGAPPNAME=billing",
+      "Environment variable that sets application_name, shown in pg_stat_activity"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Terminal 1: a long running query\nPGAPPNAME=billing psql -h localhost -U app_user -d shopdb\nshopdb=> SELECT pg_sleep(600);\n\n# Terminal 2: a transaction that is left open\nPGAPPNAME=report psql -h localhost -U app_user -d shopdb\nshopdb=> BEGIN;\nshopdb=*> UPDATE orders SET status = 'PAID' WHERE order_id = 1;\n\n# Terminal 3: an update of the same row (it will wait)\nPGAPPNAME=checkout psql -h localhost -U app_user -d shopdb\nshopdb=> UPDATE orders SET amount = 1250.00 WHERE order_id = 1;\n\n# Terminal 4: a session that just sits connected\nPGAPPNAME=webapp psql -h localhost -U app_user -d shopdb",
+    "caption": "Four test sessions, one per terminal"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Terminal 2 holds a row lock on order 1 because its transaction is still open. Terminal 3 wants the same row, so it hangs. This is exactly the kind of situation a DBA is called for."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: List the client sessions",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> a fifth terminal, in psql as the <code class=\"inline-code\">postgres</code> user. A superuser sees every column for every session."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, usename, datname, application_name, client_addr,\n       state, wait_event_type, wait_event,\n       date_trunc('second', now() - state_change) AS in_state_for,\n       left(query, 40) AS query\n  FROM pg_stat_activity\n WHERE backend_type = 'client backend'\n   AND pid <> pg_backend_pid()\n ORDER BY backend_start;",
+    "caption": "Who is connected and what are they doing?"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  | usename  | datname | application_name | client_addr |        state        | wait_event_type |  wait_event   | in_state_for |                  query\n------+----------+---------+------------------+-------------+---------------------+-----------------+---------------+--------------+------------------------------------------\n 3207 | app_user | shopdb  | billing          | 127.0.0.1   | active              | Timeout         | PgSleep       | 00:00:42     | SELECT pg_sleep(600);\n 3212 | app_user | shopdb  | report           | 127.0.0.1   | idle in transaction | Client          | ClientRead    | 00:00:41     | UPDATE orders SET status = 'PAID' WHERE\n 3216 | app_user | shopdb  | checkout         | 127.0.0.1   | active              | Lock            | transactionid | 00:00:40     | UPDATE orders SET amount = 1250.00 WHERE\n 3221 | app_user | shopdb  | webapp           | 127.0.0.1   | idle                | Client          | ClientRead    | 00:00:40     |\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it row by row:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>3207 billing</b> is <code class=\"inline-code\">active</code>. The wait event <code class=\"inline-code\">Timeout / PgSleep</code> shows it is sleeping, as asked.",
+      "items": []
+     },
+     {
+      "content": "<b>3212 report</b> is <code class=\"inline-code\">idle in transaction</code>. It ran its UPDATE 41 seconds ago and is now waiting for the client (<code class=\"inline-code\">ClientRead</code>) while holding the row lock. For an idle session, <code class=\"inline-code\">query</code> shows the <i>last</i> statement, not a running one.",
+      "items": []
+     },
+     {
+      "content": "<b>3216 checkout</b> is <code class=\"inline-code\">active</code> but waiting on <code class=\"inline-code\">Lock / transactionid</code>: it is blocked by another transaction.",
+      "items": []
+     },
+     {
+      "content": "<b>3221 webapp</b> is plain <code class=\"inline-code\">idle</code>. An idle session costs a slot and some memory, but holds no locks.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">pid</code> is the operating system process ID of the backend. You can see the same processes with <code class=\"inline-code\">ps</code>; PostgreSQL writes the user, database, client and current activity into the process title:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "ps -o pid,cmd -u postgres | grep -E \"app_user|PID\"",
+    "caption": "The same sessions as Linux processes"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-o pid,cmd",
+      "Print only the process ID and the full command (process title)"
+     ],
+     [
+      "-u postgres",
+      "Show only processes owned by the postgres OS user"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  PID CMD\n 3207 postgres: 18/main: app_user shopdb 127.0.0.1(40632) SELECT\n 3212 postgres: 18/main: app_user shopdb 127.0.0.1(40636) idle in transaction\n 3216 postgres: 18/main: app_user shopdb 127.0.0.1(40640) UPDATE waiting\n 3221 postgres: 18/main: app_user shopdb 127.0.0.1(40646) idle",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The state count gives a quick overview. Your own monitoring session is included, which is why there are three active sessions:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT state, count(*)\n  FROM pg_stat_activity\n WHERE backend_type = 'client backend'\n GROUP BY state\n ORDER BY count(*) DESC;",
+    "caption": "Sessions per state"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "        state        | count\n---------------------+-------\n active              |     3\n idle                |     1\n idle in transaction |     1\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "The <code class=\"inline-code\">query</code> column is cut at 1024 bytes by default. To see longer statements, raise <code class=\"inline-code\">track_activity_query_size</code>; it can only be changed at server start."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Find long transactions and blocked sessions",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> the same postgres psql session. Long open transactions are the sessions a DBA worries about most. <code class=\"inline-code\">xact_start</code> is when the current transaction began:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, application_name, state,\n       date_trunc('second', now() - xact_start) AS xact_age,\n       left(query, 40) AS query\n  FROM pg_stat_activity\n WHERE xact_start IS NOT NULL\n   AND backend_type = 'client backend'\n   AND pid <> pg_backend_pid()\n ORDER BY xact_start;",
+    "caption": "Oldest open transactions first"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  | application_name |        state        | xact_age |                  query\n------+------------------+---------------------+----------+------------------------------------------\n 3207 | billing          | active              | 00:00:42 | SELECT pg_sleep(600);\n 3212 | report           | idle in transaction | 00:00:41 | UPDATE orders SET status = 'PAID' WHERE\n 3216 | checkout         | active              | 00:00:40 | UPDATE orders SET amount = 1250.00 WHERE\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now ask who is blocking whom. The function <code class=\"inline-code\">pg_blocking_pids(pid)</code> returns the process IDs that hold the lock a session is waiting for:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, application_name,\n       pg_blocking_pids(pid) AS blocked_by,\n       left(query, 40) AS query\n  FROM pg_stat_activity\n WHERE cardinality(pg_blocking_pids(pid)) > 0;",
+    "caption": "Blocked sessions and their blockers"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  | application_name | blocked_by |                  query\n------+------------------+------------+------------------------------------------\n 3216 | checkout         | {3212}     | UPDATE orders SET amount = 1250.00 WHERE\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "checkout (3216) is waiting for report (3212), the idle-in-transaction session. Locks get a full part later in the series (Part 29); for the case where two sessions wait for each other, see <a href=\"/posts/postgresql/postgresql-deadlock-detected/\">PostgreSQL deadlock detected: causes and fixes</a>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Let a support role see and stop sessions without superuser",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A normal role sees only its own sessions in full. For other users' sessions the query is hidden. <b>Where:</b> as a login role <code class=\"inline-code\">support_dba</code> that is not a superuser (created with <code class=\"inline-code\">CREATE ROLE support_dba LOGIN PASSWORD ...</code> as in Part 7):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, usename, state, query\n  FROM pg_stat_activity\n WHERE usename = 'app_user';\nSELECT pg_terminate_backend(3293);",
+    "caption": "As support_dba, before any grants"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  | usename  | state |          query\n------+----------+-------+--------------------------\n 3293 | app_user |       | <insufficient privilege>\n(1 row)\n\nERROR:  permission denied to terminate process\nDETAIL:  Only roles with privileges of the role whose process is being terminated or with privileges of the \"pg_signal_backend\" role may terminate this process.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two predefined roles solve this. <code class=\"inline-code\">pg_read_all_stats</code> lets a role read all <code class=\"inline-code\">pg_stat_*</code> views in full, and <code class=\"inline-code\">pg_signal_backend</code> lets it cancel or terminate other non-superuser sessions. <b>Where:</b> as the postgres superuser:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "GRANT pg_read_all_stats, pg_signal_backend TO support_dba;",
+    "caption": "Give the support role monitoring and signal rights"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "GRANT ROLE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> run the same two statements again as <code class=\"inline-code\">support_dba</code>. The state is now visible (3293 was an idle session with no query yet, so <code class=\"inline-code\">query</code> is empty) and the terminate works:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  | usename  | state | query\n------+----------+-------+-------\n 3293 | app_user | idle  |\n(1 row)\n\n pg_terminate_backend\n----------------------\n t\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Superuser sessions stay protected. When support_dba tries to terminate a postgres session it gets:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  permission denied to terminate process\nDETAIL:  Only roles with the SUPERUSER attribute may terminate processes of roles with the SUPERUSER attribute.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">REVOKE pg_read_all_stats, pg_signal_backend FROM support_dba;</code>. PostgreSQL 18 also adds <code class=\"inline-code\">pg_signal_autovacuum_worker</code>, which allows signalling autovacuum workers only."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Cancelling and terminating sessions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Cancel a running query with pg_cancel_backend",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Start with the gentle option. <b>Where:</b> postgres psql session. The billing session (3207) is running a long query:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_cancel_backend(3207);",
+    "caption": "Cancel the current query of PID 3207"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_cancel_backend\n-------------------\n t\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">t</code> means the signal was sent. In terminal 1 the user sees their query fail:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  canceling statement due to user request",
+    "caption": "Output in terminal 1 (billing)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> the session is still there, now idle:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, application_name, state, left(query, 30) AS query\n  FROM pg_stat_activity WHERE pid = 3207;",
+    "caption": "Verify the session survived"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  | application_name | state |         query\n------+------------------+-------+-----------------------\n 3207 | billing          | idle  | SELECT pg_sleep(600);\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the query was inside a transaction, that transaction is now in the aborted state and the application must roll it back. Cancel is the right first move for a runaway report or a forgotten query: nobody loses their connection."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Terminate a session with pg_terminate_backend",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Cancelling does not help the report session (3212): it is not running anything, it is just holding a lock. Terminating ends the session and rolls its transaction back. The function takes two arguments:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Argument",
+      "What it does"
+     ],
+     [
+      "pid",
+      "Process ID of the backend to terminate, from pg_stat_activity.pid"
+     ],
+     [
+      "timeout (milliseconds, default 0)",
+      "0: return true as soon as the signal is sent. Greater than 0: wait until the process has really exited, or return false with a warning when the time runs out"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_terminate_backend(3212, 5000);",
+    "caption": "Terminate PID 3212 and wait up to 5 seconds for it to exit"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_terminate_backend\n----------------------\n t\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Because a timeout was given, <code class=\"inline-code\">t</code> here means the process really ended. The server log (<code class=\"inline-code\">/var/log/postgresql/postgresql-18-main.log</code>) records it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-02 13:02:46.252 UTC [3212] app_user@shopdb FATAL:  terminating connection due to administrator command",
+    "caption": "Output (server log)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The client of a terminated session sees the same FATAL message the next time it sends a command, and psql reports that the connection was lost. Here is a script-driven psql session that ran <code class=\"inline-code\">SELECT 1;</code> after being terminated:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "FATAL:  terminating connection due to administrator command\nSSL connection has been closed unexpectedly\nconnection to server was lost",
+    "caption": "Output (client side)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> the lock is gone, so the checkout UPDATE in terminal 3 finished on its own and printed UPDATE 1. Only two sessions remain, and the report session's status change was rolled back:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  | application_name | state\n------+------------------+-------\n 3207 | billing          | idle\n 3221 | webapp           | idle\n(2 rows)\n\n order_id | status | amount\n----------+--------+---------\n        1 | NEW    | 1250.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Order 1 still has status NEW (the terminated transaction's UPDATE was undone) and the new amount 1250.00 from checkout. If you pass a PID that is not a PostgreSQL backend, you get <code class=\"inline-code\">WARNING:  PID 99999 is not a PostgreSQL backend process</code> and the result <code class=\"inline-code\">f</code>."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Do not kill -9",
+    "text": "Never use <code class=\"inline-code\">kill -9</code> (SIGKILL) on a PostgreSQL backend. The postmaster cannot know what that process left half-written in shared memory, so it terminates <b>every</b> session and runs crash recovery. In a test, killing one idle backend with kill -9 produced: <i>client backend (PID 3026) was terminated by signal 9: Killed</i>, then <i>terminating any other active server processes</i> and <i>database system was not properly shut down; automatic recovery in progress</i>. The documentation says to end a single session with pg_terminate_backend() or a plain SIGTERM to that process."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Disconnect everyone from one database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before some maintenance (renaming or dropping a database, or a restore into it) you need it empty. Terminating sessions alone is not enough, because applications reconnect at once. So first block new connections, then terminate. <b>Where:</b> postgres psql session, connected to the <code class=\"inline-code\">postgres</code> database, not to <code class=\"inline-code\">shopdb</code>."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "This disconnects every user of the database and rolls back their open transactions. On production, agree a maintenance window with the application owners first."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER DATABASE shopdb ALLOW_CONNECTIONS false;\n\nSELECT pid, application_name,\n       pg_terminate_backend(pid, 5000) AS terminated\n  FROM pg_stat_activity\n WHERE datname = 'shopdb'\n   AND backend_type = 'client backend'\n   AND pid <> pg_backend_pid();",
+    "caption": "Block new logins, then terminate existing sessions"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER DATABASE\n pid  | application_name | terminated\n------+------------------+------------\n 3207 | billing          | t\n 3221 | webapp           | t\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> no sessions are left, the flag is off, and a new login is refused, even for a superuser:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT count(*) AS sessions_left\n  FROM pg_stat_activity\n WHERE datname = 'shopdb';\n\nSELECT datname, datallowconn, datconnlimit\n  FROM pg_database WHERE datname = 'shopdb';",
+    "caption": "Verify the database is empty and closed"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " sessions_left\n---------------\n             0\n(1 row)\n\n datname | datallowconn | datconnlimit\n---------+--------------+--------------\n shopdb  | f            |           -1\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: FATAL:  database \"shopdb\" is not currently accepting connections",
+    "caption": "Output (new login attempt)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> when the maintenance is done, open the database again and test a login:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER DATABASE shopdb ALLOW_CONNECTIONS true;",
+    "caption": "Allow connections again"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER DATABASE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the goal is to drop the database, <code class=\"inline-code\">DROP DATABASE shopdb WITH (FORCE);</code> (PostgreSQL 13 and later) terminates the connections for you. The documentation notes it does not do so when prepared transactions, active logical replication slots or subscriptions exist in that database."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Limiting connections",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Set limits per role and per database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "One badly configured application can use up every slot and lock out the others. A <code class=\"inline-code\">CONNECTION LIMIT</code> caps one role or one database. <b>Where:</b> postgres psql session."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER ROLE app_user CONNECTION LIMIT 2;\nALTER DATABASE shopdb CONNECTION LIMIT 50;\n\nSELECT rolname, rolconnlimit FROM pg_roles WHERE rolname = 'app_user';\nSELECT datname, datconnlimit FROM pg_database WHERE datname = 'shopdb';",
+    "caption": "Cap a role and a database"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER ROLE\nALTER DATABASE\n rolname  | rolconnlimit\n----------+--------------\n app_user |            2\n(1 row)\n\n datname | datconnlimit\n---------+--------------\n shopdb  |           50\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> with two app_user sessions already open, a third login fails:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: FATAL:  too many connections for role \"app_user\"",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A database limit gives the matching error <code class=\"inline-code\">FATAL:  too many connections for database \"shopdb\"</code>. Keep in mind what the documentation says about these limits: they are enforced only approximately when two logins arrive at the same moment, the database limit is not enforced against superusers, and only normal connections count towards the role limit."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> -1 means no limit, which is the default."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER ROLE app_user CONNECTION LIMIT -1;\nALTER DATABASE shopdb CONNECTION LIMIT -1;",
+    "caption": "Remove the limits"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Change max_connections and reserve slots for DBAs",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see the reserved slots in action, this step uses a deliberately tiny limit on a test server. <b>Where:</b> on the server, as a sudo user, editing <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code>."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "Do not try max_connections = 10 on a server people use: most of them would be locked out. Changing max_connections always needs a restart, which disconnects everyone."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# Before\nmax_connections = 100\t\t\t# (change requires restart)\n#reserved_connections = 0\t\t# (change requires restart)\n#superuser_reserved_connections = 3\t# (change requires restart)\n\n# After (test only)\nmax_connections = 10\t\t\t# (change requires restart)\nreserved_connections = 2\t\t# (change requires restart)\n#superuser_reserved_connections = 3\t# (change requires restart)",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A reload is not enough. If you try, the setting shows <code class=\"inline-code\">pending_restart = t</code> and the log says <code class=\"inline-code\">parameter \"max_connections\" cannot be changed without restarting the server</code>. Restart the cluster and check:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl restart postgresql@18-main\npg_lsclusters\nsudo -u postgres psql -c \"SELECT name, setting FROM pg_settings WHERE name IN ('max_connections','reserved_connections','superuser_reserved_connections') ORDER BY name;\"",
+    "caption": "Restart and verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log\n              name              | setting\n--------------------------------+---------\n max_connections                | 10\n reserved_connections           | 2\n superuser_reserved_connections | 3\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now give the support role access to the reserved slots with the predefined role <code class=\"inline-code\">pg_use_reserved_connections</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "GRANT pg_use_reserved_connections TO support_dba;",
+    "caption": "Let support_dba use the reserved slots"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With 10 slots, 3 for superusers and 2 reserved, normal roles get 5. This is what happened as sessions were opened one by one:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Who connects",
+      "Slots in use before",
+      "Result"
+     ],
+     [
+      "app_user, sessions 1 to 5",
+      "0 to 4",
+      "Accepted"
+     ],
+     [
+      "app_user, session 6",
+      "5",
+      "Refused: reserved for pg_use_reserved_connections"
+     ],
+     [
+      "support_dba, sessions 1 and 2",
+      "5 and 6",
+      "Accepted (reserved slots)"
+     ],
+     [
+      "support_dba, session 3",
+      "7",
+      "Refused: reserved for SUPERUSER"
+     ],
+     [
+      "postgres, sessions 1 to 3",
+      "7 to 9",
+      "Accepted (superuser slots)"
+     ],
+     [
+      "postgres, session 4",
+      "10",
+      "Refused: too many clients"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "FATAL:  remaining connection slots are reserved for roles with privileges of the \"pg_use_reserved_connections\" role\nFATAL:  remaining connection slots are reserved for roles with the SUPERUSER attribute\nFATAL:  sorry, too many clients already",
+    "caption": "Output (the three refusals, from the server log)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In production you would keep <code class=\"inline-code\">max_connections</code> at a value your memory can support, and set <code class=\"inline-code\">reserved_connections</code> to a small number so your monitoring and support roles can always log in, without handing them superuser."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> put the file back to the \"Before\" lines and run <code class=\"inline-code\">sudo systemctl restart postgresql@18-main</code> again, then confirm <code class=\"inline-code\">SHOW max_connections;</code> returns 100."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "If you are tempted to raise max_connections into the thousands, remember that every connection is a process. Many idle connections are usually a sign that the application should use a connection pooler. PgBouncer gets its own part later in the series (Part 30)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Timeouts and connection logging",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Set session timeouts for an application role",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Terminating sessions by hand does not scale. These settings let PostgreSQL do it for you. All of them default to 0 (disabled), take milliseconds when no unit is given, and can be set per role or per database:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "What happens when it fires"
+     ],
+     [
+      "statement_timeout",
+      "Cancels any statement that runs longer than the limit; the session stays"
+     ],
+     [
+      "idle_in_transaction_session_timeout",
+      "Terminates a session that sits idle inside an open transaction"
+     ],
+     [
+      "idle_session_timeout",
+      "Terminates a session idle outside a transaction (be careful with poolers)"
+     ],
+     [
+      "transaction_timeout",
+      "Terminates a session whose transaction lasts longer than the limit (PostgreSQL 17 and later)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation advises against setting <code class=\"inline-code\">statement_timeout</code> and <code class=\"inline-code\">transaction_timeout</code> in postgresql.conf, because they would then hit every session, including your maintenance jobs. Set them on the application role instead. <b>Where:</b> postgres psql session. First a 5-second test value so you can watch it work:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER ROLE app_user SET idle_in_transaction_session_timeout = '5s';",
+    "caption": "Test value"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER ROLE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Role settings apply to <i>new</i> sessions. Open a new app_user session, run <code class=\"inline-code\">BEGIN;</code> and an UPDATE, wait more than 5 seconds, then run another command:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\nUPDATE 1\nFATAL:  terminating connection due to idle-in-transaction timeout\nSSL connection has been closed unexpectedly\nconnection to server was lost",
+    "caption": "Output (app_user session)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now set realistic values. Agree the numbers with the application team; the ones below are examples, not recommendations from the documentation:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER ROLE app_user SET idle_in_transaction_session_timeout = '10min';\nALTER ROLE app_user SET statement_timeout = '30s';",
+    "caption": "Values for the application role"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> per-role settings are stored in <code class=\"inline-code\">pg_db_role_setting</code>, and a new session shows them with SHOW. A query that runs too long now fails with:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  canceling statement due to statement timeout",
+    "caption": "Output (app_user running SELECT pg_sleep(35);)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">ALTER ROLE app_user RESET ALL;</code> removes every per-role setting, or <code class=\"inline-code\">ALTER ROLE app_user RESET statement_timeout;</code> removes one."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "An idle-in-transaction session does more harm than holding locks. The documentation points out that an open transaction also stops VACUUM from removing dead rows, so it can cause table bloat. You will see why in Part 11 (MVCC) and Part 12 (VACUUM)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Log connections and disconnections",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When users say \"I keep getting disconnected\", the server log is your evidence. PostgreSQL 18 turned <code class=\"inline-code\">log_connections</code> from on/off into a list of options. <b>Where:</b> on the server, as a sudo user, in <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# Before (default)\n#log_connections = '' # log aspects of connection setup\n#log_disconnections = off\n\n# After\nlog_connections = 'authorization,setup_durations' # log aspects of connection setup\nlog_disconnections = on",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "log_connections option",
+      "What it logs"
+     ],
+     [
+      "receipt",
+      "That a connection was received"
+     ],
+     [
+      "authentication",
+      "The identity used by the authentication method (failed logins are always logged)"
+     ],
+     [
+      "authorization",
+      "Successful authorization: user, database and application name"
+     ],
+     [
+      "setup_durations",
+      "Time to set up the connection, fork the backend and authenticate (new in 18)"
+     ],
+     [
+      "all",
+      "All of the above"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The old values <code class=\"inline-code\">on</code> and <code class=\"inline-code\">off</code> still work; <code class=\"inline-code\">on</code> means receipt, authentication and authorization. Both settings take effect for new sessions after a reload, no restart needed:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main\nsudo -u postgres psql -c \"SELECT name, setting FROM pg_settings WHERE name IN ('log_connections','log_disconnections');\"",
+    "caption": "Reload and verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "        name        |            setting\n--------------------+-------------------------------\n log_connections    | authorization,setup_durations\n log_disconnections | on\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> connect once as app_user and look at the end of the log:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo tail -3 /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Read the latest log lines"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-02 13:00:41.149 UTC [3002] app_user@shopdb LOG:  connection authorized: user=app_user database=shopdb application_name=billing SSL enabled (protocol=TLSv1.3, cipher=TLS_AES_256_GCM_SHA384, bits=256)\n2026-11-02 13:00:41.150 UTC [3002] app_user@shopdb LOG:  connection ready: setup total=14.460 ms, fork=0.713 ms, authentication=6.646 ms\n2026-11-02 13:00:41.152 UTC [3002] app_user@shopdb LOG:  disconnection: session time: 0:00:00.015 user=app_user database=shopdb host=127.0.0.1 port=52904",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can see who connected, from where, how long the login took, and how long the session lasted. On a busy server these lines add up quickly, so watch the log size. <b>Undo:</b> comment the two lines out again and reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: sorry, too many clients already",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every slot is in use. Log in as a superuser (the 3 reserved slots exist for this), run the Step 4 query and look for the source: usually one application with hundreds of <code class=\"inline-code\">idle</code> sessions. Terminate the idle ones, fix the application's pool size, and only then think about raising <code class=\"inline-code\">max_connections</code> (restart needed)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: remaining connection slots are reserved for roles with the SUPERUSER attribute",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Normal slots are full and only superuser slots are left. Same fix as above. To keep a non-superuser support account working in this situation, use <code class=\"inline-code\">reserved_connections</code> with <code class=\"inline-code\">pg_use_reserved_connections</code> (Step 11)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_terminate_backend returns true but the session is still there",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Without a timeout, <code class=\"inline-code\">t</code> only means the signal was sent. Use <code class=\"inline-code\">pg_terminate_backend(pid, 5000)</code> to wait for the exit, then check <code class=\"inline-code\">pg_stat_activity</code> again. Applications with a connection pool also reconnect at once, which looks like the session \"came back\" with a new PID; block logins first as in Step 9."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: permission denied to terminate process",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The caller is not a superuser, not a member of the session's role, and does not have <code class=\"inline-code\">pg_signal_backend</code>. Grant <code class=\"inline-code\">pg_signal_backend</code> to the support role (Step 6). Superuser sessions can only be terminated by a superuser."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "You terminated your own session",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A query like <code class=\"inline-code\">SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'shopdb';</code> run while connected to shopdb also kills your own connection. Always add <code class=\"inline-code\">AND pid <> pg_backend_pid()</code>, and run mass terminations from the postgres database."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Cancelling an idle-in-transaction session does nothing",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_cancel_backend</code> stops a <i>running</i> query. An idle-in-transaction session is not running anything, so there is nothing to cancel and its locks stay. Use <code class=\"inline-code\">pg_terminate_backend</code> and set <code class=\"inline-code\">idle_in_transaction_session_timeout</code> so it does not happen again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Write one query that terminates every session that has been <code class=\"inline-code\">idle in transaction</code> (including the aborted variant) for more than 5 minutes, and shows the PID, user, application and idle time of each.",
+      "items": []
+     },
+     {
+      "content": "Make sure the role <code class=\"inline-code\">app_user</code> can never hold more than 20 connections, and confirm the value from the catalog.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answers",
+    "text": "Answer 1: <code class=\"inline-code\">SELECT pid, usename, application_name, date_trunc('second', now() - state_change) AS idle_for, pg_terminate_backend(pid) AS terminated FROM pg_stat_activity WHERE state IN ('idle in transaction', 'idle in transaction (aborted)') AND state_change &lt; now() - interval '5 minutes';</code> In a test with a 5-second threshold it returned one row: 3066, app_user, report, 00:00:07, t. Answer 2: <code class=\"inline-code\">ALTER ROLE app_user CONNECTION LIMIT 20;</code> then <code class=\"inline-code\">SELECT rolname, rolconnlimit FROM pg_roles WHERE rolname = 'app_user';</code> should show 20."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Show the connection slot settings\nsudo -u postgres psql -c \"SELECT name, setting, context FROM pg_settings WHERE name IN ('max_connections','superuser_reserved_connections','reserved_connections');\"\n\n# Count client connections against max_connections\nsudo -u postgres psql -c \"SELECT count(*) AS used, current_setting('max_connections') AS max_conn FROM pg_stat_activity WHERE backend_type = 'client backend';\"\n\n# List sessions with state, wait event and query\nsudo -u postgres psql -c \"SELECT pid, usename, datname, application_name, client_addr, state, wait_event_type, wait_event, now() - state_change AS in_state_for, left(query, 40) AS query FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() ORDER BY backend_start;\"\n\n# Show backends as Linux processes\nps -o pid,cmd -u postgres\n\n# Find blocked sessions and their blockers\nsudo -u postgres psql -c \"SELECT pid, pg_blocking_pids(pid) AS blocked_by, left(query, 40) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0;\"\n\n# Let a support role see all sessions and signal them\nsudo -u postgres psql -c \"GRANT pg_read_all_stats, pg_signal_backend TO support_dba;\"\n\n# Cancel the current query of one session (session stays)\nsudo -u postgres psql -c \"SELECT pg_cancel_backend(3207);\"\n\n# Terminate one session and wait up to 5 seconds\nsudo -u postgres psql -c \"SELECT pg_terminate_backend(3212, 5000);\"\n\n# Close a database and disconnect everyone from it\nsudo -u postgres psql -c \"ALTER DATABASE shopdb ALLOW_CONNECTIONS false;\"\nsudo -u postgres psql -c \"SELECT pg_terminate_backend(pid, 5000) FROM pg_stat_activity WHERE datname = 'shopdb' AND backend_type = 'client backend' AND pid <> pg_backend_pid();\"\nsudo -u postgres psql -c \"ALTER DATABASE shopdb ALLOW_CONNECTIONS true;\"\n\n# Per-role and per-database limits (-1 = no limit)\nsudo -u postgres psql -c \"ALTER ROLE app_user CONNECTION LIMIT 20;\"\nsudo -u postgres psql -c \"ALTER DATABASE shopdb CONNECTION LIMIT 50;\"\n\n# After editing max_connections / reserved_connections in postgresql.conf\nsudo systemctl restart postgresql@18-main\nsudo -u postgres psql -c \"GRANT pg_use_reserved_connections TO support_dba;\"\n\n# Timeouts for the application role\nsudo -u postgres psql -c \"ALTER ROLE app_user SET idle_in_transaction_session_timeout = '10min';\"\nsudo -u postgres psql -c \"ALTER ROLE app_user SET statement_timeout = '30s';\"\n\n# After editing log_connections / log_disconnections\nsudo systemctl reload postgresql@18-main\nsudo tail -3 /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Every command from this part, in order"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Each connection is its own backend process; max_connections (default 100) caps them and needs a restart to change",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "superuser_reserved_connections (3) and reserved_connections (0) keep slots back for emergencies",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "pg_stat_activity shows every session: filter on backend_type = 'client backend' and read state, wait_event and xact_start",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "pg_blocking_pids(pid) tells you who is blocking whom",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "pg_cancel_backend stops a query; pg_terminate_backend ends the session and rolls back its transaction",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Never kill -9 a backend: it restarts every session and triggers crash recovery",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use ALLOW_CONNECTIONS false before terminating everyone in a database",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use CONNECTION LIMIT per role or database, and role-level timeouts such as idle_in_transaction_session_timeout",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Grant pg_read_all_stats, pg_signal_backend and pg_use_reserved_connections instead of superuser to support staff",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 11 we move into storage and maintenance with MVCC for DBAs: tuples, xmin/xmax and row visibility, which explains why those idle-in-transaction sessions are so harmful."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your app suddenly gets \"FATAL: sorry, too many clients already\". Do you know how to find the culprit and stop it safely?\n\nPart 10 of my PostgreSQL DBA series covers connections and sessions on PostgreSQL 18:\n\n→ Each connection is its own server process. max_connections (default 100) caps them, and changing it needs a restart.\n→ pg_stat_activity shows every session. Filter on backend_type = 'client backend' and read state, wait_event and xact_start.\n→ \"idle in transaction\" sessions hold locks while doing nothing. pg_blocking_pids(pid) shows who they block.\n→ pg_cancel_backend(pid) stops the query. pg_terminate_backend(pid) ends the session and rolls back its transaction.\n→ Never kill -9 a backend. PostgreSQL then ends every session and runs crash recovery.\n→ reserved_connections plus pg_use_reserved_connections keeps login slots for your support team without giving them superuser.\n\nWhat do you set idle_in_transaction_session_timeout to on your servers?\n\nFollow the series for Part 11 on MVCC.\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "PostgreSQL Sessions: See Them, Stop Them",
+    "body": "PostgreSQL DBA series, Part 10: connections, pg_stat_activity and kill"
+   },
+   {
+    "title": "One connection = one process",
+    "points": [
+     "The postmaster starts a backend process per client",
+     "max_connections = 100 by default, restart to change",
+     "3 slots kept for superusers, reserved_connections for others"
+    ]
+   },
+   {
+    "title": "Who is connected?",
+    "code": "SELECT pid, usename, state,\n       wait_event_type, wait_event,\n       left(query, 40) AS query\n  FROM pg_stat_activity\n WHERE backend_type = 'client backend';",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Find the blocker",
+    "code": "SELECT pid,\n       pg_blocking_pids(pid) AS blocked_by\n  FROM pg_stat_activity\n WHERE cardinality(\n         pg_blocking_pids(pid)) > 0;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Cancel or terminate",
+    "points": [
+     "pg_cancel_backend(pid): stops the query, session stays",
+     "pg_terminate_backend(pid, 5000): ends session, waits 5 s",
+     "Never kill -9: every session restarts and recovery runs"
+    ]
+   },
+   {
+    "title": "Stop it happening again",
+    "code": "ALTER ROLE app_user\n  CONNECTION LIMIT 20;\nALTER ROLE app_user SET\n  idle_in_transaction_session_timeout\n  = '10min';",
+    "lang": "postgresql"
+   }
+  ]
+ }
+}
