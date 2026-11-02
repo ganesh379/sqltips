@@ -32,3 +32,5 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-03 | 09:00 | LinkedIn | Carousel: Oracle vs PostgreSQL | Sequences and identity columns | posts/2026-11-03-0900 | 6ae866ea3931d5366937929c
 - 2026-11-03 | 13:00 | Instagram | Reel: SQL quiz | Quiz, COUNT(*) vs COUNT(col) vs COUNT(DISTINCT col) | reels/2026-11-03-1300 | 6ae867bcb0da614b5540ff9f
 - 2026-11-03 | 13:00 | LinkedIn | Reel: SQL quiz | Quiz, COUNT(*) vs COUNT(col) vs COUNT(DISTINCT col) | reels/2026-11-03-1300 | 6ae867bdc100ba337af4a29b
+- 2026-11-03 | 20:00 | Instagram | Reel: PostgreSQL DBA | Quiz, TRUNCATE + ROLLBACK | reels/2026-11-03-2000 | 6ae868a3c100ba337af4e599
+- 2026-11-03 | 20:00 | LinkedIn | Reel: PostgreSQL DBA | Quiz, TRUNCATE + ROLLBACK | reels/2026-11-03-2000 | 6ae868a4c100ba337af4e5fb
