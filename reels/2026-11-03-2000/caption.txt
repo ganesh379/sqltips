@@ -1,0 +1,11 @@
+You ran TRUNCATE, then ROLLBACK. Is the data back in PostgreSQL?
+
+Yes, if the TRUNCATE ran inside BEGIN. The PostgreSQL docs say TRUNCATE is transaction-safe: the truncation is rolled back if the surrounding transaction does not commit. Our orders table went from 3 rows to 0 and back to 3.
+
+The trap for a PostgreSQL DBA: without BEGIN, psql autocommits the TRUNCATE right away. A ROLLBACK after that only prints "WARNING:  there is no transaction in progress" and the rows stay gone.
+
+Tested on PostgreSQL 16 in psql.
+
+Comment your answer before you watched, and send this to a friend who'd get it wrong.
+
+#sql #postgresql #dba #postgres #database

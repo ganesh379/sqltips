@@ -1,0 +1,12 @@
+[
+ {"say": "TRUNCATE, then ROLLBACK. Data back?", "cap": "*TRUNCATE,* then *ROLLBACK.* Data back?"},
+ {"say": "Orders has three rows. We type BEGIN, then TRUNCATE orders.", "cap": "Orders has *3* rows. *BEGIN,* then *TRUNCATE* orders.", "cue": "TRUNCATE"},
+ {"say": "Count is now zero.", "cap": "Count is now *0.*", "cue": "zero"},
+ {"say": "Then we type ROLLBACK.", "cap": "Then we type *ROLLBACK.*", "cue": "ROLLBACK"},
+ {"say": "Pause and guess: are the three rows back?", "cap": "*Pause* and guess: are the 3 rows back?"},
+ {"say": "Hint: look where the BEGIN is.", "cap": "Hint: look where the *BEGIN* is."},
+ {"say": "Yes! Count is three again.", "cap": "*Yes!* Count is *3* again.", "cue": "three"},
+ {"say": "In PostgreSQL, TRUNCATE is transaction safe.", "cap": "In PostgreSQL, TRUNCATE is *transaction-safe.*"},
+ {"say": "Without BEGIN, psql autocommits it. ROLLBACK can't help.", "cap": "*Without* BEGIN, psql autocommits it. ROLLBACK *can't* help.", "cue": "ROLLBACK"},
+ {"say": "Comment your answer, and send this to a friend who'd get it wrong.", "cap": "*Comment* your answer, and *send* this to a friend who'd get it wrong."}
+]
