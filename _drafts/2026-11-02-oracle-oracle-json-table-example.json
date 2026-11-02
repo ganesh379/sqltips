@@ -648,7 +648,7 @@
     {
       "type": "paragraph",
       "data": {
-        "text": "JSON_TABLE arrived with Oracle's SQL/JSON support in 12c Release 1 (12.1.0.2). The examples here use 19c syntax, which also runs in 21c and 23ai. Oracle 21c added the native JSON data type, but JSON_TABLE works the same on CLOB, VARCHAR2 and BLOB columns."
+        "text": "JSON_TABLE arrived with Oracle's SQL/JSON support in 12c Release 1 (12.1.0.2). The examples here use 19c syntax, which also runs in 21c and 23ai. Oracle 21c added the native JSON data type, and JSON_TABLE also reads VARCHAR2, CLOB and BLOB columns (in 19c a BLOB column needs FORMAT JSON after it)."
       }
     },
     {
