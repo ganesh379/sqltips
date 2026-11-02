@@ -1,0 +1,11 @@
+Moving SQL from Oracle to PostgreSQL? Your auto-increment IDs are the first thing that breaks.
+
+Both databases have sequences. In Oracle you read the next number with order_seq.NEXTVAL FROM DUAL. In PostgreSQL it is a function: nextval('order_seq'). In both, CURRVAL only works after NEXTVAL in the same session.
+
+Identity columns use the same clause in both: GENERATED ALWAYS AS IDENTITY (Oracle 12c+, PostgreSQL 10+). Try to insert your own id and Oracle raises ORA-32795, while PostgreSQL says "cannot insert a non-DEFAULT value into column". PostgreSQL lets you override with OVERRIDING SYSTEM VALUE.
+
+PostgreSQL examples tested on PostgreSQL 16. Oracle syntax checked against the Oracle documentation.
+
+Send this to a friend who is migrating between Oracle and PostgreSQL.
+
+#sql #oracle #postgresql #database #dba
