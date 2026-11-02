@@ -8,7 +8,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
 
 ## Foundations
 
-- [ ] Ep 001 | 2026-11-04 | PostgreSQL DBA Series: What a DBA Actually Does
+- [x] Ep 001 | 2026-11-04 | PostgreSQL DBA Series: What a DBA Actually Does (posted 2026-11-04 20:00, Buffer 6ae8e2338009965bdafb57fd)
   - Objective: Explain the DBA role across availability, security, performance, backup, recovery and capacity.
   - Format: Explainer + role map · Level: Beginner
   - Hook: What does a PostgreSQL DBA really do every day?
