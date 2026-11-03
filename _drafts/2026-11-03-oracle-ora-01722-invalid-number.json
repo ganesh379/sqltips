@@ -1,0 +1,950 @@
+{
+  "schemaVersion": 1,
+  "title": "ORA-01722 Invalid Number in Oracle: Causes and How to Resolve",
+  "slug": "ora-01722-invalid-number",
+  "category": "plsql",
+  "description": "Fix ORA-01722 invalid number in Oracle: find the bad rows, avoid hidden implicit conversion, and convert safely with TO_NUMBER DEFAULT ON CONVERSION ERROR.",
+  "focusKeyword": "ora-01722 invalid number",
+  "tags": [
+    "oracle",
+    "ora-errors",
+    "data-types",
+    "sql"
+  ],
+  "related": [
+    "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/",
+    "/posts/plsql/how-to-read-explain-plan-in-oracle/",
+    "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle docs: ORA-01722 error help",
+      "url": "https://docs.oracle.com/en/error-help/db/ora-01722/"
+    },
+    {
+      "title": "Oracle 19c SQL Reference: TO_NUMBER",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/TO_NUMBER.html"
+    },
+    {
+      "title": "Oracle 19c SQL Reference: VALIDATE_CONVERSION",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/VALIDATE_CONVERSION.html"
+    },
+    {
+      "title": "Oracle 19c SQL Reference: Data Type Comparison Rules (implicit conversion)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Data-Type-Comparison-Rules.html"
+    },
+    {
+      "title": "Oracle 23ai Reference: ERROR_MESSAGE_DETAILS",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/23/refrn/ERROR_MESSAGE_DETAILS.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Reference: Predefined Exceptions",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/predefined-exceptions.html"
+    }
+  ],
+  "reviewNotes": "Examples written from the 19c/23ai docs and NOT run; every query and expected output needs a test run on 19c and 23ai. Please check in particular: (1) the regex in the pre-12.2 check returns exactly rows 3 and 4; (2) that WHERE order_ref = 1001 actually raises ORA-01722 on the sample (it should, since the full scan reaches 'WEB-77'); (3) Cause 5: TO_NUMBER('250.50') fails with NLS_NUMERIC_CHARACTERS = ',.' and the 9999D99 + nlsparam version returns 250.5; (4) the INVALID_NUMBER (SQL) vs VALUE_ERROR (procedural) distinction, the docs page I fetched lists only the codes -1722/-6502, the SQL vs procedural wording comes from the predefined exceptions description in older PL/SQL guides; (5) the 23ai/26ai message text is copied from the Oracle error help page; the 19c output is shown as the classic 'ORA-01722: invalid number'. TO_NUMBER DEFAULT ON CONVERSION ERROR and VALIDATE_CONVERSION are stated as 12.2+; the 19c docs confirm they exist but I relied on Oracle's 12.2 data validation blog for the release.",
+  "generatedAt": "2026-11-03T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>ORA-01722: invalid number</b> means Oracle tried to turn a string into a number and the string was not a valid number. The fix is always the same in two steps: find the value that will not convert, then either clean it or convert it safely with <code class=\"inline-code\">TO_NUMBER(... DEFAULT NULL ON CONVERSION ERROR)</code> (Oracle 12.2 and later)."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The tricky part is that the conversion is often hidden. You may never write TO_NUMBER at all. A comparison like <code class=\"inline-code\">WHERE varchar_column = 1001</code> makes Oracle convert the column for you, and one bad row is enough to fail the whole query. This tutorial shows each cause with a small example, the expected output, and the fix."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What ORA-01722 means",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle raises ORA-01722 when a character value is used where a number is needed and the text is not a valid numeric literal. According to the Oracle error reference, a valid value may contain only digits, a sign, a decimal separator, and the letter E or e for scientific notation. Anything else, such as a letter, a comma used as a thousands separator, a currency symbol or the text N/A, fails."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The conversion can come from three places:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Explicit conversion</b>: you call <code class=\"inline-code\">TO_NUMBER</code> on a text value.",
+            "items": []
+          },
+          {
+            "content": "<b>Implicit conversion in a comparison</b>: Oracle's rule is that when you compare a character value with a numeric value, the character value is converted to a number, never the other way round.",
+            "items": []
+          },
+          {
+            "content": "<b>Implicit conversion in arithmetic or inserts</b>: <code class=\"inline-code\">salary + '10'</code>, <code class=\"inline-code\">SUM(text_column)</code>, or inserting text into a NUMBER column.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What the error message looks like by version",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In Oracle 19c and 21c the message is short and does not tell you which value failed. In Oracle 23ai and 26ai the message names the first invalid character and the column, and with the parameter <code class=\"inline-code\">ERROR_MESSAGE_DETAILS</code> set to ON (the default from 23ai) a second line, ORA-03302, shows the full bad string. This is the example from the Oracle error reference:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "SQL> SELECT to_number(ename) FROM emp;\nSELECT to_number(ename) FROM emp\n*\nERROR at line 1:\nORA-01722: unable to convert string value containing 'S' to\na number: ENAME\nORA-03302: (ORA-01722 details) invalid string value: SMITH",
+        "caption": "Oracle 23ai/26ai message format (from the Oracle docs)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On 19c you only see <code class=\"inline-code\">ORA-01722: invalid number</code>, so you need the queries below to find the bad row yourself."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The examples use a staging table that receives payment amounts as text from a CSV file, which is the most common real source of this error, and an orders table whose reference column is text."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE payments_stage (\n  payment_id   NUMBER PRIMARY KEY,\n  amount_text  VARCHAR2(20)\n);\n\nINSERT INTO payments_stage VALUES (1, '100');\nINSERT INTO payments_stage VALUES (2, '250.50');\nINSERT INTO payments_stage VALUES (3, '1,200');\nINSERT INTO payments_stage VALUES (4, 'N/A');\nINSERT INTO payments_stage VALUES (5, NULL);\nINSERT INTO payments_stage VALUES (6, '75');\n\nCREATE TABLE orders (\n  order_id   NUMBER PRIMARY KEY,\n  order_ref  VARCHAR2(20),\n  amount     NUMBER(10,2)\n);\n\nINSERT INTO orders VALUES (1, '1001',   500);\nINSERT INTO orders VALUES (2, '1002',   320);\nINSERT INTO orders VALUES (3, 'WEB-77', 150);\n\nCOMMIT;",
+        "caption": "Sample tables"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Rows 3 and 4 in payments_stage are the trouble makers. '1,200' has a comma, and 'N/A' is not a number at all. Row 5 is NULL, which converts to NULL without any error."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Cause 1: TO_NUMBER or SUM on a text column",
+        "level": 2
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT SUM(TO_NUMBER(amount_text)) AS total\n  FROM payments_stage;",
+        "caption": "Summing a text column"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-01722: invalid number",
+        "caption": "Output on 19c (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle stops at the first row it cannot convert. It does not skip it and carry on. Writing <code class=\"inline-code\">SUM(amount_text)</code> without TO_NUMBER gives the same error, because SUM needs a number and Oracle converts the text implicitly."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: find the rows that will not convert",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On Oracle 12.2 and later, use <code class=\"inline-code\">VALIDATE_CONVERSION</code>. It returns 1 if the value can be converted to the target type and 0 if it cannot. It never raises ORA-01722 itself, so it is safe to run on dirty data."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT payment_id, amount_text\n  FROM payments_stage\n WHERE VALIDATE_CONVERSION(amount_text AS NUMBER) = 0;",
+        "caption": "Find invalid numbers (12.2+)"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "PAYMENT_ID",
+            "AMOUNT_TEXT"
+          ],
+          [
+            "3",
+            "1,200"
+          ],
+          [
+            "4",
+            "N/A"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). Row 5 is not listed. VALIDATE_CONVERSION returns 1 for NULL, because a NULL converts to a NULL number without error. If you also want to see empty values, add <code class=\"inline-code\">OR amount_text IS NULL</code>."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On older releases, use a regular expression. This pattern accepts an optional sign, digits and one optional decimal point. It is deliberately simple and does not accept scientific notation such as 1E3, so treat its results as a list to check, not a final verdict."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT payment_id, amount_text\n  FROM payments_stage\n WHERE NOT REGEXP_LIKE(amount_text, '^[+-]?([0-9]+\\.?[0-9]*|\\.[0-9]+)$');",
+        "caption": "Find invalid numbers (any version)"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "PAYMENT_ID",
+            "AMOUNT_TEXT"
+          ],
+          [
+            "3",
+            "1,200"
+          ],
+          [
+            "4",
+            "N/A"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). NULL is excluded here too, because REGEXP_LIKE on NULL is unknown and NOT unknown is still unknown."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: convert safely",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Since Oracle 12.2, TO_NUMBER accepts a <code class=\"inline-code\">DEFAULT ... ON CONVERSION ERROR</code> clause. If a value cannot be converted, Oracle returns your default instead of raising the error."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT payment_id,\n       amount_text,\n       TO_NUMBER(amount_text DEFAULT NULL ON CONVERSION ERROR) AS amount\n  FROM payments_stage\n ORDER BY payment_id;",
+        "caption": "Safe conversion"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "PAYMENT_ID",
+            "AMOUNT_TEXT",
+            "AMOUNT"
+          ],
+          [
+            "1",
+            "100",
+            "100"
+          ],
+          [
+            "2",
+            "250.50",
+            "250.5"
+          ],
+          [
+            "3",
+            "1,200",
+            ""
+          ],
+          [
+            "4",
+            "N/A",
+            ""
+          ],
+          [
+            "5",
+            "",
+            ""
+          ],
+          [
+            "6",
+            "75",
+            "75"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). The query now runs. Rows 3 and 4 give NULL, so SUM over this column returns 425.5. That is correct for the valid rows, but notice that the 1,200 payment silently disappeared from the total."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "Do not hide real data",
+        "text": "DEFAULT NULL ON CONVERSION ERROR makes the error go away, not the problem. Use it with VALIDATE_CONVERSION so you also report or fix the rejected rows. Otherwise a total can be wrong with no error at all."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 3: fix values that are numbers in a different format",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "'1,200' is a real amount with a thousands separator. Remove the separator before converting, or give TO_NUMBER a format model. In a format model, <code class=\"inline-code\">G</code> is the group separator and <code class=\"inline-code\">D</code> the decimal separator, and the nlsparam argument fixes which characters they are, so the result does not depend on the session settings."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT payment_id,\n       TO_NUMBER(REPLACE(amount_text, ',')\n                 DEFAULT NULL ON CONVERSION ERROR) AS amount\n  FROM payments_stage\n ORDER BY payment_id;",
+        "caption": "Strip the comma, then convert"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "PAYMENT_ID",
+            "AMOUNT"
+          ],
+          [
+            "1",
+            "100"
+          ],
+          [
+            "2",
+            "250.5"
+          ],
+          [
+            "3",
+            "1200"
+          ],
+          [
+            "4",
+            ""
+          ],
+          [
+            "5",
+            ""
+          ],
+          [
+            "6",
+            "75"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). Now only 'N/A' is rejected, and that is a value someone has to decide about: is it zero, missing, or a load error? The database cannot answer that for you."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Cause 2: comparing a text column with a number",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is the most confusing version, because the query contains no conversion function at all."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT order_id, amount\n  FROM orders\n WHERE order_ref = 1001;",
+        "caption": "Number literal against a VARCHAR2 column"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-01722: invalid number",
+        "caption": "Output on 19c (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "order_ref is VARCHAR2 and 1001 is a number. Oracle's comparison rule converts the character side, so the condition really becomes <code class=\"inline-code\">TO_NUMBER(order_ref) = 1001</code>. That conversion runs on every row Oracle checks, and 'WEB-77' cannot be converted. The query may work for months while the column holds only digits, and fail on the day the first non-numeric reference arrives."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The fix is to compare text with text:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT order_id, amount\n  FROM orders\n WHERE order_ref = '1001';",
+        "caption": "Compare like with like"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "ORDER_ID",
+            "AMOUNT"
+          ],
+          [
+            "1",
+            "500"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). The same applies to joins. If one table stores a customer id as NUMBER and another as VARCHAR2, a join on them converts the VARCHAR2 side. Fix it by converting the NUMBER side with TO_CHAR, or better, by giving both columns the same data type."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "Check the execution plan",
+        "text": "Implicit conversion shows up in the predicate section of DBMS_XPLAN output as something like filter(TO_NUMBER(\"ORDER_REF\")=1001). If you see TO_NUMBER or TO_CHAR there that you did not write, you have found an implicit conversion."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Why this also hurts performance",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "An index on order_ref stores the text values. When Oracle has to apply TO_NUMBER to the column, Oracle cannot use a normal B-tree index on order_ref for an index range scan on that predicate, and you often get a full table scan. Oracle's own SQL reference lists this as one of the reasons to use explicit conversions. Comparing with '1001' fixes both the error and the index access."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Cause 3: a filter that does not protect the conversion",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Developers often try to guard the conversion with another condition:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT payment_id\n  FROM payments_stage\n WHERE VALIDATE_CONVERSION(amount_text AS NUMBER) = 1\n   AND TO_NUMBER(amount_text) > 90;",
+        "caption": "Looks safe, but is not guaranteed"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "SQL does not promise to evaluate the conditions in the order you write them. The optimizer may check the TO_NUMBER condition first, or merge a view or subquery so that your filter runs after the conversion. The query can work today and fail after a statistics change or an upgrade. The same trap applies to filtering valid rows in an inline view and converting them in the outer query."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Make the conversion itself safe instead of relying on order:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT payment_id\n  FROM payments_stage\n WHERE TO_NUMBER(amount_text DEFAULT NULL ON CONVERSION ERROR) > 90;",
+        "caption": "Safe regardless of evaluation order"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "PAYMENT_ID"
+          ],
+          [
+            "1"
+          ],
+          [
+            "2"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). Rows that cannot be converted become NULL, and NULL > 90 is not true, so they are simply left out. On releases before 12.2, put the check and the conversion in one CASE expression: CASE WHEN REGEXP_LIKE(...) THEN TO_NUMBER(amount_text) END."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Cause 4: inserts with the wrong column order",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "An INSERT without a column list depends on the table's column order. If someone adds or reorders columns, text can land in a NUMBER column."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "-- Fails: the values are in the wrong order for (order_id, order_ref, amount)\nINSERT INTO orders VALUES (4, 200, 'APP-15');",
+        "caption": "Values in the wrong position"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-01722: invalid number",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Here 'APP-15' goes into amount, which is NUMBER, and the 200 is converted to the text '200' for order_ref without complaint. Always name the columns:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "INSERT INTO orders (order_id, order_ref, amount)\nVALUES (4, 'APP-15', 200);",
+        "caption": "Name the columns"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The same thing happens with INSERT ... SELECT when the select list is in a different order from the target columns. Run the SELECT on its own first and check each column against the target type."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Cause 5: the session decimal character",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle reads the decimal and group separators from the session setting <code class=\"inline-code\">NLS_NUMERIC_CHARACTERS</code>. A client in a region that uses a comma as the decimal separator can get ORA-01722 on '250.50' even though the same query works for you."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "ALTER SESSION SET NLS_NUMERIC_CHARACTERS = ',.';\n\nSELECT TO_NUMBER('250.50') FROM dual;",
+        "caption": "Same value, different session"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-01722: invalid number",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To make a conversion behave the same in every session, pass the format and the NLS setting explicitly:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT TO_NUMBER('250.50', '9999D99',\n                 'NLS_NUMERIC_CHARACTERS = ''.,''') AS amount\n  FROM dual;",
+        "caption": "Session-independent conversion"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "    AMOUNT\n----------\n     250.5",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "ORA-01722 in PL/SQL",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Inside PL/SQL, a failed conversion inside a SQL statement raises the predefined exception <code class=\"inline-code\">INVALID_NUMBER</code> (error code -1722). A failed conversion in a plain PL/SQL assignment, such as assigning 'N/A' to a NUMBER variable, raises <code class=\"inline-code\">VALUE_ERROR</code> (ORA-06502) instead. If you handle conversion errors in a procedure, catch the one that matches where the conversion happens."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  v_total NUMBER;\nBEGIN\n  SELECT SUM(TO_NUMBER(amount_text))\n    INTO v_total\n    FROM payments_stage;\nEXCEPTION\n  WHEN INVALID_NUMBER THEN\n    DBMS_OUTPUT.PUT_LINE('Bad amount in payments_stage: ' || SQLERRM);\n    RAISE;\nEND;\n/",
+        "caption": "Catch, log and re-raise"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Re-raising keeps the failure visible to the caller. Swallowing the exception and carrying on would give the same hidden-data problem as a careless DEFAULT NULL."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Storing numbers in VARCHAR2 columns.</b> This is the root cause of most ORA-01722 errors. If a column holds amounts or ids, make it NUMBER and reject bad values at load time.",
+            "items": []
+          },
+          {
+            "content": "<b>Comparing a text column with a number literal.</b> Quote the literal, or bind a string variable, when the column is VARCHAR2.",
+            "items": []
+          },
+          {
+            "content": "<b>Trusting a WHERE filter to run before the conversion.</b> Make the conversion safe with DEFAULT ... ON CONVERSION ERROR or CASE.",
+            "items": []
+          },
+          {
+            "content": "<b>Using DEFAULT 0 without thinking.</b> A default of 0 turns 'N/A' into a real zero amount. NULL is usually more honest, because it is excluded from SUM and AVG.",
+            "items": []
+          },
+          {
+            "content": "<b>INSERT without a column list.</b> It breaks the moment the table changes.",
+            "items": []
+          },
+          {
+            "content": "<b>Assuming the error is in your WHERE clause.</b> The conversion can also come from the SELECT list, a view definition, a function-based index or a virtual column on the table.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Best practices",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Match data types on both sides of every comparison and join. Oracle recommends explicit conversion over implicit conversion because it is clearer, more predictable across releases, and does not block index use.",
+            "items": []
+          },
+          {
+            "content": "Load external data into a staging table, check it with VALIDATE_CONVERSION, and move only valid rows into typed tables. Keep the rejected rows for someone to review.",
+            "items": []
+          },
+          {
+            "content": "Give TO_NUMBER an explicit format and nlsparam when the input format is known, so results do not depend on client settings.",
+            "items": []
+          },
+          {
+            "content": "Look for unexpected TO_NUMBER or TO_CHAR in the predicate section of the execution plan when a query is slow or fails only for some values.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I find which row is causing ORA-01722?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On Oracle 12.2 and later, run SELECT ... WHERE VALIDATE_CONVERSION(column AS NUMBER) = 0. On older versions use a REGEXP_LIKE check for non-numeric characters. On 23ai and later, the error message itself names the column and, with ERROR_MESSAGE_DETAILS = ON, the bad value."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Why does ORA-01722 happen in a SELECT query with no TO_NUMBER?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Because of implicit conversion. Comparing a VARCHAR2 column with a number, or doing arithmetic on it, makes Oracle convert the text to a number. One non-numeric value in the rows Oracle reads is enough to fail the query."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I ignore invalid numbers in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Use TO_NUMBER(column DEFAULT NULL ON CONVERSION ERROR), available from Oracle 12.2. Invalid values become NULL instead of raising an error. Report the rejected rows too, so the data gets fixed."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between ORA-01722 and ORA-06502?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "ORA-01722 (INVALID_NUMBER) is raised when a conversion fails inside a SQL statement. ORA-06502 (VALUE_ERROR) is raised in PL/SQL procedural code, for example when assigning a non-numeric string to a NUMBER variable or a value that is too long for a variable."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Why does my query work in one environment and fail in another?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Usually the data differs, or the session settings differ. A new non-numeric value in a VARCHAR2 column, a different execution plan that evaluates conditions in another order, or a different NLS_NUMERIC_CHARACTERS setting can all turn a working query into ORA-01722."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "ORA-01722 means a string could not be converted to a number.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Find bad values with VALIDATE_CONVERSION(col AS NUMBER) = 0 (12.2+) or REGEXP_LIKE.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Convert safely with TO_NUMBER(col DEFAULT NULL ON CONVERSION ERROR), and report what was rejected.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Compare VARCHAR2 columns with quoted strings, not number literals.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Never rely on WHERE condition order to protect a conversion.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Name columns in every INSERT, and use an explicit format and nlsparam for formatted numbers.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Store numbers in NUMBER columns.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "A query that worked for months suddenly fails with ORA-01722: invalid number. Often there is no TO_NUMBER in it at all.\n\nORA-01722 means Oracle tried to turn text into a number and the text was not a valid number. What to check:\n\n→ Text column compared with a number: WHERE order_ref = 1001 makes Oracle run TO_NUMBER on every order_ref. One 'WEB-77' row breaks it. Write '1001' instead.\n\n→ Find the bad rows (12.2+): WHERE VALIDATE_CONVERSION(amount_text AS NUMBER) = 0\n\n→ Convert safely: TO_NUMBER(amount_text DEFAULT NULL ON CONVERSION ERROR). But report the rejected rows, or your totals go quietly wrong.\n\n→ A WHERE filter does not protect a conversion. Oracle does not promise to check your conditions in the order you write them.\n\n→ INSERT without a column list puts text into NUMBER columns as soon as the table changes. Always name the columns.\n\nOn 23ai and later the message also names the column and the bad value, which saves a lot of searching.\n\nWhere did ORA-01722 last surprise you: a CSV load, a join, or a report?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #SQLInterview",
+    "slides": [
+      {
+        "title": "ORA-01722: Invalid Number, Fixed",
+        "body": "Why it happens even without TO_NUMBER, and how to fix it safely"
+      },
+      {
+        "title": "What the error means",
+        "points": [
+          "Oracle tried to convert text to a number and failed",
+          "Valid: digits, sign, decimal separator, E",
+          "Invalid: '1,200', 'N/A', '$50', 'WEB-77'"
+        ]
+      },
+      {
+        "title": "The hidden cause",
+        "body": "Comparing a VARCHAR2 column with a number makes Oracle convert the column. One non-numeric row fails the query.",
+        "code": "-- fails if any order_ref is 'WEB-77'\nWHERE order_ref = 1001\n\n-- correct\nWHERE order_ref = '1001'",
+        "lang": "sql"
+      },
+      {
+        "title": "Find the bad rows (12.2+)",
+        "code": "SELECT payment_id, amount_text\n  FROM payments_stage\n WHERE VALIDATE_CONVERSION(\n         amount_text AS NUMBER) = 0;",
+        "lang": "sql",
+        "points": [
+          "Returns 0 for values that cannot convert",
+          "NULL counts as convertible"
+        ]
+      },
+      {
+        "title": "Convert without the error",
+        "code": "SELECT TO_NUMBER(amount_text\n         DEFAULT NULL\n         ON CONVERSION ERROR) AS amt\n  FROM payments_stage;",
+        "lang": "sql",
+        "points": [
+          "Bad values become NULL",
+          "Report rejected rows so totals stay honest"
+        ]
+      },
+      {
+        "title": "Checklist",
+        "points": [
+          "Match data types in comparisons and joins",
+          "Do not rely on WHERE order to guard TO_NUMBER",
+          "Name columns in every INSERT",
+          "Store numbers in NUMBER columns"
+        ]
+      }
+    ]
+  }
+}

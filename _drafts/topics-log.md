@@ -34,3 +34,4 @@
 - 2026-11-01 [PostgreSQL] postgresql function vs procedure -> _drafts/2026-11-01-postgresql-postgresql-function-vs-procedure.json
 - 2026-11-02 [Oracle] oracle json_table example -> _drafts/2026-11-02-oracle-oracle-json-table-example.json
 - 2026-11-02 [PostgreSQL] postgresql kill session -> _drafts/2026-11-02-postgresql-postgresql-dba-part-10-connections-sessions.json
+- 2026-11-03 [Oracle] ora-01722 invalid number -> _drafts/2026-11-03-oracle-ora-01722-invalid-number.json
