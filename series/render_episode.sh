@@ -25,8 +25,12 @@ if old is not None and old != new:
             os.remove(f"{d}/{f}")
 open(f"{d}/script.json", "w").write(new)
 PY
+# quality gate 1: script, layout and pronunciation, before any voice credits are spent
+python3 "$HERE/check_episode.py" "$DIR" --static || { echo "Fix the ERROR lines above in episode.json (or pipeline/pronounce.py), then run again."; exit 1; }
 # always run: clips are cached by content hash, so only new or changed lines cost credits
 python3 "$MAKE_VOICE" "$DIR" en-IN kalpit_en_edtech
+# quality gate 2: pacing of the visuals against the real voice timing
+python3 "$HERE/check_episode.py" "$DIR" || { echo "Fix the ERROR lines above in episode.json, then run again."; exit 1; }
 
 # 2. props for Remotion
 mkdir -p "$HERE/public"

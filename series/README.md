@@ -33,3 +33,12 @@ spellings. Check what the voice will receive with
 acronym that is not in `WORDS` there, add it (spell acronyms with hyphens, e.g. "L-S-N")
 and commit the change with the episode. Raw "psql", "DBA", "WAL" and "PostgreSQL" were
 misread by the voice ("E Sukal", "Dabba", "Bhal", "Postgres sequel"), so never bypass it.
+Brackets are spoken as pauses (the voice used to stop mid-sentence at a bracket).
+
+Quality gate: `render_episode.sh` runs `check_episode.py` twice and stops on any ERROR:
+before the voice (script length, hook, "Next up" ending, scene order and coverage, layout
+limits per scene, diagram overlaps and stage bounds, icon and colour names, and any word
+the voice may misread) and after it (no scene may sit more than 11 s with nothing new on
+screen; over 7 s is a WARN). Fix every ERROR and as many WARN lines as you can: split long
+lines, reveal items on the line that mentions them (`at`), and use diagram `focus`.
+Run it alone with `python3 check_episode.py episodes/epNNN`.

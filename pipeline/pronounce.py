@@ -49,6 +49,26 @@ WORDS = {
     "autovacuum": "auto vacuum", "basebackup": "base backup", "isready": "is ready",
     "waldump": "wall dump", "receivewal": "receive wall", "dumpall": "dump all",
     "statio": "stat I-O", "repack": "re-pack",
+    # extensions, tools and related products
+    "pgvector": "P-G vector", "pgaudit": "P-G audit", "pglogical": "P-G logical",
+    "pgBadger": "P-G Badger", "pgbadger": "P-G Badger", "PostGIS": "Post-G-I-S",
+    "TimescaleDB": "Timescale D-B", "CloudNativePG": "Cloud Native P-G", "pgcrypto": "P-G crypto",
+    "PL/pgSQL": "P-L P-G S-Q-L", "plpgsql": "P-L P-G S-Q-L", "PL/SQL": "P-L S-Q-L",
+    "MySQL": "My-S-Q-L", "NoSQL": "No-S-Q-L", "SQLite": "S-Q-Lite", "pg_stat": "P-G stat",
+    "IVFFlat": "I-V-F flat", "HNSW": "H-N-S-W", "GUC": "G-U-C", "GUCs": "G-U-Cs",
+    # infrastructure acronyms
+    "IOPS": "I-ops", "OOM": "O-O-M", "NVMe": "N-V-M-E", "RAID": "raid", "NUMA": "noo-ma",
+    "EBS": "E-B-S", "S3": "S-3", "GCP": "G-C-P", "VPC": "V-P-C", "DNS": "D-N-S", "TTL": "T-T-L",
+    "ETL": "E-T-L", "ORM": "O-R-M", "SLA": "S-L-A", "SLAs": "S-L-As", "DR": "D-R", "BI": "B-I",
+    "LDAP": "L-D-A-P", "CIDR": "cider", "SSH": "S-S-H", "CI": "C-I", "CD": "C-D",
+    "K8s": "Kubernetes", "YAML": "yamel", "CSV": "C-S-V", "PDF": "P-D-F", "URL": "U-R-L",
+    "LTS": "L-T-S", "EOL": "E-O-L", "CVE": "C-V-E", "CVEs": "C-V-Es", "FK": "foreign key",
+    "PK": "primary key", "SQLSTATE": "S-Q-L state", "XLOG": "X-log", "WALs": "walls",
+    "pgdata": "P-G data", "PGDATA": "P-G data", "PGHOST": "P-G host", "PGPORT": "P-G port",
+    "PGUSER": "P-G user", "PGPASSWORD": "P-G password",
+    # sizes (write "8 MB", not "8MB")
+    "kB": "kilobytes", "KB": "kilobytes", "MB": "megabytes", "GB": "gigabytes", "TB": "terabytes",
+    "ms": "milliseconds",
 }
 
 # Words read aloud as words even when typed in capitals (SQL keywords are fine as words,
@@ -57,7 +77,24 @@ SPOKEN_CAPS = {"VACUUM", "ANALYZE", "EXPLAIN", "SELECT", "INSERT", "UPDATE", "DE
                "TRUNCATE", "ROLLBACK", "COMMIT", "BEGIN", "CREATE", "DROP", "ALTER", "GRANT",
                "REVOKE", "INDEX", "TABLE", "WHERE", "JOIN", "NULL", "CHECKPOINT", "REINDEX",
                "CLUSTER", "COPY", "LOCK", "SAVEPOINT", "RETURNING", "COUNT", "DISTINCT",
-               "FREEZE", "VERBOSE", "FULL", "CONCURRENTLY", "SHOW", "SET", "RESET", "FROM"}
+               "FREEZE", "VERBOSE", "FULL", "CONCURRENTLY", "SHOW", "SET", "RESET", "FROM",
+               # EXPLAIN options and other keywords and type names
+               "BUFFERS", "COSTS", "TIMING", "FORMAT", "SETTINGS", "SUMMARY", "PRIMARY", "KEY",
+               "FOREIGN", "UNIQUE", "VIEW", "SCHEMA", "ROLE", "USER", "DATABASE", "TRIGGER",
+               "FUNCTION", "PROCEDURE", "SEQUENCE", "VALUES", "INTO", "ORDER", "GROUP", "HAVING",
+               "LIMIT", "OFFSET", "AND", "NOT", "EXISTS", "BETWEEN", "LIKE", "ILIKE", "CASCADE",
+               "RESTRICT", "DEFAULT", "CHECK", "CONSTRAINT", "PARTITION", "REFRESH", "MATERIALIZED",
+               "LISTEN", "NOTIFY", "PREPARE", "EXECUTE", "DISCARD", "CONFLICT", "NOTHING", "WITH",
+               "RECURSIVE", "UNION", "ALL", "CASE", "WHEN", "THEN", "ELSE", "END", "SERIALIZABLE",
+               "REPEATABLE", "READ", "COMMITTED", "UNCOMMITTED", "ISOLATION", "LEVEL", "TRANSACTION",
+               "ABORT", "START", "OWNER", "SUPERUSER", "LOGIN", "PASSWORD", "REPLICATION",
+               "PUBLICATION", "SUBSCRIPTION", "TABLESPACE", "EXTENSION", "TRUE", "FALSE", "INTEGER",
+               "TEXT", "VARCHAR", "BOOLEAN", "BIGINT", "SERIAL", "TIMESTAMP", "TIMESTAMPTZ", "DATE",
+               "NUMERIC", "ARRAY", "IDENTITY", "GENERATED", "ALWAYS", "CONNECTION", "OUTER", "INNER",
+               "LEFT", "RIGHT", "CROSS", "LATERAL", "ONLY", "WINDOW", "OVER", "FILTER", "USING",
+               "VACUUMDB", "REASSIGN", "OWNED", "SECURITY", "POLICY", "ENABLE", "DISABLE", "RULE",
+               "DECLARE", "CURSOR", "FETCH", "CALL", "DO", "ON", "OR", "IN", "AS", "BY", "IS", "TO",
+               "OF", "IF", "AT", "NO", "UP"}
 
 _KEYS = sorted(WORDS, key=len, reverse=True)
 _WORD_RE = re.compile(r"(?<![\w-])(" + "|".join(re.escape(k) for k in _KEYS) + r")(?![\w-])")
@@ -84,9 +121,15 @@ def speakable(text: str) -> str:
                   lambda m: _identifier(m) if ("_" in m.group(0) or re.search(r"\.[a-z]{2,5}$", m.group(0))) else m.group(0),
                   text)
     text = text.replace("(*)", " star")
+    # brackets made the voice stop mid-sentence ("EXPLAIN (ANALYZE, BUFFERS) first" ended after
+    # "analyze"), so speak them as short pauses
+    text = re.sub(r"\s*\(\s*([^()]*?)\s*\)", r", \1,", text)
+    text = re.sub(r",\s*([,.;:!?])", r"\1", text)
     text = re.sub(r"\bFollow so\b", "Follow, so", text)  # heard as "fall so" without the pause
     text = _WORD_RE.sub(lambda m: WORDS[m.group(1)], text)
-    text = re.sub(r"\b[A-Z]{3,}\b", lambda m: m.group(0).lower() if m.group(0) in SPOKEN_CAPS else m.group(0), text)
+    text = re.sub(r"\b(\d+)(kB|KB|MB|GB|TB|ms)\b", r"\1 \2", text)  # 8MB -> 8 MB -> 8 megabytes
+    text = _WORD_RE.sub(lambda m: WORDS[m.group(1)], text)
+    text = re.sub(r"\b[A-Z]{2,}\b", lambda m: m.group(0).lower() if m.group(0) in SPOKEN_CAPS else m.group(0), text)
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
