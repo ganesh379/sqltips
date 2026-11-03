@@ -1,0 +1,1320 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 11: MVCC, xmin/xmax and Row Visibility",
+ "slug": "postgresql-dba-part-11-mvcc-xmin-xmax",
+ "category": "postgresql",
+ "description": "PostgreSQL MVCC explained with real output: how xmin, xmax and snapshots decide row visibility, and why an open transaction stops VACUUM.",
+ "focusKeyword": "postgresql mvcc explained",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "mvcc",
+  "vacuum",
+  "transactions"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-10-connections-sessions/",
+  "/posts/postgresql/postgresql-deadlock-detected/",
+  "/posts/postgresql/postgresql-for-update-skip-locked-job-queue/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 13.1 Concurrency Control, Introduction",
+   "url": "https://www.postgresql.org/docs/current/mvcc-intro.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 13.2 Transaction Isolation",
+   "url": "https://www.postgresql.org/docs/current/transaction-iso.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 5.6 System Columns",
+   "url": "https://www.postgresql.org/docs/current/ddl-system-columns.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 66.6 Database Page Layout",
+   "url": "https://www.postgresql.org/docs/current/storage-page-layout.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 66.7 Heap-Only Tuples (HOT)",
+   "url": "https://www.postgresql.org/docs/current/storage-hot.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 67.1 Transactions and Identifiers",
+   "url": "https://www.postgresql.org/docs/current/transaction-id.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 9.28 System Information Functions (transaction ID and snapshot functions)",
+   "url": "https://www.postgresql.org/docs/current/functions-info.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 24.1 Routine Vacuuming",
+   "url": "https://www.postgresql.org/docs/current/routine-vacuuming.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: VACUUM",
+   "url": "https://www.postgresql.org/docs/current/sql-vacuum.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: SET TRANSACTION",
+   "url": "https://www.postgresql.org/docs/current/sql-set-transaction.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pageinspect",
+   "url": "https://www.postgresql.org/docs/current/pageinspect.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 27.2 The Cumulative Statistics System (pg_stat_activity, pg_stat_all_tables)",
+   "url": "https://www.postgresql.org/docs/current/monitoring-stats.html"
+  }
+ ],
+ "reviewNotes": "Series part 11. Part 10 is live, so the intro links to it. Tested on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) from the PGDG repository on Ubuntu 24.04.5 LTS; followed the PostgreSQL 18 documentation (docs/current). All outputs are real and come from one continuous run in article order (XIDs 782-790 are consistent across Steps 2-15); the practice-exercise answer was also tested (FOR UPDATE set xmax 797 on xmin 796; the 4-version HOT chain collapsed to one redirect after VACUUM). SANDBOX CAVEATS: (1) As in Part 10, the postgresql-18 package needs liburing2 from archive.ubuntu.com, which is blocked here, so I installed a local stub liburing2 package; this only affects io_method=io_uring (not the default, not used here). (2) The two terminals were real interactive psql sessions run in tmux; psql was started with -X (ignore ~/.psqlrc), which does not change output. (3) The XIDs, PID 3437 and timings will differ on a reader's server; the article says so in Step 2. (4) VACUUM VERBOSE output is trimmed with '...' (the TOAST-table report and the read/buffer/WAL/CPU lines were cut); the lines shown are verbatim. (5) lp_flags values 0/1/2/3 (unused/normal/redirect/dead) and 'lp_off holds the target item for a redirect' come from src/include/storage/itemid.h, which pageinspect.html points to; they match the observed output (redirect lp_off equals the row's new ctid item). (6) 'Row locks such as SELECT ... FOR UPDATE also set xmax' was verified by test, not quoted from a doc page. (7) Prepared transactions and replication slots holding back cleanup is based on routine-vacuuming.html section 24.1.5. No version differences to flag: pg_current_xact_id/pg_current_snapshot/pg_xact_status exist since PostgreSQL 13 (txid_* names before that, noted in the article). Optional FAQ left out. Length: about 3,500 words of prose including tables (above the 3,200 target) because the part has 16 short steps; Step 9 (pg_xact_status) or the last common mistake could be cut if needed.",
+ "generatedAt": "2026-11-03T12:58:01Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 11 of the PostgreSQL DBA series, and the first part about storage and maintenance. In <a href=\"/posts/postgresql/postgresql-dba-part-10-connections-sessions/\">Part 10 we covered connections and sessions</a>, including the \"idle in transaction\" sessions that DBAs are told to watch. This part explains <b>why</b> those sessions matter, by showing how PostgreSQL keeps several versions of the same row at once."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The short answer: PostgreSQL never overwrites a row in place. An UPDATE writes a new copy of the row and marks the old copy as expired. Every row copy carries two hidden numbers, <b>xmin</b> (the transaction that created it) and <b>xmax</b> (the transaction that deleted or replaced it), and each query uses a <b>snapshot</b> to decide which copies it is allowed to see. This design is called MVCC, Multiversion Concurrency Control."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By the end of this part you will be able to read xmin, xmax and ctid on any table, look inside a data page with pageinspect, explain why readers never block writers, and find the session that stops VACUUM from cleaning up dead rows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "What a tuple (row version) is, and why an UPDATE creates a new one",
+      "items": []
+     },
+     {
+      "content": "How the hidden columns <code class=\"inline-code\">xmin</code>, <code class=\"inline-code\">xmax</code>, <code class=\"inline-code\">cmin</code> and <code class=\"inline-code\">ctid</code> work, with real output",
+      "items": []
+     },
+     {
+      "content": "How a snapshot decides which row versions a query can see",
+      "items": []
+     },
+     {
+      "content": "How Read Committed and Repeatable Read use snapshots differently",
+      "items": []
+     },
+     {
+      "content": "What dead tuples are, and how a long open transaction stops VACUUM from removing them",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 10 of this series, especially Part 4 (psql) and Part 10 (pg_stat_activity).",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server (db1 in this series) with PostgreSQL 18 from the PGDG repository, cluster \"18 main\" running on port 5432.",
+      "items": []
+     },
+     {
+      "content": "Two terminal windows (two SSH sessions) on db1. Several steps need two sessions open at the same time. We call them Terminal 1 and Terminal 2.",
+      "items": []
+     },
+     {
+      "content": "sudo access, so you can run psql as the postgres operating system user.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Imagine a shared notice board. When someone wants to change a notice, they do not erase it. They pin a new version next to it and write \"replaced\" on the old one, with their name. Anyone who started reading before the change can still read the old version. Anyone who arrives later reads the new one. Once nobody is reading the old version any more, a cleaner takes it down. In PostgreSQL the notices are rows, the names are transaction IDs, and the cleaner is VACUUM."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here are the terms you will see in the rest of this part:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Term",
+      "Meaning"
+     ],
+     [
+      "Tuple (row version)",
+      "One physical copy of a row stored in a table's data file. One logical row can have several tuples at the same time."
+     ],
+     [
+      "Transaction ID (XID)",
+      "A number PostgreSQL gives a transaction when it first writes data. XIDs come from one counter shared by all databases in the cluster, so newer writers get higher numbers."
+     ],
+     [
+      "xmin",
+      "Hidden column: the XID of the transaction that inserted this row version."
+     ],
+     [
+      "xmax",
+      "Hidden column: the XID of the transaction that deleted or replaced this row version, or 0 if no transaction has tried to."
+     ],
+     [
+      "cmin / cmax",
+      "Hidden columns: the command number (starting at 0) inside the inserting or deleting transaction."
+     ],
+     [
+      "ctid",
+      "Hidden column: the physical address of the row version, as (page number, item number). It changes when the row is updated."
+     ],
+     [
+      "Snapshot",
+      "A record of which transactions were finished at a moment in time. A query only sees row versions written by transactions its snapshot counts as committed."
+     ],
+     [
+      "Dead tuple",
+      "A row version that no running or future transaction can see any more. VACUUM removes it so the space can be reused."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A row version is visible to your query when two things are true. First, the transaction in its xmin committed before your snapshot was taken. Second, its xmax is 0, or the transaction in xmax had not committed when your snapshot was taken (it is still running, or it rolled back). Your own transaction's changes are always visible to you."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is why readers never block writers in PostgreSQL. A reader does not wait for the writer. It simply reads the older row version that its snapshot can see, while the writer works on the new one."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The cost of this design is extra copies. Every UPDATE and DELETE leaves an old tuple behind. Those old tuples take space until VACUUM removes them, and VACUUM can only remove a tuple when <b>no</b> snapshot in the cluster might still need it. Part 12 covers VACUUM itself; this part shows you the row versions it works on."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Setting up the lab",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Create a lab database and a small table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, Terminal 1, as the postgres user. Start psql, create a database called mvcclab, connect to it and create a table of bank accounts with three rows."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql",
+    "caption": "Terminal 1: start psql as postgres"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE mvcclab;\n\\c mvcclab\nCREATE TABLE accounts (\n    id      integer PRIMARY KEY,\n    owner   text    NOT NULL,\n    balance numeric NOT NULL\n);\nINSERT INTO accounts VALUES\n    (1, 'Asha',  5000),\n    (2, 'Ravi',  3000),\n    (3, 'Meera', 7000);",
+    "caption": "Terminal 1: lab database and table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE DATABASE\nYou are now connected to database \"mvcclab\" as user \"postgres\".\nCREATE TABLE\nINSERT 0 3",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> the prompt now starts with <code class=\"inline-code\">mvcclab=#</code>, and <code class=\"inline-code\">SELECT count(*) FROM accounts;</code> returns 3."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Read the hidden system columns",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> Terminal 1, in psql. System columns are not returned by <code class=\"inline-code\">SELECT *</code>; you have to name them."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT xmin, xmax, ctid, * FROM accounts ORDER BY id;",
+    "caption": "Terminal 1"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " xmin | xmax | ctid  | id | owner | balance\n------+------+-------+----+-------+---------\n  782 |    0 | (0,1) |  1 | Asha  |    5000\n  782 |    0 | (0,2) |  2 | Ravi  |    3000\n  782 |    0 | (0,3) |  3 | Meera |    7000",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All three rows were written by one INSERT, so they share xmin 782 (your number will be different; it depends on how many transactions your cluster has run). xmax is 0 because nobody has deleted or updated them. The ctid values show they sit in page 0 of the table, in items 1, 2 and 3."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Watching an UPDATE create a new row version",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Update a row inside an open transaction",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> Terminal 1, in psql. Start a transaction, take 1000 from Asha, and do <b>not</b> commit yet. <code class=\"inline-code\">pg_current_xact_id()</code> shows the XID of the current transaction."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\nUPDATE accounts SET balance = balance - 1000 WHERE id = 1;\nSELECT pg_current_xact_id();\nSELECT xmin, xmax, ctid, * FROM accounts ORDER BY id;",
+    "caption": "Terminal 1"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\nUPDATE 1\n pg_current_xact_id\n--------------------\n                783\n(1 row)\n\n xmin | xmax | ctid  | id | owner | balance\n------+------+-------+----+-------+---------\n  783 |    0 | (0,4) |  1 | Asha  |    4000\n  782 |    0 | (0,2) |  2 | Ravi  |    3000\n  782 |    0 | (0,3) |  3 | Meera |    7000",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Inside its own transaction (XID 783), Terminal 1 sees Asha's new balance. Look at the ctid: the row moved from (0,1) to (0,4). That is the new tuple, and its xmin is 783. The psql prompt changes to <code class=\"inline-code\">mvcclab=*#</code>; the star means a transaction is open."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Read the same rows from a second session",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, Terminal 2, as the postgres user. Leave Terminal 1 as it is."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql mvcclab",
+    "caption": "Terminal 2: connect to the lab database"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT xmin, xmax, ctid, * FROM accounts ORDER BY id;",
+    "caption": "Terminal 2"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " xmin | xmax | ctid  | id | owner | balance\n------+------+-------+----+-------+---------\n  782 |  783 | (0,1) |  1 | Asha  |    5000\n  782 |    0 | (0,2) |  2 | Ravi  |    3000\n  782 |    0 | (0,3) |  3 | Meera |    7000",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Terminal 2 still sees Asha with 5000, at the old address (0,1). This tuple now has xmax 783: transaction 783 has replaced it, but 783 has not committed, so the old version is still the visible one for everyone else. The query did not wait for Terminal 1 to finish. This is MVCC in action: a reader and a writer worked on the same row at the same time without blocking each other."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Look at the snapshot Terminal 2 uses",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> Terminal 2. <code class=\"inline-code\">pg_current_snapshot()</code> returns the current snapshot as text in the form <code class=\"inline-code\">xmin:xmax:xip_list</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_current_snapshot();",
+    "caption": "Terminal 2"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_current_snapshot\n---------------------\n 783:783:\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it with the definitions from the documentation:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Part",
+      "Value",
+      "What it means"
+     ],
+     [
+      "xmin",
+      "783",
+      "Lowest transaction ID that was still active. Every XID below 783 is finished: committed and visible, or rolled back and dead."
+     ],
+     [
+      "xmax",
+      "783",
+      "One past the highest completed XID. Every XID of 783 or more is treated as not finished yet, so its changes are invisible."
+     ],
+     [
+      "xip_list",
+      "(empty)",
+      "Transactions in progress between xmin and xmax. Empty here, because the only running writer (783) is already at or above xmax."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "So for Terminal 2, XID 782 (the INSERT) is committed and visible, and XID 783 (the UPDATE) is invisible. That is exactly what Step 4 showed. On a busy server the xip_list is usually full of numbers."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "The snapshot's xmin is not the row's xmin",
+    "text": "The word xmin is used twice. On a row, xmin is the XID that created that row version. In a snapshot, xmin is the oldest transaction still running. The second meaning is the one behind the backend_xmin column in pg_stat_activity, which you will use in Step 12."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Commit and read again",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> commit in Terminal 1, then query in Terminal 2."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "COMMIT;",
+    "caption": "Terminal 1"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT xmin, xmax, ctid, * FROM accounts ORDER BY id;",
+    "caption": "Terminal 2"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " xmin | xmax | ctid  | id | owner | balance\n------+------+-------+----+-------+---------\n  783 |    0 | (0,4) |  1 | Asha  |    4000\n  782 |    0 | (0,2) |  2 | Ravi  |    3000\n  782 |    0 | (0,3) |  3 | Meera |    7000",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Terminal 2 took a new snapshot for this query, and XID 783 is now committed, so it sees the new version at (0,4). The old version at (0,1) is still in the file. It is now a <b>dead tuple</b>: no new snapshot will ever see it again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Looking inside the data page with pageinspect",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Install pageinspect and list every row version",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A normal SELECT only shows the versions your snapshot can see. To see all of them, including dead ones, use the pageinspect extension. It ships with the postgresql-18 package on Ubuntu, so there is nothing extra to install with apt."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Lab tool, superuser only",
+    "text": "pageinspect reads raw data pages and is meant for debugging. All of its functions can be used only by superusers. Use it on a lab or test server to learn; you do not need it on production for day-to-day work."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> Terminal 2, in psql, connected to mvcclab as postgres."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE EXTENSION pageinspect;\nSELECT lp, lp_flags, t_xmin, t_xmax, t_ctid\n  FROM heap_page_items(get_raw_page('accounts', 0));",
+    "caption": "Terminal 2"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Function or column",
+      "What it does"
+     ],
+     [
+      "get_raw_page('accounts', 0)",
+      "Reads block (page) 0 of the main data file of the table and returns a copy of it."
+     ],
+     [
+      "heap_page_items(page)",
+      "Shows every item on a table page, with tuple headers, whether or not the tuple is visible to any snapshot."
+     ],
+     [
+      "lp",
+      "Item number on the page: the second number of the ctid."
+     ],
+     [
+      "lp_flags",
+      "State of the item: 0 unused, 1 normal, 2 redirect, 3 dead."
+     ],
+     [
+      "t_xmin, t_xmax, t_ctid",
+      "The xmin, xmax and ctid stored in the tuple header."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE EXTENSION\n lp | lp_flags | t_xmin | t_xmax | t_ctid\n----+----------+--------+--------+--------\n  1 |        1 |    782 |    783 | (0,4)\n  2 |        1 |    782 |      0 | (0,2)\n  3 |        1 |    782 |      0 | (0,3)\n  4 |        1 |    783 |      0 | (0,4)\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The page holds four tuples for three logical rows. Item 1 is Asha's old version: xmax 783, and its t_ctid points forward to (0,4), the newer version. Item 4 is the current version, and its t_ctid points to itself because nothing newer exists. This forward pointer is how PostgreSQL follows a row from an old version to the newest one."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">SELECT extname FROM pg_extension WHERE extname = 'pageinspect';</code> returns one row."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Rollbacks and the meaning of xmax",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Delete a row and roll back",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> Terminal 1. Delete Ravi's row, note the XID, then change your mind."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\nDELETE FROM accounts WHERE id = 2;\nSELECT pg_current_xact_id();\nROLLBACK;\nSELECT xmin, xmax, ctid, * FROM accounts ORDER BY id;",
+    "caption": "Terminal 1"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\nDELETE 1\n pg_current_xact_id\n--------------------\n                785\n(1 row)\n\nROLLBACK\n xmin | xmax | ctid  | id | owner | balance\n------+------+-------+----+-------+---------\n  783 |    0 | (0,4) |  1 | Asha  |    4000\n  782 |  785 | (0,2) |  2 | Ravi  |    3000\n  782 |    0 | (0,3) |  3 | Meera |    7000",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Ravi's row is back, as expected, but its xmax is now 785, the XID of the rolled-back DELETE. A DELETE does not remove anything; it only stamps xmax. A ROLLBACK does not clean up the stamp either. It just marks transaction 785 as aborted. The documentation says this directly: a nonzero xmax on a visible row usually means the deleting transaction has not committed yet, or the deletion was rolled back. (XID 784 was used by the CREATE EXTENSION in Step 7.)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Check commit status with pg_xact_status",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> Terminal 1. PostgreSQL records whether each transaction committed or aborted in the <code class=\"inline-code\">pg_xact</code> folder of the data directory (you met it in Part 3). <code class=\"inline-code\">pg_xact_status()</code> reads that record."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_xact_status('783') AS update_xact,\n       pg_xact_status('785') AS delete_xact;",
+    "caption": "Terminal 1"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " update_xact | delete_xact\n-------------+-------------\n committed   | aborted\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the second half of the visibility check. Seeing xmax 785 is not enough; PostgreSQL also asks whether 785 committed. It did not, so Ravi's row stays visible. The function returns <code class=\"inline-code\">in progress</code>, <code class=\"inline-code\">committed</code> or <code class=\"inline-code\">aborted</code> for recent transactions, and NULL for transactions so old that their status has been discarded."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Snapshots and isolation levels",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a snapshot is taken depends on the transaction isolation level. PostgreSQL's default is <b>Read Committed</b>, which takes a new snapshot for every statement. <b>Repeatable Read</b> takes one snapshot at the first query or data-changing statement of the transaction (not at BEGIN) and keeps it until the end."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Read Committed sees new commits between statements",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> run the commands in the order shown, switching between the two terminals."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 2\nBEGIN;\nSELECT balance FROM accounts WHERE id = 3;   -- returns 7000\n\n-- Terminal 1 (autocommit, commits at once)\nUPDATE accounts SET balance = balance + 500 WHERE id = 3;\n\n-- Terminal 2, same transaction\nSELECT balance FROM accounts WHERE id = 3;\nCOMMIT;",
+    "caption": "Read Committed: two terminals"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " balance\n---------\n    7500\n(1 row)\n\nCOMMIT",
+    "caption": "Output (second SELECT in Terminal 2)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same query, inside one transaction, returned 7000 and then 7500. The second statement got a fresh snapshot in which Terminal 1's update was already committed. This is called a nonrepeatable read, and Read Committed allows it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Repeatable Read keeps one snapshot",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 2\nBEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT balance FROM accounts WHERE id = 3;   -- returns 7500\n\n-- Terminal 1\nUPDATE accounts SET balance = balance + 500 WHERE id = 3;\n\n-- Terminal 2, same transaction\nSELECT balance FROM accounts WHERE id = 3;\nUPDATE accounts SET balance = balance - 100 WHERE id = 3;\nROLLBACK;",
+    "caption": "Repeatable Read: two terminals"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "BEGIN ISOLATION LEVEL REPEATABLE READ",
+      "Starts a transaction in which all statements see only rows committed before its first query or data-modification statement."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " balance\n---------\n    7500\n(1 row)\n\nERROR:  could not serialize access due to concurrent update\nROLLBACK",
+    "caption": "Output (Terminal 2, after Terminal 1's update)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The second SELECT still returned 7500, even though the committed value is now 8000. Terminal 2 keeps reading the old row version that its snapshot can see. When it tried to <b>update</b> that row, PostgreSQL refused: a Repeatable Read transaction cannot modify a row that another transaction changed after its snapshot was taken. The documentation's advice is to roll back and retry the whole transaction."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">SELECT balance FROM accounts WHERE id = 3;</code> in either terminal now returns 8000."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Dead rows, VACUUM and the transaction that blocks cleanup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now the part that matters most on a production server. A dead tuple can be removed only when every snapshot in the cluster has moved past it. One forgotten open transaction can keep thousands of dead tuples alive, and the tables keep growing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Hold an old snapshot and create dead rows",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> Terminal 1 first runs a plain VACUUM so we start clean. Then Terminal 2 opens a Repeatable Read transaction and reads (this fixes its snapshot) and just stays open, like a forgotten session in an application. Then Terminal 1 updates every row."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 1\nVACUUM accounts;\n\n-- Terminal 2: open a transaction and leave it open\nBEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT sum(balance) FROM accounts;\n\n-- Terminal 1\nUPDATE accounts SET balance = balance + 100;\nSELECT n_live_tup, n_dead_tup, n_tup_upd, n_tup_hot_upd\n  FROM pg_stat_user_tables\n WHERE relname = 'accounts';",
+    "caption": "Two terminals"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " n_live_tup | n_dead_tup | n_tup_upd | n_tup_hot_upd\n------------+------------+-----------+---------------\n          3 |          3 |         6 |             6\n(1 row)",
+    "caption": "Output (Terminal 1)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The statistics view counts 3 live rows and 3 dead rows (estimates, maintained by the statistics system). n_tup_upd is the total number of rows updated so far (3 earlier plus 3 now), and n_tup_hot_upd shows that all of them were <b>HOT</b> updates, explained in Step 14."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Run VACUUM VERBOSE and read the result",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> Terminal 1, while Terminal 2 is still open."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "VACUUM (VERBOSE) accounts;",
+    "caption": "Terminal 1"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "VERBOSE",
+      "Prints a detailed vacuum activity report for each table at INFO level."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INFO:  vacuuming \"mvcclab.public.accounts\"\nINFO:  finished vacuuming \"mvcclab.public.accounts\": index scans: 0\npages: 0 removed, 1 remain, 1 scanned (100.00% of total), 0 eagerly scanned\ntuples: 0 removed, 6 remain, 3 are dead but not yet removable\nremovable cutoff: 789, which was 1 XIDs old when operation ended\nfrozen: 0 pages from table (0.00% of total) had 0 tuples frozen\nvisibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)\nindex scan not needed: 0 pages from table (0.00% of total) had 0 dead item identifiers removed\n...\nVACUUM",
+    "caption": "Output (first lines; the report for the TOAST table follows)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two lines tell the story. <b>3 are dead but not yet removable</b>: VACUUM found the dead tuples but was not allowed to remove them. <b>removable cutoff: 789</b>: VACUUM may only remove tuples deleted by transactions older than XID 789, because some session still has a snapshot that started at 789. The update that created the dead tuples was XID 789 itself, so its old versions must stay."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: Find the session holding back cleanup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> Terminal 1. The <code class=\"inline-code\">backend_xmin</code> column of pg_stat_activity is each session's xmin horizon: the oldest XID its snapshot still needs. The session with the oldest backend_xmin is the one blocking VACUUM."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, state, backend_xmin,\n       age(backend_xmin) AS xmin_age,\n       now() - xact_start AS xact_age\n  FROM pg_stat_activity\n WHERE backend_xmin IS NOT NULL\n   AND pid <> pg_backend_pid()\n ORDER BY age(backend_xmin) DESC;",
+    "caption": "Terminal 1: who holds the oldest snapshot?"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  |        state        | backend_xmin | xmin_age |    xact_age\n------+---------------------+--------------+----------+-----------------\n 3437 | idle in transaction |          789 |        1 | 00:00:07.694148\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Terminal 2 (PID 3437) is idle in transaction with backend_xmin 789, exactly the removable cutoff VACUUM reported. <code class=\"inline-code\">age()</code> gives how many XIDs old the value is. On this quiet lab server it is 1; on a busy production server an abandoned session can reach millions. <code class=\"inline-code\">pid <> pg_backend_pid()</code> hides your own session from the list."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To release it, ask the application owner to commit or roll back, or end the session with <code class=\"inline-code\">pg_terminate_backend(3437)</code> as shown in <a href=\"/posts/postgresql/postgresql-dba-part-10-connections-sessions/\">Part 10</a>. In the lab, just end the transaction:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "COMMIT;",
+    "caption": "Terminal 2"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "VACUUM (VERBOSE) accounts;",
+    "caption": "Terminal 1: vacuum again"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INFO:  vacuuming \"mvcclab.public.accounts\"\nINFO:  finished vacuuming \"mvcclab.public.accounts\": index scans: 0\npages: 0 removed, 1 remain, 1 scanned (100.00% of total), 0 eagerly scanned\ntuples: 3 removed, 3 remain, 0 are dead but not yet removable\nremovable cutoff: 790, which was 0 XIDs old when operation ended\nnew relfrozenxid: 789, which is 7 XIDs ahead of previous value\n...\nVACUUM",
+    "caption": "Output (first lines)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now VACUUM removed the 3 dead tuples. The relfrozenxid line is about transaction ID freezing, which Part 14 covers."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> run the pg_stat_user_tables query from Step 12 again. It now shows <code class=\"inline-code\">n_dead_tup</code> = 0."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Long open transactions are not the only thing that can hold the horizon back. Old prepared transactions (pg_prepared_xacts) and stale replication slots (pg_replication_slots) can do the same; later parts on wraparound and replication show how to find them."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: See what VACUUM and HOT left on the page",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> Terminal 1, as postgres (pageinspect needs a superuser)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT lp, lp_flags, lp_off, t_xmin, t_xmax, t_ctid\n  FROM heap_page_items(get_raw_page('accounts', 0));\nSELECT xmin, xmax, ctid, * FROM accounts ORDER BY id;",
+    "caption": "Terminal 1"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " lp | lp_flags | lp_off | t_xmin | t_xmax | t_ctid\n----+----------+--------+--------+--------+--------\n  1 |        2 |      7 |        |        |\n  2 |        2 |      5 |        |        |\n  3 |        2 |      8 |        |        |\n  4 |        0 |      0 |        |        |\n  5 |        1 |   8152 |    789 |      0 | (0,5)\n  6 |        0 |      0 |        |        |\n  7 |        1 |   8112 |    789 |      0 | (0,7)\n  8 |        1 |   8072 |    789 |      0 | (0,8)\n(8 rows)\n\n xmin | xmax | ctid  | id | owner | balance\n------+------+-------+----+-------+---------\n  789 |    0 | (0,7) |  1 | Asha  |    4100\n  789 |    0 | (0,5) |  2 | Ravi  |    3100\n  789 |    0 | (0,8) |  3 | Meera |    8100",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the result of <b>HOT (heap-only tuple)</b> updates. An update is HOT when it changes no indexed column (we only changed balance, and the only index is on id) and the new version fits on the same page. With HOT, PostgreSQL does not add new entries to the primary key index. The index still points to items 1, 2 and 3, and those items are now <b>redirects</b> (lp_flags 2) to the current versions in items 7, 5 and 8 (lp_off holds the target item number for a redirect). Items 4 and 6 held earlier row versions that nobody needs any more; they were removed completely and are unused (lp_flags 0), ready for new rows."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "HOT matters for performance. Updates that also change an indexed column must add index entries for every new version, which costs more and leaves more to clean up. Compare n_tup_hot_upd with n_tup_upd in pg_stat_user_tables to see how often your updates are HOT."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 16: Clean up the lab",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "DROP DATABASE cannot be undone",
+    "text": "DROP DATABASE removes the database and all its files at once. Run it only on the lab database mvcclab, and check the name twice. Never run it on a production database name."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> quit psql in Terminal 2 with <code class=\"inline-code\">\\q</code>. Then, in Terminal 1, connect to another database and drop the lab database."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\c postgres\nDROP DATABASE mvcclab;",
+    "caption": "Terminal 1"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "You are now connected to database \"postgres\" as user \"postgres\".\nDROP DATABASE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If Terminal 2 is still connected you get <code class=\"inline-code\">ERROR:  database \"mvcclab\" is being accessed by other users</code> with <code class=\"inline-code\">DETAIL:  There is 1 other session using the database.</code> Quit the other session and try again. <b>Check it worked:</b> <code class=\"inline-code\">SELECT datname FROM pg_database WHERE datname = 'mvcclab';</code> returns 0 rows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Using ctid as a row identifier",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "ctid looks like a handy unique address, but Step 3 showed it change from (0,1) to (0,4) after a single UPDATE. It also changes after VACUUM FULL. Code that saves a ctid and uses it later can hit the wrong row or no row. <b>Fix:</b> identify rows by the primary key. Use ctid only inside one statement, for example in a one-off duplicate cleanup."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reading a nonzero xmax as \"this row is deleted\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Step 8 left Ravi's row visible with xmax 785. A nonzero xmax only means some transaction tried to delete or lock the row; that transaction may still be running, or may have rolled back. Row locks such as SELECT ... FOR UPDATE also set xmax. <b>Fix:</b> do not build logic on xmax. If you are investigating, check the XID with <code class=\"inline-code\">pg_xact_status()</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR:  could not serialize access due to concurrent update",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This appears in Repeatable Read or Serializable transactions when you update or lock a row that someone else changed after your snapshot was taken (Step 11). It is expected behaviour, not a bug. <b>Fix:</b> the application must catch the error (SQLSTATE 40001), roll back and retry the whole transaction. If the code cannot retry, use Read Committed for that work."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR:  must be superuser to use raw page functions",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You get this when a normal role calls get_raw_page. <b>Fix:</b> run pageinspect queries as the postgres superuser on a lab or test server. Do not hand out superuser just for this."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR:  column name \"xmin\" conflicts with a system column name",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "System column names are reserved in every table, and quoting them does not help. <code class=\"inline-code\">CREATE TABLE audit_log (id integer, xmin integer);</code> fails with this error. <b>Fix:</b> choose another name, such as <code class=\"inline-code\">min_value</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Dead rows keep growing even though autovacuum runs",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "VACUUM reports \"dead but not yet removable\" and the table keeps growing. The usual cause is a session that has sat idle in transaction for hours. <b>Fix:</b> run the backend_xmin query from Step 14, end the oldest session, and set <code class=\"inline-code\">idle_in_transaction_session_timeout</code> for application roles, as shown in Part 10. Then check pg_prepared_xacts and pg_replication_slots for old entries."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Calling pg_current_xact_id() in read-only code",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "pg_current_xact_id() assigns a new XID if the transaction does not have one yet, so calling it in a read-only transaction uses up an XID for nothing. <b>Fix:</b> use <code class=\"inline-code\">pg_current_xact_id_if_assigned()</code>, which returns NULL instead of assigning one. (The older <code class=\"inline-code\">txid_current()</code> function does the same as pg_current_xact_id() and is kept only for backward compatibility.)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "In the lab table, open a transaction in Terminal 1 and run <code class=\"inline-code\">SELECT * FROM accounts WHERE id = 3 FOR UPDATE;</code>. Without committing, read xmin and xmax of that row from Terminal 2. What do you see, and why?",
+      "items": []
+     },
+     {
+      "content": "Update Meera's row three times in a row (three separate autocommit UPDATEs), then use heap_page_items to count how many tuples are on page 0 before and after a VACUUM.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "1. Terminal 2 still sees the row with its old values, but xmax now holds Terminal 1's XID (in our test xmin 796, xmax 797). FOR UPDATE stamps xmax to lock the row without changing it, which is one more reason a nonzero xmax does not mean deleted. 2. Before VACUUM, page 0 holds 6 tuples: Ravi and Asha, plus Meera's chain of four versions (items 3, 4, 5 and 6), each t_ctid pointing to the next. After VACUUM, item 3 is a redirect (lp_flags 2) to item 6, items 4 and 5 are unused (lp_flags 0), and item 6 is the only version of Meera left."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Open psql as the postgres user (use two terminals for the MVCC tests)\nsudo -u postgres psql mvcclab\n\n# Read the hidden system columns of every row\nsudo -u postgres psql -d mvcclab -c \"SELECT xmin, xmax, ctid, * FROM accounts ORDER BY id;\"\n\n# Show the current snapshot as xmin:xmax:xip_list\nsudo -u postgres psql -d mvcclab -c \"SELECT pg_current_snapshot();\"\n\n# Check whether a transaction committed or aborted (use an XID from your own tests)\nsudo -u postgres psql -d mvcclab -c \"SELECT pg_xact_status('783');\"\n\n# List every tuple on page 0, including dead ones (superuser, lab only)\nsudo -u postgres psql -d mvcclab -c \"CREATE EXTENSION IF NOT EXISTS pageinspect;\"\nsudo -u postgres psql -d mvcclab -c \"SELECT lp, lp_flags, t_xmin, t_xmax, t_ctid FROM heap_page_items(get_raw_page('accounts', 0));\"\n\n# Live and dead tuple counts, total and HOT updates\nsudo -u postgres psql -d mvcclab -c \"SELECT n_live_tup, n_dead_tup, n_tup_upd, n_tup_hot_upd FROM pg_stat_user_tables WHERE relname = 'accounts';\"\n\n# Vacuum one table with a detailed report\nsudo -u postgres psql -d mvcclab -c \"VACUUM (VERBOSE) accounts;\"\n\n# Find the sessions holding the oldest snapshots (any database)\nsudo -u postgres psql -c \"SELECT pid, datname, state, backend_xmin, age(backend_xmin) FROM pg_stat_activity WHERE backend_xmin IS NOT NULL ORDER BY age(backend_xmin) DESC;\"\n\n# Remove the lab database (lab only; quit other sessions first)\nsudo -u postgres psql -c \"DROP DATABASE mvcclab;\"",
+    "caption": "All commands on db1; transaction tests (BEGIN ... COMMIT) must be typed inside an interactive psql session"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "PostgreSQL never updates a row in place: UPDATE writes a new tuple and stamps the old one's xmax",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "xmin is the creating XID, xmax the deleting or locking XID, ctid the physical address that changes on update",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "A snapshot (xmin:xmax:xip_list) decides which tuples a query sees, so readers never block writers",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Read Committed takes a snapshot per statement; Repeatable Read keeps one per transaction and can raise could not serialize access",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "DELETE and ROLLBACK leave old tuples behind; commit status lives in pg_xact",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "VACUUM can only remove dead tuples older than the oldest snapshot; find the blocker with backend_xmin in pg_stat_activity",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "HOT updates avoid new index entries when no indexed column changes and the page has room",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 12 we look at VACUUM and autovacuum: how they work and how to tune them."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "An UPDATE in PostgreSQL never changes the row in place. It writes a new copy and leaves the old one behind.\n\nThat one fact explains a lot of DBA work. Here is what a quick test on PostgreSQL 18 shows:\n\n→ Every row version has hidden columns: xmin (the transaction that created it) and xmax (the one that deleted or replaced it).\n→ SELECT xmin, xmax, ctid, * FROM accounts; shows them. ctid moved from (0,1) to (0,4) after one UPDATE, so never use it as a row ID.\n→ A reader in another session kept seeing the old version until the writer committed. No waiting. That is why readers never block writers.\n→ A rolled-back DELETE leaves xmax set on a row that is still visible. Nonzero xmax does not mean deleted.\n→ One session left \"idle in transaction\" made VACUUM report \"3 are dead but not yet removable\". backend_xmin in pg_stat_activity shows who is holding cleanup back.\n\nThis is Part 11 of my PostgreSQL DBA series. Follow along if you are learning PostgreSQL administration from the ground up.\n\nHow do you find long open transactions on your servers today?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "PostgreSQL MVCC, explained with real output",
+    "body": "DBA series Part 11: xmin, xmax, snapshots and dead rows"
+   },
+   {
+    "title": "UPDATE writes a new row version",
+    "points": [
+     "The old version stays in the table",
+     "xmin = transaction that created the version",
+     "xmax = transaction that deleted or replaced it",
+     "ctid = physical address, changes on update"
+    ]
+   },
+   {
+    "title": "See the hidden columns",
+    "code": "SELECT xmin, xmax, ctid, *\n  FROM accounts\n ORDER BY id;\n\n-- after one UPDATE of id 1:\n-- ctid (0,1) -> (0,4)\n-- new xmin = updating XID",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Readers never block writers",
+    "body": "While session 1 has an uncommitted UPDATE, session 2 reads the old version (xmax set, not committed) without waiting. Its snapshot decides which versions it can see."
+   },
+   {
+    "title": "Snapshots and isolation",
+    "points": [
+     "Read Committed: new snapshot for every statement",
+     "Repeatable Read: one snapshot for the whole transaction",
+     "Updating a changed row in Repeatable Read raises",
+     "could not serialize access: roll back and retry"
+    ]
+   },
+   {
+    "title": "Who is blocking VACUUM?",
+    "code": "SELECT pid, state, backend_xmin,\n       age(backend_xmin)\n  FROM pg_stat_activity\n WHERE backend_xmin IS NOT NULL\n ORDER BY age(backend_xmin) DESC;",
+    "lang": "postgresql"
+   }
+  ]
+ }
+}
