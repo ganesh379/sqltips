@@ -2,13 +2,15 @@
 Usage: python3 make_voice.py <reel_folder> [lang] [speaker]   (folder must contain script.json)
 Writes <folder>/voice/NN.wav, <folder>/voice.wav and <folder>/timing.json
 """
-import json, os, subprocess, sys
+import hashlib, json, os, subprocess, sys
 from pathlib import Path
 
 from sarvamai import SarvamAI
 from sarvamai.play import save
 
 HERE = Path(__file__).parent
+sys.path.insert(0, str(HERE))
+from pronounce import speakable  # respells psql, PostgreSQL, DBA, pg_hba.conf... for the voice only
 env_file = HERE / ".env"   # local fallback only; scheduled runs set SARVAM_API_KEY in the environment
 for line in (env_file.read_text().splitlines() if env_file.exists() else []):
     if "=" in line and not line.strip().startswith("#"):
@@ -23,14 +25,24 @@ vdir = folder / "voice"
 vdir.mkdir(exist_ok=True)
 client = SarvamAI(api_subscription_key=os.environ["SARVAM_API_KEY"])
 
-LEAD, GAP = 0.25, 0.18          # silence before first line, between lines (s)
+LEAD = 0.25                                  # silence before the first line (s)
+GAP = float(os.environ.get("TTS_GAP", "0.3"))  # breath between lines (s)
+PACE = float(os.environ.get("TTS_PACE", "1.05"))
+MODEL = "bulbul:v4-flash"
 timing, t, parts = [], LEAD, []
 for i, ln in enumerate(lines):
-    wav = vdir / f"{i:02d}.wav"
+    text = ln.get("say", ln.get("te"))
+    if LANG.startswith("en"):
+        text = speakable(text)
+    # clip name carries a hash of what was sent, so a changed line, rule, voice or pace re-voices only that line
+    h = hashlib.sha1(f"{MODEL}|{SPEAKER}|{PACE}|{LANG}|{text}".encode()).hexdigest()[:10]
+    wav = vdir / f"{i:02d}-{h}.wav"
     if not wav.exists():
+        for old in vdir.glob(f"{i:02d}-*.wav"):
+            old.unlink()
         audio = client.text_to_speech.convert(
-            text=ln.get("say", ln.get("te")), language_code=LANG, model="bulbul:v4-flash",
-            speaker=SPEAKER, pace=float(os.environ.get("TTS_PACE", "1.1")), speech_sample_rate=44100)
+            text=text, language_code=LANG, model=MODEL,
+            speaker=SPEAKER, pace=PACE, speech_sample_rate=44100)
         save(audio, str(wav))
     dur = float(subprocess.check_output(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(wav)]))

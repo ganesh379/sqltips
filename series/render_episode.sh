@@ -25,9 +25,8 @@ if old is not None and old != new:
             os.remove(f"{d}/{f}")
 open(f"{d}/script.json", "w").write(new)
 PY
-if [ ! -f "$DIR/timing.json" ] || [ "$DIR/episode.json" -nt "$DIR/timing.json" ]; then
-  TTS_PACE="${TTS_PACE:-1.15}" python3 "$MAKE_VOICE" "$DIR" en-IN kalpit_en_edtech
-fi
+# always run: clips are cached by content hash, so only new or changed lines cost credits
+python3 "$MAKE_VOICE" "$DIR" en-IN kalpit_en_edtech
 
 # 2. props for Remotion
 mkdir -p "$HERE/public"
