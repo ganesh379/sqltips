@@ -4,61 +4,339 @@
   "title": "PostgreSQL DBA Series: What a DBA Actually Does",
   "phase": "Foundations",
   "lines": [
-    {"say": "What does a PostgreSQL DBA really do every day?", "cap": "What does a *PostgreSQL* *DBA* really do every day?"},
-    {"say": "This is episode one of a one hundred and forty day PostgreSQL DBA series. One topic a day, from the basics to production.", "cap": "Episode 1 of a *140-day* PostgreSQL DBA series. One topic a day, basics to *production.*"},
-    {"say": "In one line: a DBA keeps the database available, secure, fast and recoverable, and ready to grow.", "cap": "A DBA keeps the database *available,* *secure,* *fast* and *recoverable.*"},
-    {"say": "Availability. The database has to be up whenever the application needs it, so the DBA monitors it, sets up replication and plans for failures.", "cap": "*Availability:* up whenever the app needs it. Monitoring, *replication,* a plan for failures."},
-    {"say": "Security. The DBA controls who can connect, and what each role is allowed to read or change.", "cap": "*Security:* who can connect, and what each *role* can read or change."},
-    {"say": "Performance. Find the slow queries, read their plans, and tune indexes and settings.", "cap": "*Performance:* find slow queries, read plans, tune *indexes* and settings."},
-    {"say": "Backups. Take them on a schedule, and keep copies somewhere safe.", "cap": "*Backups:* on a schedule, with copies kept *safe.*"},
-    {"say": "Recovery. This is the one people forget. A backup only counts if you can restore it, so practise restores.", "cap": "*Recovery:* a backup only counts if you can *restore* it."},
-    {"say": "Capacity. Watch disk space, connections and data growth, before they turn into an outage.", "cap": "*Capacity:* watch disk, connections and growth *before* they become an outage."},
-    {"say": "PostgreSQL also needs routine maintenance. VACUUM reclaims space from updated and deleted rows, and keeps the planner's statistics fresh.", "cap": "*VACUUM* reclaims space from updated and deleted rows, and refreshes *statistics.*"},
-    {"say": "Then upgrades. The PostgreSQL project recommends always running the current minor release, because minor releases carry bug and security fixes.", "cap": "Run the current *minor* *release.* It carries bug and *security* fixes."},
-    {"say": "A new major version arrives about once a year, and each one is supported for five years.", "cap": "A new *major* version about once a year, supported for *5* *years.*", "cue": "five years"},
-    {"say": "Here's a simple morning check you can follow.", "cap": "Here's a simple *morning* *check* you can follow."},
-    {"say": "First, check that every server is up, and that replicas are keeping up.", "cap": "1. Every server *up,* replicas *keeping* *up.*"},
-    {"say": "Next, look at disk space, connection counts and long-running queries.", "cap": "2. *Disk,* *connections,* long-running *queries.*"},
-    {"say": "Then confirm that last night's backup actually succeeded.", "cap": "3. Did last night's *backup* succeed?"},
-    {"say": "After that comes the planned work: tuning, access requests and changes.", "cap": "4. Planned work: *tuning,* access requests, changes."},
-    {"say": "Commands are easy to look up. Understanding what PostgreSQL does inside is what this series builds, one episode at a time.", "cap": "Understand what PostgreSQL does *inside.* That's what this series builds."},
-    {"say": "Tomorrow: database versus DBMS versus SQL. Follow so you don't miss it, and send this to a friend who wants to become a DBA.", "cap": "Tomorrow: database vs *DBMS* vs *SQL.* *Follow* and send this to a friend."}
+    {
+      "say": "What does a PostgreSQL DBA really do every day?",
+      "cap": "What does a *PostgreSQL* *DBA* really do every day?"
+    },
+    {
+      "say": "This is episode one of a one hundred and forty episode PostgreSQL DBA series, from the basics all the way to production.",
+      "cap": "Episode 1 of a *140-episode* PostgreSQL DBA series, basics to *production.*"
+    },
+    {
+      "say": "In one line: a DBA keeps the database available, secure, fast and recoverable, and ready to grow.",
+      "cap": "A DBA keeps the database *available,* *secure,* *fast* and *recoverable.*"
+    },
+    {
+      "say": "Availability. The database has to be up whenever the application needs it, so the DBA monitors it, sets up replication and plans for failures.",
+      "cap": "*Availability:* up whenever the app needs it. Monitoring, *replication,* a plan for failures."
+    },
+    {
+      "say": "Security. The DBA controls who can connect, and what each role is allowed to read or change.",
+      "cap": "*Security:* who can connect, and what each *role* can read or change."
+    },
+    {
+      "say": "Performance. Find the slow queries, read their plans, and tune indexes and settings.",
+      "cap": "*Performance:* find slow queries, read plans, tune *indexes* and settings."
+    },
+    {
+      "say": "Backups. Take them on a schedule, and keep copies somewhere safe.",
+      "cap": "*Backups:* on a schedule, with copies kept *safe.*"
+    },
+    {
+      "say": "Recovery. This is the one people forget. A backup only counts if you can restore it, so practise restores.",
+      "cap": "*Recovery:* a backup only counts if you can *restore* it."
+    },
+    {
+      "say": "Capacity. Watch disk space, connections and data growth, before they turn into an outage.",
+      "cap": "*Capacity:* watch disk, connections and growth *before* they become an outage."
+    },
+    {
+      "say": "PostgreSQL also needs routine maintenance. VACUUM reclaims space from updated and deleted rows, and keeps the planner's statistics fresh.",
+      "cap": "*VACUUM* reclaims space from updated and deleted rows, and refreshes *statistics.*"
+    },
+    {
+      "say": "Then upgrades. The PostgreSQL project recommends always running the current minor release, because minor releases carry bug and security fixes.",
+      "cap": "Run the current *minor* *release.* It carries bug and *security* fixes."
+    },
+    {
+      "say": "A new major version arrives about once a year, and each one is supported for five years.",
+      "cap": "A new *major* version about once a year, supported for *5* *years.*",
+      "cue": "five years"
+    },
+    {
+      "say": "Here's a simple morning check you can follow.",
+      "cap": "Here's a simple *morning* *check* you can follow."
+    },
+    {
+      "say": "First, check that every server is up, and that replicas are keeping up.",
+      "cap": "1. Every server *up,* replicas *keeping* *up.*"
+    },
+    {
+      "say": "Next, look at disk space, connection counts and long-running queries.",
+      "cap": "2. *Disk,* *connections,* long-running *queries.*"
+    },
+    {
+      "say": "Then confirm that last night's backup actually succeeded.",
+      "cap": "3. Did last night's *backup* succeed?"
+    },
+    {
+      "say": "After that comes the planned work: tuning, access requests and changes.",
+      "cap": "4. Planned work: *tuning,* access requests, changes."
+    },
+    {
+      "say": "Commands are easy to look up. Understanding what PostgreSQL does inside is what this series builds, one episode at a time.",
+      "cap": "Understand what PostgreSQL does *inside.* That's what this series builds."
+    },
+    {
+      "say": "Tomorrow: database versus DBMS versus SQL. Follow so you don't miss it, and send this to a friend who wants to become a DBA.",
+      "cap": "Tomorrow: database vs *DBMS* vs *SQL.* *Follow* and send this to a friend."
+    }
   ],
   "scenes": [
-    {"type": "hook", "from": 0, "to": 1, "text": "What does a *PostgreSQL* *DBA* really do every day?", "sub": "Episode 1 of 140"},
-    {"type": "title", "from": 1, "to": 2, "kicker": "EPISODE 1 · FOUNDATIONS", "title": "What a DBA Actually Does", "sub": "One topic a day, from the basics to production"},
-    {"type": "diagram", "from": 2, "to": 9, "heading": "The DBA role map",
+    {
+      "type": "hook",
+      "from": 0,
+      "to": 1,
+      "text": "What does a *PostgreSQL* *DBA* really do every day?",
+      "sub": "Episode 1 of 140"
+    },
+    {
+      "type": "title",
+      "from": 1,
+      "to": 2,
+      "kicker": "EPISODE 1 · FOUNDATIONS",
+      "title": "What a DBA Actually Does",
+      "sub": "From the basics to production"
+    },
+    {
+      "type": "diagram",
+      "from": 2,
+      "to": 9,
+      "heading": "The DBA role map",
       "nodes": [
-        {"id": "pg", "label": "PostgreSQL", "sub": "your database", "x": 540, "y": 850, "w": 330, "h": 170, "icon": "database", "shape": "db", "color": "blue", "at": 2},
-        {"id": "av", "label": "Availability", "sub": "always up", "x": 255, "y": 540, "w": 360, "h": 150, "icon": "server", "color": "green", "at": 3},
-        {"id": "se", "label": "Security", "sub": "who can do what", "x": 825, "y": 540, "w": 360, "h": 150, "icon": "shield", "color": "purple", "at": 4},
-        {"id": "pe", "label": "Performance", "sub": "fast queries", "x": 200, "y": 1060, "w": 330, "h": 150, "icon": "gauge", "color": "cyan", "at": 5},
-        {"id": "bk", "label": "Backups", "sub": "on a schedule", "x": 880, "y": 1060, "w": 330, "h": 150, "icon": "backup", "color": "amber", "at": 6},
-        {"id": "rc", "label": "Recovery", "sub": "tested restores", "x": 300, "y": 1290, "w": 360, "h": 140, "icon": "sync", "color": "orange", "at": 7},
-        {"id": "ca", "label": "Capacity", "sub": "room to grow", "x": 780, "y": 1290, "w": 360, "h": 140, "icon": "growth", "color": "red", "at": 8}
+        {
+          "id": "pg",
+          "label": "PostgreSQL",
+          "sub": "your database",
+          "x": 540,
+          "y": 850,
+          "w": 330,
+          "h": 170,
+          "icon": "database",
+          "shape": "db",
+          "color": "blue",
+          "at": 2
+        },
+        {
+          "id": "av",
+          "label": "Availability",
+          "sub": "always up",
+          "x": 255,
+          "y": 540,
+          "w": 360,
+          "h": 150,
+          "icon": "server",
+          "color": "green",
+          "at": 3
+        },
+        {
+          "id": "se",
+          "label": "Security",
+          "sub": "who can do what",
+          "x": 825,
+          "y": 540,
+          "w": 360,
+          "h": 150,
+          "icon": "shield",
+          "color": "purple",
+          "at": 4
+        },
+        {
+          "id": "pe",
+          "label": "Performance",
+          "sub": "fast queries",
+          "x": 200,
+          "y": 1060,
+          "w": 330,
+          "h": 150,
+          "icon": "gauge",
+          "color": "cyan",
+          "at": 5
+        },
+        {
+          "id": "bk",
+          "label": "Backups",
+          "sub": "on a schedule",
+          "x": 880,
+          "y": 1060,
+          "w": 330,
+          "h": 150,
+          "icon": "backup",
+          "color": "amber",
+          "at": 6
+        },
+        {
+          "id": "rc",
+          "label": "Recovery",
+          "sub": "tested restores",
+          "x": 300,
+          "y": 1290,
+          "w": 360,
+          "h": 140,
+          "icon": "sync",
+          "color": "orange",
+          "at": 7
+        },
+        {
+          "id": "ca",
+          "label": "Capacity",
+          "sub": "room to grow",
+          "x": 780,
+          "y": 1290,
+          "w": 360,
+          "h": 140,
+          "icon": "growth",
+          "color": "red",
+          "at": 8
+        }
       ],
       "edges": [
-        {"from": "pg", "to": "av", "at": 3, "flow": true, "color": "green"},
-        {"from": "pg", "to": "se", "at": 4, "flow": true, "color": "purple"},
-        {"from": "pg", "to": "pe", "at": 5, "flow": true, "color": "cyan"},
-        {"from": "pg", "to": "bk", "at": 6, "flow": true, "color": "amber"},
-        {"from": "bk", "to": "rc", "at": 7, "flow": true, "color": "orange", "label": "restore"},
-        {"from": "pg", "to": "ca", "at": 8, "flow": true, "color": "red"}
+        {
+          "from": "pg",
+          "to": "av",
+          "at": 3,
+          "flow": true,
+          "color": "green"
+        },
+        {
+          "from": "pg",
+          "to": "se",
+          "at": 4,
+          "flow": true,
+          "color": "purple"
+        },
+        {
+          "from": "pg",
+          "to": "pe",
+          "at": 5,
+          "flow": true,
+          "color": "cyan"
+        },
+        {
+          "from": "pg",
+          "to": "bk",
+          "at": 6,
+          "flow": true,
+          "color": "amber"
+        },
+        {
+          "from": "bk",
+          "to": "rc",
+          "at": 7,
+          "flow": true,
+          "color": "orange",
+          "label": "restore"
+        },
+        {
+          "from": "pg",
+          "to": "ca",
+          "at": 8,
+          "flow": true,
+          "color": "red"
+        }
       ],
-      "focus": [{"at": 2, "id": "pg"}, {"at": 3, "id": "av"}, {"at": 4, "id": "se"}, {"at": 5, "id": "pe"}, {"at": 6, "id": "bk"}, {"at": 7, "id": "rc"}, {"at": 8, "id": "ca"}]
+      "focus": [
+        {
+          "at": 2,
+          "id": "pg"
+        },
+        {
+          "at": 3,
+          "id": "av"
+        },
+        {
+          "at": 4,
+          "id": "se"
+        },
+        {
+          "at": 5,
+          "id": "pe"
+        },
+        {
+          "at": 6,
+          "id": "bk"
+        },
+        {
+          "at": 7,
+          "id": "rc"
+        },
+        {
+          "at": 8,
+          "id": "ca"
+        }
+      ]
     },
-    {"type": "cards", "from": 9, "to": 12, "heading": "Keeping PostgreSQL healthy", "columns": 1, "items": [
-      {"at": 9, "icon": "wrench", "title": "Routine VACUUM", "text": "Reclaims space from updated and deleted rows, refreshes planner statistics", "color": "green"},
-      {"at": 10, "icon": "shield", "title": "Current minor release", "text": "Bug, security and data corruption fixes. Recommended by the project", "color": "blue"},
-      {"at": 11, "icon": "clock", "title": "Major version yearly", "text": "Each major version is supported for 5 years", "color": "amber"}
-    ]},
-    {"type": "steps", "from": 12, "to": 17, "heading": "A simple morning check", "items": [
-      {"at": 13, "title": "Servers up, replicas keeping up", "color": "green"},
-      {"at": 14, "title": "Disk, connections, long queries", "color": "cyan"},
-      {"at": 15, "title": "Last night's backup succeeded?", "color": "amber"},
-      {"at": 16, "title": "Planned work: tuning, access, changes", "color": "purple"}
-    ]},
-    {"type": "callout", "from": 17, "to": 18, "kind": "tip", "title": "Learn what happens inside", "text": "Commands are easy to look up. This series explains what PostgreSQL does inside, one episode a day."},
-    {"type": "outro", "from": 18, "to": 19, "next": "Ep 2 · Database vs DBMS vs SQL"}
+    {
+      "type": "cards",
+      "from": 9,
+      "to": 12,
+      "heading": "Keeping PostgreSQL healthy",
+      "columns": 1,
+      "items": [
+        {
+          "at": 9,
+          "icon": "wrench",
+          "title": "Routine VACUUM",
+          "text": "Reclaims space from updated and deleted rows, refreshes planner statistics",
+          "color": "green"
+        },
+        {
+          "at": 10,
+          "icon": "shield",
+          "title": "Current minor release",
+          "text": "Bug, security and data corruption fixes. Recommended by the project",
+          "color": "blue"
+        },
+        {
+          "at": 11,
+          "icon": "clock",
+          "title": "Major version yearly",
+          "text": "Each major version is supported for 5 years",
+          "color": "amber"
+        }
+      ]
+    },
+    {
+      "type": "steps",
+      "from": 12,
+      "to": 17,
+      "heading": "A simple morning check",
+      "items": [
+        {
+          "at": 13,
+          "title": "Servers up, replicas keeping up",
+          "color": "green"
+        },
+        {
+          "at": 14,
+          "title": "Disk, connections, long queries",
+          "color": "cyan"
+        },
+        {
+          "at": 15,
+          "title": "Last night's backup succeeded?",
+          "color": "amber"
+        },
+        {
+          "at": 16,
+          "title": "Planned work: tuning, access, changes",
+          "color": "purple"
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "from": 17,
+      "to": 18,
+      "kind": "tip",
+      "title": "Learn what happens inside",
+      "text": "Commands are easy to look up. This series explains what PostgreSQL does inside, one episode at a time."
+    },
+    {
+      "type": "outro",
+      "from": 18,
+      "to": 19,
+      "next": "Ep 2 · Database vs DBMS vs SQL"
+    }
   ]
 }

@@ -4,7 +4,7 @@ A PostgreSQL DBA keeps the database available, secure, fast and recoverable, and
 
 PostgreSQL also needs routine maintenance. VACUUM reclaims space from updated and deleted rows and refreshes planner statistics. And the PostgreSQL project recommends always running the current minor release, because minor releases carry bug and security fixes.
 
-Episode 1 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for a new episode every day.
+Episode 1 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
 
 Send this to a friend who's learning PostgreSQL.
 
