@@ -36,3 +36,4 @@
 - 2026-11-02 [PostgreSQL] postgresql kill session -> _drafts/2026-11-02-postgresql-postgresql-dba-part-10-connections-sessions.json
 - 2026-11-03 [Oracle] ora-01722 invalid number -> _drafts/2026-11-03-oracle-ora-01722-invalid-number.json
 - 2026-11-03 [PostgreSQL] postgresql mvcc explained -> _drafts/2026-11-03-postgresql-postgresql-dba-part-11-mvcc-xmin-xmax.json
+- 2026-11-04 [Oracle] ora-01427 single-row subquery returns more than one row -> _drafts/2026-11-04-oracle-ora-01427-single-row-subquery.json

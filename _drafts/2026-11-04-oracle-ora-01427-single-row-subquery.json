@@ -1,0 +1,892 @@
+{
+ "schemaVersion": 1,
+ "title": "ORA-01427 Single-Row Subquery Returns More Than One Row: Fix",
+ "slug": "ora-01427-single-row-subquery-returns-more-than-one-row",
+ "category": "plsql",
+ "description": "Fix ORA-01427 single-row subquery returns more than one row in Oracle: find the duplicate rows, then use IN, ANY, filters or MERGE, with UPDATE examples.",
+ "focusKeyword": "ora-01427 single-row subquery returns more than one row",
+ "tags": [
+  "oracle",
+  "ora-errors",
+  "subquery",
+  "sql",
+  "update"
+ ],
+ "related": [
+  "/posts/plsql/oracle-merge-statement-example/",
+  "/posts/plsql/oracle-delete-duplicate-rows-but-keep-one/",
+  "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle error help: ORA-01427",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-01427/"
+  },
+  {
+   "title": "Oracle 19c SQL Language Reference: Scalar Subquery Expressions",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Scalar-Subquery-Expressions.html"
+  },
+  {
+   "title": "Oracle 19c SQL Language Reference: Comparison Conditions (ANY, ALL)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Comparison-Conditions.html"
+  },
+  {
+   "title": "Oracle 19c SQL Language Reference: IN Condition",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/IN-Condition.html"
+  },
+  {
+   "title": "Oracle 23ai SQL Language Reference: UPDATE",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/23/sqlrf/UPDATE.html"
+  },
+  {
+   "title": "Oracle error help: ORA-30926",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-30926/"
+  },
+  {
+   "title": "Oracle error help: ORA-01422",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-01422/"
+  }
+ ],
+ "reviewNotes": "Examples written from the 19c and 23ai SQL Language Reference; none were run, so every query, error and output (marked expected output) needs a test run, ideally on 19c and 23ai. Please check: (1) FETCH FIRST 1 ROW ONLY inside a correlated scalar subquery (Fix C) works on 19c; (2) the 'rows updated' / 'rows merged' feedback text in SQL*Plus or SQLcl; (3) ORA-30926 message wording differs between releases, so the article quotes the older text only as an example; (4) the 23ai UPDATE ... FROM callout matches the 23ai UPDATE docs (some Oracle blogs credit 26ai, the 23 docs page includes it); (5) the claim that the unique function-based index raises ORA-00001 on a second primary phone. Topic chosen because ORA-01427 is not covered anywhere on the site and autocomplete shows demand for 'ora 01427 how to fix' and 'ora 01427 update'; ranking pages are mostly forum threads without a runnable example or the UPDATE/NULL and NOT IN pitfalls.",
+ "generatedAt": "2026-11-04T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>ORA-01427: single-row subquery returns more than one row</b> means you used a subquery where Oracle expects exactly one value, and that subquery returned two or more rows. The fix is either to use a multi-row operator such as <code class=\"inline-code\">IN</code>, <code class=\"inline-code\">ANY</code> or <code class=\"inline-code\">ALL</code>, or to change the subquery so it can only ever return one row."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The tricky part is that the same query often works for months and then fails one day. That happens because the error depends on the data, not on the SQL text. In this tutorial you will reproduce the error in the four places it usually appears (WHERE, SELECT list, UPDATE and comparison operators), find the exact rows causing it, and pick the right fix for each case."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What ORA-01427 means",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A <b>single-row subquery</b> is a subquery used where one value is expected. Typical places are the right side of <code class=\"inline-code\">=</code>, <code class=\"inline-code\">&lt;</code> or <code class=\"inline-code\">&gt;</code>, a column in the SELECT list, and the <code class=\"inline-code\">SET</code> clause of an UPDATE. A subquery that returns one column from one row and is used as a value, for example in the SELECT list or SET clause, is what Oracle calls a <b>scalar subquery</b>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The Oracle documentation states the rules clearly. If a scalar subquery returns zero rows, its value is NULL. If it returns more than one row, Oracle raises an error. That error is ORA-01427."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle's own suggested action is: use <code class=\"inline-code\">ANY</code>, <code class=\"inline-code\">ALL</code>, <code class=\"inline-code\">IN</code> or <code class=\"inline-code\">NOT IN</code> to say which values to compare, or reword the query so only one row is retrieved. Which of these is correct depends on what you meant the query to do. That decision is the real work, and the rest of this article walks through it."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Why the same query works in test and fails in production",
+    "text": "Oracle checks the row count at run time, for each value the subquery is evaluated with. A subquery like <code class=\"inline-code\">(SELECT phone FROM customer_phones WHERE customer_id = 102)</code> is fine until someone adds a second phone for customer 102. Nothing in the SQL changed, but now it fails."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample tables for this tutorial",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create three small tables: customers, their phone numbers, and their orders. Customer 102 has two phone numbers, and two customers live in Pune. These two details are what will trigger the error."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE customers (\n  customer_id NUMBER PRIMARY KEY,\n  name        VARCHAR2(50),\n  city        VARCHAR2(30),\n  phone       VARCHAR2(15)\n);\n\nCREATE TABLE customer_phones (\n  customer_id NUMBER REFERENCES customers(customer_id),\n  phone       VARCHAR2(15),\n  is_primary  CHAR(1)\n);\n\nCREATE TABLE orders (\n  order_id    NUMBER PRIMARY KEY,\n  customer_id NUMBER REFERENCES customers(customer_id),\n  amount      NUMBER(10,2),\n  status      VARCHAR2(10)\n);\n\nINSERT INTO customers (customer_id, name, city) VALUES (101, 'Asha Rao',    'Pune');\nINSERT INTO customers (customer_id, name, city) VALUES (102, 'Vikram Shah', 'Mumbai');\nINSERT INTO customers (customer_id, name, city) VALUES (103, 'Neha Iyer',   'Pune');\nINSERT INTO customers (customer_id, name, city) VALUES (104, 'Rahul Das',   'Delhi');\n\nINSERT INTO customer_phones VALUES (101, '9800000001', 'Y');\nINSERT INTO customer_phones VALUES (102, '9800000002', 'Y');\nINSERT INTO customer_phones VALUES (102, '9800000003', 'N');\nINSERT INTO customer_phones VALUES (103, '9800000004', 'Y');\n\nINSERT INTO orders VALUES (1, 101, 2500, 'SHIPPED');\nINSERT INTO orders VALUES (2, 102, 1200, 'PENDING');\nINSERT INTO orders VALUES (3, 103, 3100, 'SHIPPED');\nINSERT INTO orders VALUES (4, 104,  800, 'PENDING');\nINSERT INTO orders VALUES (5, 101,  450, 'PENDING');\n\nCOMMIT;",
+    "caption": "Sample setup: customers, customer_phones and orders"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice that customer 104 has no phone at all, and the <code class=\"inline-code\">phone</code> column in customers is empty for now. Both facts matter in the UPDATE section."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Case 1: = with a subquery in the WHERE clause",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the most common version. You want all orders from customers in Pune, so you write an equality against a subquery."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_id, amount\n  FROM orders\n WHERE customer_id = (SELECT customer_id\n                        FROM customers\n                       WHERE city = 'Pune');",
+    "caption": "Fails: two customers live in Pune"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-01427: single-row subquery returns more than one row",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The subquery returns 101 and 103. The <code class=\"inline-code\">=</code> operator can compare <code class=\"inline-code\">customer_id</code> with one value only, so Oracle stops. If you change the city to <code class=\"inline-code\">'Mumbai'</code>, the same query runs fine, because only one customer lives there. This is why the bug often survives testing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix: use IN when you mean \"any of these\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here you really want orders for <i>every</i> Pune customer, so <code class=\"inline-code\">IN</code> is the correct operator, not a workaround."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, customer_id, amount\n  FROM orders\n WHERE customer_id IN (SELECT customer_id\n                         FROM customers\n                        WHERE city = 'Pune')\n ORDER BY order_id;",
+    "caption": "IN accepts any number of rows"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "CUSTOMER_ID",
+      "AMOUNT"
+     ],
+     [
+      "1",
+      "101",
+      "2500"
+     ],
+     [
+      "3",
+      "103",
+      "3100"
+     ],
+     [
+      "5",
+      "101",
+      "450"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). According to the Oracle docs, <code class=\"inline-code\">IN</code> is equivalent to <code class=\"inline-code\">= ANY</code>, so <code class=\"inline-code\">WHERE customer_id = ANY (SELECT ...)</code> gives the same result. Most people find <code class=\"inline-code\">IN</code> easier to read."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Case 2: a scalar subquery in the SELECT list",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Next, you want a report of customers with their phone number. A correlated subquery in the SELECT list looks natural."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT c.customer_id,\n       c.name,\n       (SELECT cp.phone\n          FROM customer_phones cp\n         WHERE cp.customer_id = c.customer_id) AS phone\n  FROM customers c\n ORDER BY c.customer_id;",
+    "caption": "Fails: customer 102 has two phone numbers"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-01427: single-row subquery returns more than one row",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The subquery runs once for each customer. For 101, 103 and 104 it returns one row or no rows, which is fine. For 102 it returns two rows, and the whole statement fails. You cannot use <code class=\"inline-code\">IN</code> here, because a column can hold only one value. You have to decide which single value you want."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix A: filter to the row you actually want",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the business rule is \"show the primary phone\", put that rule in the subquery. This is usually the best fix because it states your intent."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT c.customer_id,\n       c.name,\n       (SELECT cp.phone\n          FROM customer_phones cp\n         WHERE cp.customer_id = c.customer_id\n           AND cp.is_primary  = 'Y') AS phone\n  FROM customers c\n ORDER BY c.customer_id;",
+    "caption": "Only the primary phone"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "CUSTOMER_ID",
+      "NAME",
+      "PHONE"
+     ],
+     [
+      "101",
+      "Asha Rao",
+      "9800000001"
+     ],
+     [
+      "102",
+      "Vikram Shah",
+      "9800000002"
+     ],
+     [
+      "103",
+      "Neha Iyer",
+      "9800000004"
+     ],
+     [
+      "104",
+      "Rahul Das",
+      "(null)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Customer 104 shows NULL because the subquery returned zero rows. That is the documented behaviour, not an error."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix B: aggregate when you want all values",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you want every phone number on one line, aggregate inside the subquery. An aggregate without GROUP BY always returns exactly one row, so the error cannot happen."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT c.customer_id,\n       c.name,\n       (SELECT LISTAGG(cp.phone, ', ')\n                 WITHIN GROUP (ORDER BY cp.phone)\n          FROM customer_phones cp\n         WHERE cp.customer_id = c.customer_id) AS phones\n  FROM customers c\n ORDER BY c.customer_id;",
+    "caption": "All phone numbers in one column"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "CUSTOMER_ID",
+      "NAME",
+      "PHONES"
+     ],
+     [
+      "101",
+      "Asha Rao",
+      "9800000001"
+     ],
+     [
+      "102",
+      "Vikram Shah",
+      "9800000002, 9800000003"
+     ],
+     [
+      "103",
+      "Neha Iyer",
+      "9800000004"
+     ],
+     [
+      "104",
+      "Rahul Das",
+      "(null)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). LISTAGG over zero rows returns NULL, so customer 104 still shows an empty value."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix C: pick one row with a defined order",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Sometimes there is no clean filter, and you just need \"the most relevant one\". In Oracle 12c and later you can use <code class=\"inline-code\">FETCH FIRST 1 ROW ONLY</code> with an <code class=\"inline-code\">ORDER BY</code> that defines what \"first\" means."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT c.customer_id,\n       c.name,\n       (SELECT cp.phone\n          FROM customer_phones cp\n         WHERE cp.customer_id = c.customer_id\n         ORDER BY cp.is_primary DESC, cp.phone\n         FETCH FIRST 1 ROW ONLY) AS phone\n  FROM customers c\n ORDER BY c.customer_id;",
+    "caption": "Primary phone first, then the lowest number"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This returns the same result as Fix A for this data. Because <code class=\"inline-code\">'Y'</code> sorts after <code class=\"inline-code\">'N'</code>, ordering <code class=\"inline-code\">is_primary DESC</code> puts the primary phone first. Without the ORDER BY, Oracle may return any one of the rows, and the answer can change between runs."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Do not silence the error blindly",
+    "text": "Adding <code class=\"inline-code\">ROWNUM = 1</code> or <code class=\"inline-code\">MAX()</code> makes the error disappear, but it also hides the question you should be asking: why are there two rows? If the duplicate is a data bug, the arbitrary pick will put wrong values in reports and nobody will notice."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Case 3: ORA-01427 in an UPDATE statement",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Copying a value from one table to another with a correlated subquery is where this error hurts most, because it often appears in batch jobs. Here you try to fill <code class=\"inline-code\">customers.phone</code> from <code class=\"inline-code\">customer_phones</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "UPDATE customers c\n   SET c.phone = (SELECT cp.phone\n                    FROM customer_phones cp\n                   WHERE cp.customer_id = c.customer_id);",
+    "caption": "Fails because of customer 102"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-01427: single-row subquery returns more than one row",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a statement fails, Oracle rolls back the whole statement, so no customer is updated, not even the ones that had a single phone. Your earlier work in the same transaction is not affected."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: find the rows causing the error",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before you fix the SQL, look at the data. Group the subquery's table by the correlation column and keep groups with more than one row."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT customer_id, COUNT(*) AS phone_count\n  FROM customer_phones\n GROUP BY customer_id\nHAVING COUNT(*) > 1;",
+    "caption": "Which customers have more than one phone?"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "CUSTOMER_ID",
+      "PHONE_COUNT"
+     ],
+     [
+      "102",
+      "2"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Now you know it is customer 102, and you can decide whether the second row is valid data (a secondary phone) or a duplicate that should be removed. Use this same pattern for any ORA-01427: take the subquery, remove the outer correlation, and group by the column it was correlated on."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: fix the subquery and protect rows with no match",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "UPDATE customers c\n   SET c.phone = (SELECT cp.phone\n                    FROM customer_phones cp\n                   WHERE cp.customer_id = c.customer_id\n                     AND cp.is_primary  = 'Y')\n WHERE EXISTS (SELECT 1\n                 FROM customer_phones cp\n                WHERE cp.customer_id = c.customer_id\n                  AND cp.is_primary  = 'Y');",
+    "caption": "Primary phone only, and only customers that have one"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "3 rows updated.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">WHERE EXISTS</code> clause is easy to forget. Without it, the UPDATE touches all four customers, and customer 104 gets <code class=\"inline-code\">phone</code> set to NULL, because the Oracle docs say a SET subquery that returns no rows assigns a null. On this sample that is harmless, but on a real table it can wipe out values that were already there."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Alternative: MERGE with a clean source",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "MERGE reads the source once and joins it to the target, which many people find easier to read than two matching subqueries."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "MERGE INTO customers c\nUSING (SELECT customer_id, phone\n         FROM customer_phones\n        WHERE is_primary = 'Y') src\n   ON (c.customer_id = src.customer_id)\n WHEN MATCHED THEN\n   UPDATE SET c.phone = src.phone;",
+    "caption": "Only matched customers are updated"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "3 rows merged.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "MERGE does not raise ORA-01427, but it has its own version of the same problem. If two source rows match one target row, it fails with <b>ORA-30926</b> (the message text differs between releases, for example \"unable to get a stable set of rows in the source tables\"). So you still need a source with one row per key. Our <a href=\"/posts/plsql/oracle-merge-statement-example/\">Oracle MERGE statement guide</a> covers MERGE in detail."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Oracle Database 23ai: UPDATE with a FROM clause",
+    "text": "From Oracle Database 23ai you can join directly in an UPDATE: <code class=\"inline-code\">UPDATE customers c SET c.phone = cp.phone FROM customer_phones cp WHERE cp.customer_id = c.customer_id AND cp.is_primary = 'Y'</code>. Rows with no match are not touched. If the join would update the same row twice, the 23ai documentation says it raises ORA-30926."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Case 4: &gt; or &lt; against several rows",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The error also appears with range comparisons. Suppose you want orders bigger than customer 101's orders. Customer 101 has two orders (2500 and 450), so the subquery returns two rows."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id, amount\n  FROM orders\n WHERE amount > (SELECT amount\n                   FROM orders\n                  WHERE customer_id = 101);",
+    "caption": "Fails: customer 101 has two orders"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here the right fix depends on the question. \"Bigger than <i>all</i> of their orders\" and \"bigger than <i>at least one</i> of their orders\" are different questions, and Oracle gives you <code class=\"inline-code\">ALL</code> and <code class=\"inline-code\">ANY</code> for them."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Bigger than every order of customer 101 (greater than 2500)\nSELECT order_id, amount\n  FROM orders\n WHERE amount > ALL (SELECT amount\n                       FROM orders\n                      WHERE customer_id = 101);\n\n-- Bigger than at least one order of customer 101 (greater than 450)\nSELECT order_id, amount\n  FROM orders\n WHERE amount > ANY (SELECT amount\n                       FROM orders\n                      WHERE customer_id = 101)\n ORDER BY order_id;",
+    "caption": "ALL and ANY answer different questions"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Query",
+      "Rows returned (expected output)"
+     ],
+     [
+      "> ALL",
+      "order 3 (3100)"
+     ],
+     [
+      "> ANY",
+      "orders 1 (2500), 2 (1200), 3 (3100), 4 (800)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can also write these with aggregates: <code class=\"inline-code\">&gt; (SELECT MAX(amount) ...)</code> and <code class=\"inline-code\">&gt; (SELECT MIN(amount) ...)</code>. Be careful with empty subqueries, though. The docs say <code class=\"inline-code\">&gt; ALL</code> returns TRUE when the subquery returns no rows, so every row qualifies. <code class=\"inline-code\">&gt; (SELECT MAX(...))</code> compares with NULL in that case and returns no rows. Pick the version whose empty-set behaviour matches your requirement."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Testing with one parameter value.</b> The query works for Mumbai and fails for Pune. When you see ORA-01427 only in production, run the subquery on its own with the failing value and count the rows.",
+      "items": []
+     },
+     {
+      "content": "<b>Using ROWNUM = 1 without ORDER BY.</b> It removes the error but returns an unpredictable row. If you must pick one row, use <code class=\"inline-code\">ORDER BY ... FETCH FIRST 1 ROW ONLY</code> (12c and later) so the choice is defined.",
+      "items": []
+     },
+     {
+      "content": "<b>Switching = to NOT IN without thinking about NULLs.</b> For the negative version, people write <code class=\"inline-code\">NOT IN (SELECT ...)</code>. The Oracle docs warn that if any value in the list is NULL, no rows are returned. Add <code class=\"inline-code\">WHERE col IS NOT NULL</code> in the subquery or use <code class=\"inline-code\">NOT EXISTS</code>.",
+      "items": []
+     },
+     {
+      "content": "<b>Forgetting WHERE EXISTS in a correlated UPDATE.</b> After fixing ORA-01427, rows with no match are silently set to NULL.",
+      "items": []
+     },
+     {
+      "content": "<b>Confusing ORA-01427 with ORA-01422.</b> In PL/SQL, <code class=\"inline-code\">SELECT ... INTO</code> that returns several rows raises ORA-01422 (exact fetch returned more than the requested number of rows), which PL/SQL exposes as the <code class=\"inline-code\">TOO_MANY_ROWS</code> exception. ORA-01427 comes from a subquery inside a SQL statement. The diagnosis is similar, but the fixes differ: for ORA-01422 you use a cursor loop or BULK COLLECT.",
+      "items": []
+     },
+     {
+      "content": "<b>Fixing the query when the data is wrong.</b> If a customer should only ever have one primary phone, a duplicate primary row is a data problem. Clean it up (see <a href=\"/posts/plsql/oracle-delete-duplicate-rows-but-keep-one/\">how to delete duplicate rows but keep one</a>) and add a constraint so it cannot come back.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Best practices to prevent ORA-01427",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The most reliable fix is to make the database guarantee that the subquery can only return one row. If the subquery filters on a primary key or a unique key, ORA-01427 is impossible."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For rules like \"one primary phone per customer\", a unique function-based index enforces the rule while still allowing many non-primary phones. Oracle does not store index entries where all key columns are NULL, so only the primary rows are checked."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE UNIQUE INDEX customer_phones_one_primary\n    ON customer_phones (\n       CASE WHEN is_primary = 'Y' THEN customer_id END\n    );",
+    "caption": "At most one primary phone per customer"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With this index in place, inserting a second primary phone for customer 102 fails with ORA-00001 (unique constraint violated) at insert time, which is a much better moment to find the problem than in the middle of a nightly UPDATE."
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Index the correlation column (<code class=\"inline-code\">customer_phones.customer_id</code> here). A correlated scalar subquery or EXISTS runs for each outer row, and without an index each run may scan the whole table.",
+      "items": []
+     },
+     {
+      "content": "Prefer a join, MERGE or (in 23ai) UPDATE ... FROM for large updates. Write the source as one row per key, using GROUP BY or a filter, and the plan is usually easier to read and tune.",
+      "items": []
+     },
+     {
+      "content": "Choose between <code class=\"inline-code\">IN</code> and <code class=\"inline-code\">EXISTS</code> by meaning, not by habit. The optimizer can often transform both into a join, so check the actual plan before assuming one is faster. See <a href=\"/posts/plsql/how-to-read-explain-plan-in-oracle/\">how to read an explain plan in Oracle</a>.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is ORA-01427 in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It is the error Oracle raises when a subquery used in a single-value position (after =, &lt;, &gt;, in the SELECT list or in UPDATE SET) returns more than one row. Oracle cannot decide which value to use, so it stops the statement."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I fix ORA-01427 in an UPDATE statement?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run the subquery on its own with GROUP BY and HAVING COUNT(*) &gt; 1 to find the keys with several rows. Then add a filter that makes the subquery return one row, or use an aggregate, and add <code class=\"inline-code\">WHERE EXISTS</code> so rows without a match are not set to NULL. MERGE with a de-duplicated source is a good alternative."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why does my query work for some values and fail for others?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Because the error depends on how many rows the subquery returns for each value, not on the SQL syntax. A value with one matching row works. A value with two matching rows fails. Check the failing value directly."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I use ROWNUM = 1 to fix ORA-01427?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It stops the error, but without an ORDER BY you get an arbitrary row, which can change from run to run. Use it only when any row is truly acceptable. Otherwise use a precise filter, an aggregate, or <code class=\"inline-code\">ORDER BY ... FETCH FIRST 1 ROW ONLY</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between ORA-01427 and ORA-01422?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "ORA-01427 comes from a subquery inside a SQL statement that returns too many rows. ORA-01422 comes from a PL/SQL SELECT INTO (or RETURNING INTO) that returns more than one row, and it maps to the TOO_MANY_ROWS exception."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "ORA-01427 means a subquery in a single-value position returned two or more rows.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Find the cause with GROUP BY on the correlation column and HAVING COUNT(*) &gt; 1.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use IN, ANY or ALL when you really mean a set of values.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "In the SELECT list or UPDATE SET, filter to one row, aggregate, or use ORDER BY with FETCH FIRST 1 ROW ONLY.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Add WHERE EXISTS to correlated UPDATEs so unmatched rows are not set to NULL.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Watch NOT IN with NULLs and the empty-subquery behaviour of ALL.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Prevent the error with primary keys, unique constraints or a unique function-based index.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your UPDATE ran fine for months. Today it fails with ORA-01427 and nobody changed the SQL.\n\nThe reason: someone added a second row to the lookup table. ORA-01427 depends on the data, not the query text.\n\nWhat to do:\n→ Find the culprit first: GROUP BY the correlated column and keep HAVING COUNT(*) > 1\n→ If you mean \"any of these values\", replace = with IN. It is the correct operator, not a hack\n→ In a SELECT list or UPDATE SET, decide which single value you want: filter it, aggregate it, or ORDER BY with FETCH FIRST 1 ROW ONLY\n→ After fixing a correlated UPDATE, add WHERE EXISTS. A subquery with no match sets the column to NULL\n→ ROWNUM = 1 without ORDER BY hides the bug and returns an arbitrary row\n\nBonus trap: > ALL on an empty subquery is TRUE, so every row matches.\n\nHow do you handle this in batch jobs: fix the query, or add a unique constraint so it cannot happen again?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #SQLInterview",
+  "slides": [
+   {
+    "title": "ORA-01427: why it happens and how to fix it",
+    "body": "single-row subquery returns more than one row, explained with real fixes"
+   },
+   {
+    "title": "What the error means",
+    "points": [
+     "A subquery sits where Oracle expects one value",
+     "It returned two or more rows, so Oracle stops",
+     "It depends on data: works for one key, fails for another"
+    ]
+   },
+   {
+    "title": "Find the rows causing it",
+    "body": "Remove the correlation from the subquery and group by the column it was joined on.",
+    "code": "SELECT customer_id, COUNT(*)\n  FROM customer_phones\n GROUP BY customer_id\nHAVING COUNT(*) > 1;",
+    "lang": "sql"
+   },
+   {
+    "title": "Meant a list? Use IN",
+    "code": "SELECT order_id, amount\n  FROM orders\n WHERE customer_id IN (\n   SELECT customer_id\n     FROM customers\n    WHERE city = 'Pune');",
+    "lang": "sql",
+    "points": [
+     "IN is equivalent to = ANY",
+     "Use > ALL or > ANY for range checks"
+    ]
+   },
+   {
+    "title": "Safer UPDATE: one row per key",
+    "body": "In a correlated UPDATE, also add WHERE EXISTS, or rows with no match become NULL. MERGE from a one-row-per-key source avoids both problems.",
+    "code": "MERGE INTO customers c\nUSING (SELECT customer_id, phone\n  FROM customer_phones\n  WHERE is_primary = 'Y') s\nON (c.customer_id = s.customer_id)\nWHEN MATCHED THEN\n  UPDATE SET c.phone = s.phone;",
+    "lang": "sql"
+   },
+   {
+    "title": "Traps to avoid",
+    "points": [
+     "ROWNUM = 1 without ORDER BY returns an arbitrary row",
+     "NOT IN returns no rows if the subquery has a NULL",
+     "> ALL on an empty subquery is TRUE for every row",
+     "MERGE with duplicate source keys fails with ORA-30926"
+    ]
+   }
+  ]
+ }
+}
