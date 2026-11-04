@@ -124,7 +124,7 @@ for k, s in enumerate(scenes):
         if len(s["lines"]) > 11:
             err(f"scene {k} (terminal): {len(s['lines'])} lines, max 11")
         for tl in s["lines"]:
-            if len(tl["text"]) > 40:
+            if len(tl["text"]) + max(0, len(tl.get("prompt", "$ ")) - 2) > 40:
                 err(f"scene {k} (terminal): line longer than 40 characters: {tl['text']!r}")
             check_common(k, s, tl)
     elif t == "compare":

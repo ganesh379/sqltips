@@ -1,0 +1,13 @@
+PostgreSQL, SQL and database: are they the same thing? No, and here's the difference.
+
+A database is the data. A DBMS (database management system) is the software that stores it and runs requests. SQL is the language you use to ask for what you want.
+
+PostgreSQL is the DBMS, not the language. The official docs call it an object-relational database management system, based on the POSTGRES project from UC Berkeley. SQL was added in 1994, and the project was renamed PostgreSQL in 1996.
+
+In psql, SELECT datname FROM pg_database shows every database one server manages: postgres, template1 and template0 are created at initialization. Together they form a database cluster. And remember: rows have no guaranteed order, so use ORDER BY.
+
+Episode 2 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #sql #database #postgres

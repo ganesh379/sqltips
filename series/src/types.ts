@@ -38,7 +38,8 @@ export type DiagramEdge = {
   dashed?: boolean;
 };
 
-export type TermLine = { kind: "cmd" | "out" | "comment"; text: string; at?: number };
+// prompt: optional prompt shown before a "cmd" line instead of "$ " (e.g. "appdb=# " for psql)
+export type TermLine = { kind: "cmd" | "out" | "comment"; text: string; at?: number; prompt?: string };
 
 export type Scene =
   | { type: "hook"; from: number; to: number; text: string; sub?: string }

@@ -202,7 +202,7 @@ export const Terminal: React.FC<P<Extract<Scene, { type: "terminal" }>>> = ({ s,
             const color = l.kind === "cmd" ? C.ink : l.kind === "comment" ? C.mute : C.green;
             return (
               <div key={i} style={{ fontFamily: MONO, fontSize: 36, lineHeight: 1.45, color, whiteSpace: "pre-wrap", wordBreak: "break-word", opacity: l.kind === "cmd" ? 1 : k }}>
-                {l.kind === "cmd" ? <span style={{ color: C.orange }}>{"$ "}</span> : null}
+                {l.kind === "cmd" ? <span style={{ color: C.orange }}>{l.prompt ?? "$ "}</span> : null}
                 {shown}
               </div>
             );

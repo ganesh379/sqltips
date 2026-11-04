@@ -1,0 +1,515 @@
+{
+ "ep": 2,
+ "total": 140,
+ "title": "PostgreSQL Explained: Database vs DBMS vs SQL",
+ "phase": "Foundations",
+ "lines": [
+  {
+   "say": "PostgreSQL, SQL and database. Are they the same thing?",
+   "cap": "*PostgreSQL,* *SQL* and *database.* Are they the same thing?"
+  },
+  {
+   "say": "This is episode two of the PostgreSQL DBA series. Today you'll learn how a database, a DBMS and SQL differ.",
+   "cap": "Episode 2: database vs *DBMS* vs *SQL.*"
+  },
+  {
+   "say": "These three words get mixed up all the time, but they are different things.",
+   "cap": "Three words people mix up. Three *different* things."
+  },
+  {
+   "say": "First, the database: an organized collection of data, like your customers and orders.",
+   "cap": "*Database:* an organized collection of *data.*"
+  },
+  {
+   "say": "Second, the DBMS, or database management system: the software that stores the data and runs requests.",
+   "cap": "*DBMS:* the *software* that stores data and runs requests."
+  },
+  {
+   "say": "Third, SQL. It's not software at all. It's the language you use to ask for what you want.",
+   "cap": "*SQL:* a *language,* not software."
+  },
+  {
+   "say": "Think of a library. The books are the database.",
+   "cap": "A library: the *books* are the *database.*"
+  },
+  {
+   "say": "The librarian is the DBMS. And SQL is how you ask the librarian.",
+   "cap": "The *librarian* is the *DBMS.* *SQL* is how you ask."
+  },
+  {
+   "say": "So PostgreSQL is the DBMS. The librarian, not the language.",
+   "cap": "*PostgreSQL* is the *DBMS.* The librarian, not the language."
+  },
+  {
+   "say": "The official docs call it an object relational database management system.",
+   "cap": "Docs: an *object-relational* database management system."
+  },
+  {
+   "say": "It's based on the Postgres project from the University of California at Berkeley.",
+   "cap": "Based on *POSTGRES* from *UC Berkeley.*"
+  },
+  {
+   "say": "Relational means data lives in tables of rows, and every row has the same named, typed columns.",
+   "cap": "*Relational:* tables of *rows* with named, typed *columns.*"
+  },
+  {
+   "say": "In nineteen ninety four, an SQL interpreter was added to Postgres. In nineteen ninety six, it was renamed PostgreSQL.",
+   "cap": "*1994:* SQL interpreter added. *1996:* renamed *PostgreSQL.*"
+  },
+  {
+   "say": "Let's see all three together. In psql, connected to appdb, we create a table and insert one row.",
+   "cap": "In *psql:* create a *table,* insert one *row.*"
+  },
+  {
+   "say": "A SELECT asks for the data back, and PostgreSQL returns one row.",
+   "cap": "*SELECT* asks for the data. PostgreSQL returns *1 row.*"
+  },
+  {
+   "say": "Now ask which databases this server manages. The pg_database catalog lists four.",
+   "cap": "Which databases does it manage? *pg_database* lists *4.*"
+  },
+  {
+   "say": "appdb is ours. postgres, template one and template zero are created when the cluster is initialized.",
+   "cap": "*postgres,* *template1,* *template0:* created at initialization."
+  },
+  {
+   "say": "All the databases managed by one running PostgreSQL server form what's called a database cluster.",
+   "cap": "Databases managed by one server = a *database* *cluster.*"
+  },
+  {
+   "say": "A common misconception: I know SQL, so I know PostgreSQL.",
+   "cap": "Myth: I know *SQL,* so I know *PostgreSQL.*"
+  },
+  {
+   "say": "SQL is the language. PostgreSQL is one system that speaks it, with some extensions to the standard.",
+   "cap": "*SQL* is the language. PostgreSQL adds *extensions.*"
+  },
+  {
+   "say": "Also, rows in a table have no guaranteed order. If order matters, use ORDER BY.",
+   "cap": "Rows have *no* *guaranteed* *order.* Use *ORDER BY.*"
+  },
+  {
+   "say": "DBA takeaway: when something breaks, a good habit is to ask which layer it lives in.",
+   "cap": "DBA habit: ask which *layer* the problem lives in."
+  },
+  {
+   "say": "The data, the PostgreSQL server, or the SQL being sent to it?",
+   "cap": "The *data,* the *server,* or the *SQL?*"
+  },
+  {
+   "say": "Recap. Database is the data. DBMS is the software. SQL is the language.",
+   "cap": "*Database* = data. *DBMS* = software. *SQL* = language."
+  },
+  {
+   "say": "And PostgreSQL is an object relational DBMS that speaks SQL.",
+   "cap": "*PostgreSQL* = a DBMS that speaks *SQL.*"
+  },
+  {
+   "say": "Next up: PostgreSQL architecture, the big picture. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *PostgreSQL* *architecture.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "*PostgreSQL,* *SQL* and *database.* Same thing?",
+   "sub": "Episode 2 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 2 · FOUNDATIONS",
+   "title": "Database vs DBMS vs SQL",
+   "sub": "And where PostgreSQL fits"
+  },
+  {
+   "type": "cards",
+   "from": 2,
+   "to": 6,
+   "heading": "Three different things",
+   "columns": 1,
+   "items": [
+    {
+     "at": 3,
+     "icon": "database",
+     "title": "Database",
+     "text": "An organized collection of data",
+     "color": "blue"
+    },
+    {
+     "at": 4,
+     "icon": "server",
+     "title": "DBMS",
+     "text": "The software that stores data and runs requests",
+     "color": "green"
+    },
+    {
+     "at": 5,
+     "icon": "terminal",
+     "title": "SQL",
+     "text": "A language you use to ask for what you want",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 6,
+   "to": 9,
+   "heading": "The library analogy",
+   "nodes": [
+    {
+     "id": "you",
+     "label": "You",
+     "sub": "ask in SQL",
+     "x": 540,
+     "y": 520,
+     "w": 340,
+     "h": 140,
+     "icon": "users",
+     "color": "amber",
+     "at": 7
+    },
+    {
+     "id": "dbms",
+     "label": "Librarian",
+     "sub": "the DBMS",
+     "x": 300,
+     "y": 880,
+     "w": 360,
+     "h": 150,
+     "icon": "server",
+     "color": "green",
+     "at": 7
+    },
+    {
+     "id": "pg",
+     "label": "PostgreSQL",
+     "sub": "is a DBMS",
+     "x": 800,
+     "y": 880,
+     "w": 340,
+     "h": 150,
+     "icon": "database",
+     "color": "blue",
+     "shape": "pill",
+     "at": 8
+    },
+    {
+     "id": "db",
+     "label": "Books",
+     "sub": "the database",
+     "x": 540,
+     "y": 1240,
+     "w": 360,
+     "h": 150,
+     "icon": "book",
+     "color": "purple",
+     "shape": "db",
+     "at": 6
+    }
+   ],
+   "edges": [
+    {
+     "from": "you",
+     "to": "dbms",
+     "label": "SQL request",
+     "flow": true,
+     "color": "amber",
+     "at": 7
+    },
+    {
+     "from": "dbms",
+     "to": "db",
+     "label": "reads, writes",
+     "flow": true,
+     "color": "green",
+     "at": 7
+    },
+    {
+     "from": "dbms",
+     "to": "pg",
+     "label": "is",
+     "dashed": true,
+     "color": "blue",
+     "at": 8
+    }
+   ],
+   "focus": [
+    {
+     "at": 6,
+     "id": "db"
+    },
+    {
+     "at": 7,
+     "id": "dbms"
+    },
+    {
+     "at": 8,
+     "id": "pg"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 9,
+   "to": 13,
+   "heading": "What the docs say",
+   "columns": 1,
+   "items": [
+    {
+     "at": 9,
+     "icon": "database",
+     "title": "Object-relational DBMS",
+     "text": "What the official docs call PostgreSQL",
+     "color": "blue"
+    },
+    {
+     "at": 10,
+     "icon": "book",
+     "title": "From Berkeley",
+     "text": "Based on the POSTGRES project at UC Berkeley",
+     "color": "purple"
+    },
+    {
+     "at": 11,
+     "icon": "table",
+     "title": "Relational = tables",
+     "text": "Every row has the same named, typed columns",
+     "color": "green"
+    },
+    {
+     "at": 12,
+     "icon": "clock",
+     "title": "SQL added, then renamed",
+     "text": "1994: SQL interpreter added. 1996: renamed PostgreSQL",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 13,
+   "to": 15,
+   "heading": "All three in action",
+   "title": "psql: appdb",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "CREATE TABLE books",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  (id int, title text);",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "CREATE TABLE",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "INSERT INTO books",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  VALUES (1, 'SQL basics');",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "INSERT 0 1",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT * FROM books;",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": " id |   title",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "----+------------",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "  1 | SQL basics",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "(1 row)",
+     "at": 14
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 15,
+   "to": 17,
+   "heading": "One server, many databases",
+   "title": "psql: appdb",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT datname FROM pg_database;",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "  datname",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "-----------",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": " postgres",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": " template1",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": " template0",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": " appdb",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "(4 rows)",
+     "at": 15
+    },
+    {
+     "kind": "comment",
+     "text": "-- appdb: ours",
+     "at": 16
+    },
+    {
+     "kind": "comment",
+     "text": "-- the rest: made at initialization",
+     "at": 16
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 17,
+   "to": 18,
+   "kind": "fact",
+   "title": "Database cluster",
+   "text": "A collection of databases managed by a single instance of a running PostgreSQL server."
+  },
+  {
+   "type": "callout",
+   "from": 18,
+   "to": 19,
+   "kind": "myth",
+   "title": "I know SQL, so I know PostgreSQL",
+   "text": "Knowing the language is not the same as knowing the system."
+  },
+  {
+   "type": "callout",
+   "from": 19,
+   "to": 20,
+   "kind": "fact",
+   "title": "SQL vs PostgreSQL",
+   "text": "SQL is the language. PostgreSQL is a system that speaks it, with its own extensions."
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "warning",
+   "title": "Rows have no guaranteed order",
+   "text": "SQL does not guarantee the order of rows in a table. Use ORDER BY when order matters."
+  },
+  {
+   "type": "cards",
+   "from": 21,
+   "to": 23,
+   "heading": "Which layer is it?",
+   "columns": 1,
+   "items": [
+    {
+     "at": 22,
+     "icon": "database",
+     "title": "The data",
+     "text": "What is stored in the tables",
+     "color": "purple"
+    },
+    {
+     "at": 22,
+     "icon": "server",
+     "title": "The server",
+     "text": "PostgreSQL itself: connections, resources, settings",
+     "color": "green"
+    },
+    {
+     "at": 22,
+     "icon": "terminal",
+     "title": "The SQL",
+     "text": "The statements being sent to it",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "checklist",
+   "from": 23,
+   "to": 25,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 23,
+     "title": "Database = the data"
+    },
+    {
+     "at": 23,
+     "title": "DBMS = software that manages it"
+    },
+    {
+     "at": 23,
+     "title": "SQL = the language"
+    },
+    {
+     "at": 24,
+     "title": "PostgreSQL = a DBMS speaking SQL"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 25,
+   "to": 26,
+   "next": "Ep 3 · PostgreSQL Architecture"
+  }
+ ]
+}
