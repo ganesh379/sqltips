@@ -12,7 +12,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain the DBA role across availability, security, performance, backup, recovery and capacity.
   - Format: Explainer + role map · Level: Beginner
   - Hook: What does a PostgreSQL DBA really do every day?
-- [ ] Ep 002 | 2026-11-05 | PostgreSQL Explained: Database vs DBMS vs SQL
+- [x] Ep 002 | 2026-11-05 | PostgreSQL Explained: Database vs DBMS vs SQL (posted 2026-11-05 13:00, Buffer 6aeac7fdb8d162e0d808945a)
   - Objective: Define database, DBMS, relational database and SQL; distinguish PostgreSQL from SQL.
   - Format: Animated analogy · Level: Beginner
   - Hook: PostgreSQL, SQL and database — are they the same thing?
