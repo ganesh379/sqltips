@@ -16,7 +16,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Define database, DBMS, relational database and SQL; distinguish PostgreSQL from SQL.
   - Format: Animated analogy · Level: Beginner
   - Hook: PostgreSQL, SQL and database — are they the same thing?
-- [ ] Ep 003 | 2026-11-06 | PostgreSQL Architecture: The Big Picture
+- [x] Ep 003 | 2026-11-06 | PostgreSQL Architecture: The Big Picture (posted 2026-11-05 20:00, Buffer 6aeb0f4d1d881477a61e9a1a)
   - Objective: Show client/server model, postmaster, backend processes, shared memory, storage and background workers.
   - Format: Animated architecture walkthrough · Level: Beginner
   - Hook: A query travels through more components than you think.
