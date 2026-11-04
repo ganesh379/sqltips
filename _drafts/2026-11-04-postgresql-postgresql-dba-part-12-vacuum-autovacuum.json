@@ -1,0 +1,1820 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 12: VACUUM and Autovacuum Tuning",
+ "slug": "postgresql-dba-part-12-vacuum-autovacuum",
+ "category": "postgresql",
+ "description": "How VACUUM and autovacuum work in PostgreSQL 18: read VACUUM VERBOSE, calculate when autovacuum runs, and tune it server-wide and per table.",
+ "focusKeyword": "postgresql autovacuum tuning",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "vacuum",
+  "autovacuum",
+  "performance"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-10-connections-sessions/",
+  "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/",
+  "/posts/postgresql/postgresql-for-update-skip-locked-job-queue/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 24.1 Routine Vacuuming (incl. 24.1.6 The Autovacuum Daemon)",
+   "url": "https://www.postgresql.org/docs/current/routine-vacuuming.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.10 Vacuuming (runtime-config-vacuum)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-vacuum.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: VACUUM",
+   "url": "https://www.postgresql.org/docs/current/sql-vacuum.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: vacuumdb",
+   "url": "https://www.postgresql.org/docs/current/app-vacuumdb.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 27.4 Progress Reporting (pg_stat_progress_vacuum)",
+   "url": "https://www.postgresql.org/docs/current/progress-reporting.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CREATE TABLE, storage parameters",
+   "url": "https://www.postgresql.org/docs/current/sql-createtable.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.8 Error Reporting and Logging (log_autovacuum_min_duration)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-logging.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes",
+   "url": "https://www.postgresql.org/docs/18/release-18.html"
+  }
+ ],
+ "reviewNotes": "Series part 12. Part 11 (postgresql-dba-part-11-mvcc-xmin-xmax) is not live yet, so the intro names it without a link and it is left out of related. Publish Part 11 first. Tested on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) from the PGDG repository on Ubuntu 24.04.5 LTS; followed the PostgreSQL 18 documentation (docs/current: routine-vacuuming, runtime-config-vacuum, sql-vacuum, app-vacuumdb, progress-reporting, sql-createtable storage parameters, runtime-config-logging) and the PostgreSQL 18 release notes for the version-specific claims (autovacuum_worker_slots / reloadable autovacuum_max_workers, autovacuum_vacuum_max_threshold, vacuum_truncate server setting, total_*vacuum_time columns, track_cost_delay_timing / delay_time, VACUUM/ANALYZE ONLY). All outputs are real and from one run in article order; PIDs, XIDs, timestamps and sizes will differ on a reader's server. VACUUM VERBOSE / log output is trimmed with '...' where noted (TOAST-table report and trailing lines). SANDBOX CAVEATS: (1) As in Parts 10-11, postgresql-18 needs liburing2 from archive.ubuntu.com, which is blocked here; I installed a stub package plus a stub liburing.so.2. This only affects io_method=io_uring (not the default, not used). (2) A leftover PostgreSQL 16 cluster existed in the image, so pg_createcluster put 18 main on 5433; I moved it to 5432 to match a normal install. (3) systemd is not PID 1 in the sandbox, so reloads were done with SELECT pg_reload_conf(); the article offers both that and 'sudo systemctl reload postgresql@18-main'. (4) The 'canceling autovacuum task' log in Common mistakes came from a side test (per-table autovacuum_vacuum_cost_delay=100, cost_limit=1 to slow autovacuum, then ALTER TABLE orders ADD COLUMN note text); that test is not shown as a step. Judgement calls for the editor: the example values in Step 11 (autovacuum_max_workers 5, autovacuum_vacuum_cost_limit 1000) and Step 12 (scale factor 0.01, threshold 1000) are labelled as examples, not doc recommendations. 'The 13 rows already pruned by ordinary queries' explanation of 39987 vs 40000 in Step 3 and '78351 remain is an estimate because pages were skipped' in Step 5 are my reading of the VERBOSE output (count(*) confirmed 90000), not quoted from the docs. 'autovacuum_vacuum_cost_delay default was 20ms before PostgreSQL 12' is from memory of the PG12 release notes; I did not re-fetch that page. Optional FAQ left out. LENGTH: about 4,400 words of prose counting tables and lists (above the 3,200 target), because the part has 13 steps plus a cost/phase reference. Easy cuts if needed: the VACUUM phases table in Step 10, the 'Other storage parameters' paragraph in Step 12, and the last common mistake (partitioned parents / temp tables).",
+ "generatedAt": "2026-11-04T13:10:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 12 of the PostgreSQL DBA series. In Part 11 (MVCC, xmin/xmax and row visibility) you saw that every UPDATE and DELETE leaves an old row version behind. This part is about the process that cleans those old versions up: <b>VACUUM</b>, and its automatic version, <b>autovacuum</b>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The short answer: VACUUM removes dead row versions and marks their space as free for new rows in the same table. Autovacuum is a set of background processes that runs VACUUM and ANALYZE for you whenever a table has changed enough. On most servers you never run VACUUM by hand; your job as a DBA is to check that autovacuum keeps up, and to tune it when it does not."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By the end of this part you will be able to run and read <code class=\"inline-code\">VACUUM (VERBOSE)</code>, work out exactly when autovacuum will visit a table, watch it work in the log and in the progress view, and change its settings for the whole server or for one busy table. Everything is tested on PostgreSQL 18 on Ubuntu."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "What VACUUM does, and why it frees space for reuse but usually does not make the table file smaller",
+      "items": []
+     },
+     {
+      "content": "How to read the output of <code class=\"inline-code\">VACUUM (VERBOSE)</code> line by line",
+      "items": []
+     },
+     {
+      "content": "How the autovacuum launcher and workers decide which table to vacuum, with the exact formula",
+      "items": []
+     },
+     {
+      "content": "How cost-based delay throttles VACUUM, and how to watch a running VACUUM in <code class=\"inline-code\">pg_stat_progress_vacuum</code>",
+      "items": []
+     },
+     {
+      "content": "How to tune autovacuum in postgresql.conf and per table, including what changed in PostgreSQL 18",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 11 of this series. Part 11 (MVCC) explains dead tuples, and <a href=\"/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/\">Part 5</a> explains reload versus restart.",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server (db1 in this series) with PostgreSQL 18 from the PGDG repository, cluster 18 main, as installed in Part 2.",
+      "items": []
+     },
+     {
+      "content": "sudo access, so you can edit /etc/postgresql/18/main/postgresql.conf and run psql as the postgres operating system user.",
+      "items": []
+     },
+     {
+      "content": "Two terminal windows (two SSH sessions) on db1 for Step 10.",
+      "items": []
+     },
+     {
+      "content": "A test server. Some steps change server settings; the last step undoes them.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of a table as a notebook where you never erase anything. To change a line you cross it out and write the new version at the bottom of the page or on a new page. After a while the notebook is full of crossed-out lines. VACUUM is the person who goes through the notebook and marks the crossed-out lines as blank space you may write over again. It does not tear pages out of the middle of the notebook."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A crossed-out line is a <b>dead tuple</b>: a row version that no running or future transaction can ever see again. As Part 11 showed, a tuple only becomes removable when every snapshot in the cluster has moved past it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "VACUUM has four jobs, according to the documentation:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Recover or reuse the disk space used by updated or deleted rows.",
+      "items": []
+     },
+     {
+      "content": "Update the statistics the query planner uses (when you run VACUUM ANALYZE, or when autovacuum decides to analyze).",
+      "items": []
+     },
+     {
+      "content": "Update the <b>visibility map</b>, a small file per table that marks pages where every row is visible to everyone. VACUUM can skip those pages next time, and index-only scans can avoid reading the table.",
+      "items": []
+     },
+     {
+      "content": "Protect against transaction ID wraparound by <b>freezing</b> old rows. Part 14 covers this in detail.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There are two kinds of VACUUM, and they behave very differently:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "",
+      "VACUUM (plain)",
+      "VACUUM FULL"
+     ],
+     [
+      "What it does",
+      "Removes dead tuples and marks the space free for reuse inside the same table",
+      "Writes a new, compact copy of the table and its indexes, then deletes the old files"
+     ],
+     [
+      "Lock",
+      "SHARE UPDATE EXCLUSIVE: normal SELECT, INSERT, UPDATE and DELETE keep working",
+      "ACCESS EXCLUSIVE: nobody can even read the table until it finishes"
+     ],
+     [
+      "Returns disk space to the OS",
+      "Only empty pages at the very end of the table",
+      "Yes, the whole difference"
+     ],
+     [
+      "Extra disk space needed",
+      "None",
+      "Room for a full new copy of the table"
+     ],
+     [
+      "Run by autovacuum",
+      "Yes",
+      "Never"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The goal of routine maintenance is to run plain VACUUM often enough that you never need VACUUM FULL. Finding and fixing tables that have already grown too big (bloat) is the topic of Part 13."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The autovacuum launcher and workers",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Autovacuum is on by default. It is made of one <b>autovacuum launcher</b> process, which wakes up regularly, and up to <code class=\"inline-code\">autovacuum_max_workers</code> <b>autovacuum worker</b> processes (default 3), which do the actual VACUUM and ANALYZE. The launcher tries to start a worker in each database once every <code class=\"inline-code\">autovacuum_naptime</code> (default 1 minute). The worker checks every table in that database and processes the ones that crossed their threshold. Autovacuum needs <code class=\"inline-code\">track_counts</code> to be on (the default), because it reads the counters of inserted, updated and deleted rows."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A table is vacuumed when its number of dead tuples is greater than this threshold (formula from the documentation):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "vacuum threshold = Minimum(autovacuum_vacuum_max_threshold,\n                           autovacuum_vacuum_threshold\n                         + autovacuum_vacuum_scale_factor * reltuples)",
+    "caption": "When autovacuum vacuums a table"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here <code class=\"inline-code\">reltuples</code> is the estimated number of rows in <code class=\"inline-code\">pg_class</code>. With the defaults (50 rows plus 20%, capped at 100 million) a table with 1,000,000 rows is vacuumed after about 200,050 dead tuples. The cap, <code class=\"inline-code\">autovacuum_vacuum_max_threshold</code>, is new in PostgreSQL 18; before that, a table with 1 billion rows waited for 200 million dead tuples."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two more rules matter. Inserts also trigger a vacuum: when rows inserted since the last vacuum exceed <code class=\"inline-code\">autovacuum_vacuum_insert_threshold</code> (1000) plus <code class=\"inline-code\">autovacuum_vacuum_insert_scale_factor</code> (0.2) times the rows on not-yet-frozen pages. And ANALYZE runs when rows inserted, updated or deleted since the last ANALYZE exceed <code class=\"inline-code\">autovacuum_analyze_threshold</code> (50) plus <code class=\"inline-code\">autovacuum_analyze_scale_factor</code> (0.1) times <code class=\"inline-code\">reltuples</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Cost-based delay: why autovacuum is slow on purpose",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "VACUUM reads and writes a lot of pages, which can slow down your application. To limit that, PostgreSQL counts a cost for every page: <code class=\"inline-code\">vacuum_cost_page_hit</code> (1) for a page found in shared buffers, <code class=\"inline-code\">vacuum_cost_page_miss</code> (2) for a page read from disk, and <code class=\"inline-code\">vacuum_cost_page_dirty</code> (20) for a page VACUUM modifies. When the total reaches the cost limit, the process sleeps for the cost delay, then continues."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "Default",
+      "Applies to"
+     ],
+     [
+      "vacuum_cost_delay",
+      "0 (no throttling)",
+      "VACUUM you run by hand"
+     ],
+     [
+      "vacuum_cost_limit",
+      "200",
+      "VACUUM you run by hand, and autovacuum when autovacuum_vacuum_cost_limit is -1"
+     ],
+     [
+      "autovacuum_vacuum_cost_delay",
+      "2ms",
+      "Autovacuum workers"
+     ],
+     [
+      "autovacuum_vacuum_cost_limit",
+      "-1 (use vacuum_cost_limit)",
+      "Autovacuum workers, shared among all running workers"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two facts follow. A manual VACUUM runs at full speed, while autovacuum is throttled. And the autovacuum cost limit is <b>balanced</b> across the running workers, so the total I/O stays the same whether one or five workers are running. Older blog posts quote a 20ms autovacuum delay; that was the default before PostgreSQL 12."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Running VACUUM by hand and reading its output",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Create a lab database and an orders table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, as the postgres user. Open psql with <code class=\"inline-code\">sudo -u postgres psql</code>, then create a lab database and an orders table with 100,000 rows."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql",
+    "caption": "On db1: start psql as postgres"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE vaclab;\n\\c vaclab\nCREATE TABLE orders (\n    order_id    integer PRIMARY KEY,\n    customer_id integer NOT NULL,\n    status      text    NOT NULL,\n    amount      numeric(10,2) NOT NULL\n) WITH (autovacuum_enabled = false);\nINSERT INTO orders\nSELECT g, (g % 5000) + 1, 'NEW', (g % 900) + 100\n  FROM generate_series(1, 100000) AS g;",
+    "caption": "In psql: lab database and table"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Part",
+      "What it does"
+     ],
+     [
+      "WITH (autovacuum_enabled = false)",
+      "A table storage parameter. Autovacuum skips this table (except to prevent transaction ID wraparound), so it does not clean up behind our backs while we run VACUUM by hand. Lab only; Step 9 turns it back on."
+     ],
+     [
+      "generate_series(1, 100000)",
+      "Produces the numbers 1 to 100,000, one row each."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE DATABASE\nYou are now connected to database \"vaclab\" as user \"postgres\".\nCREATE TABLE\nINSERT 0 100000",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now collect statistics and note the size of the table file:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ANALYZE orders;\nSELECT pg_size_pretty(pg_relation_size('orders')) AS table_size,\n       relpages, reltuples\n  FROM pg_class WHERE relname = 'orders';",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ANALYZE\n table_size | relpages | reltuples\n------------+----------+-----------\n 5096 kB    |      637 |    100000\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The table uses 637 pages of 8 kB each. <code class=\"inline-code\">relpages</code> and <code class=\"inline-code\">reltuples</code> are the estimates autovacuum uses in its formula."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">SELECT count(*) FROM orders;</code> returns 100000."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Create dead tuples",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> the same psql session. Ship 30,000 orders and delete 10,000 cancelled ones, then look at the counters in <code class=\"inline-code\">pg_stat_user_tables</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders SET status = 'SHIPPED' WHERE order_id <= 30000;\nDELETE FROM orders WHERE order_id BETWEEN 30001 AND 40000;",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "UPDATE 30000\nDELETE 10000",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT n_live_tup, n_dead_tup, last_vacuum, last_autovacuum\n  FROM pg_stat_user_tables WHERE relname = 'orders';\nSELECT pg_size_pretty(pg_relation_size('orders')) AS table_size;",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " n_live_tup | n_dead_tup | last_vacuum | last_autovacuum\n------------+------------+-------------+-----------------\n      90000 |      40000 |             |\n(1 row)\n\n table_size\n------------\n 6632 kB\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There are 90,000 live rows and 40,000 dead tuples: 30,000 old versions from the UPDATE and 10,000 deleted rows. The table grew from 5096 kB to 6632 kB, because the pages were full and the 30,000 new row versions had to go into new pages at the end of the file. These counters are maintained by the statistics system and can lag by a second or so after a change."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Run VACUUM (VERBOSE) and read the report",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> the same psql session."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "VACUUM (VERBOSE) orders;",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "VERBOSE",
+      "Prints a detailed vacuum activity report for each table at INFO level."
+     ],
+     [
+      "orders",
+      "The table to vacuum. Without a table name, VACUUM processes every table in the current database that the user has permission to vacuum."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INFO:  vacuuming \"vaclab.public.orders\"\nINFO:  finished vacuuming \"vaclab.public.orders\": index scans: 1\npages: 0 removed, 829 remain, 829 scanned (100.00% of total), 0 eagerly scanned\ntuples: 39987 removed, 90000 remain, 0 are dead but not yet removable\nremovable cutoff: 765, which was 0 XIDs old when operation ended\nnew relfrozenxid: 761, which is 1 XIDs ahead of previous value\nfrozen: 0 pages from table (0.00% of total) had 0 tuples frozen\nvisibility map: 829 pages set all-visible, 254 pages set all-frozen (0 were all-visible)\nindex scan needed: 255 pages from table (30.76% of total) had 40000 dead item identifiers removed\nindex \"orders_pkey\": pages: 358 in total, 27 newly deleted, 27 currently deleted, 0 reusable\navg read rate: 0.000 MB/s, avg write rate: 2.026 MB/s\nbuffer usage: 2521 hits, 0 reads, 4 dirtied\nWAL usage: 1591 records, 4 full page images, 445054 bytes, 0 buffers full\nsystem usage: CPU: user: 0.01 s, system: 0.00 s, elapsed: 0.01 s\nINFO:  vacuuming \"vaclab.pg_toast.pg_toast_16397\"\n...\nVACUUM",
+    "caption": "Output (the report for the TOAST table is trimmed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here is what the important lines mean:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Line",
+      "Meaning"
+     ],
+     [
+      "pages: 0 removed, 829 remain",
+      "No pages were cut off the end of the file, so the file did not shrink. The table now has 829 pages."
+     ],
+     [
+      "tuples: 39987 removed, 90000 remain",
+      "Dead tuples removed and live rows left. The other 13 dead rows had already been pruned by ordinary queries reading those pages (the page-level cleanup you met with HOT in Part 11); VACUUM still removed their leftover pointers."
+     ],
+     [
+      "0 are dead but not yet removable",
+      "No old snapshot was holding cleanup back. If this number is high, look for a long open transaction, as in Part 11."
+     ],
+     [
+      "removable cutoff: 765",
+      "VACUUM could remove tuples deleted by transactions older than XID 765. Your numbers will differ."
+     ],
+     [
+      "visibility map: 829 pages set all-visible",
+      "Every page is now marked all-visible, so the next VACUUM can skip pages that do not change."
+     ],
+     [
+      "index scan needed ... 40000 dead item identifiers removed",
+      "VACUUM also removed the matching entries from the index orders_pkey. One index scan means all dead pointers fitted in memory at once."
+     ],
+     [
+      "buffer usage, WAL usage",
+      "How much work VACUUM did. VACUUM writes WAL, which matters for replication (Part 15 covers WAL)."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The second report (<code class=\"inline-code\">pg_toast_16397</code>) is for the TOAST table, a side table PostgreSQL uses to store long values. VACUUM processes it by default."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT n_live_tup, n_dead_tup, last_vacuum, vacuum_count\n  FROM pg_stat_user_tables WHERE relname = 'orders';\nSELECT pg_size_pretty(pg_relation_size('orders')) AS table_size;",
+    "caption": "In psql: check the result"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " n_live_tup | n_dead_tup |          last_vacuum          | vacuum_count\n------------+------------+-------------------------------+--------------\n      90000 |          0 | 2026-11-04 12:48:27.918523+00 |            1\n(1 row)\n\n table_size\n------------\n 6632 kB\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">n_dead_tup</code> is 0 and <code class=\"inline-code\">last_vacuum</code> has a timestamp. The size is still 6632 kB: plain VACUUM freed the space inside the table, but did not give it back to the operating system."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: See that new rows reuse the freed space",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> the same psql session. Insert 30,000 new orders and check the size again."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO orders\nSELECT g, (g % 5000) + 1, 'NEW', (g % 900) + 100\n  FROM generate_series(100001, 130000) AS g;\nSELECT pg_size_pretty(pg_relation_size('orders')) AS table_size;",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INSERT 0 30000\n table_size\n------------\n 6632 kB\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "30,000 new rows, and the file did not grow by a single page. PostgreSQL found the free space through the <b>free space map</b> that VACUUM updated, and put the new rows there. This is why a table that is vacuumed regularly reaches a stable size instead of growing forever."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Watch VACUUM truncate empty pages at the end",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Plain VACUUM does give space back in one case: when pages at the very end of the table become completely empty, and it can briefly get an exclusive lock. The shipped orders from Step 2 live in the pages at the end of the file, so delete them and vacuum again."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> the same psql session."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DELETE FROM orders WHERE status = 'SHIPPED';\nVACUUM (VERBOSE) orders;\nSELECT pg_size_pretty(pg_relation_size('orders')) AS table_size;",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "DELETE 30000\nINFO:  vacuuming \"vaclab.public.orders\"\nINFO:  table \"orders\": truncated 829 to 637 pages\nINFO:  finished vacuuming \"vaclab.public.orders\": index scans: 1\npages: 192 removed, 637 remain, 385 scanned (46.44% of total), 0 eagerly scanned\ntuples: 30000 removed, 78351 remain, 0 are dead but not yet removable\n...\nVACUUM\n table_size\n------------\n 5096 kB\n(1 row)",
+    "caption": "Output (trimmed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The line <b>truncated 829 to 637 pages</b> shows VACUUM cutting the 192 empty pages off the end, and the file is back to 5096 kB. Notice <b>385 scanned (46.44% of total)</b>: VACUUM skipped the pages the visibility map already marked all-visible in Step 3. Because of that skipping, the <b>78351 remain</b> figure is an estimate; <code class=\"inline-code\">SELECT count(*) FROM orders;</code> returns the real 90000."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Truncation takes a brief exclusive lock",
+    "text": "Truncation needs a short ACCESS EXCLUSIVE lock. On tables where even a brief lock hurts (or on a standby where it causes replication conflicts), you can turn it off with <code class=\"inline-code\">VACUUM (TRUNCATE false)</code>, the table storage parameter <code class=\"inline-code\">vacuum_truncate</code>, or, new in PostgreSQL 18, the server setting <code class=\"inline-code\">vacuum_truncate</code> (default on)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Vacuum from the shell with vacuumdb",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "vacuumdb is a command-line wrapper around VACUUM that ships with PostgreSQL. It is handy in cron jobs and scripts. <b>Where:</b> on db1, in a normal shell (quit psql with <code class=\"inline-code\">\\q</code> or open another terminal), running the command as the postgres user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres vacuumdb --analyze --verbose --table=orders vaclab\nsudo -u postgres vacuumdb --all --analyze --jobs=2",
+    "caption": "On db1, in the shell"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "--analyze (-z)",
+      "Also calculate statistics for use by the optimizer."
+     ],
+     [
+      "--verbose (-v)",
+      "Print detailed information during processing."
+     ],
+     [
+      "--table=orders (-t)",
+      "Clean or analyze this table only. Repeat -t for several tables."
+     ],
+     [
+      "vaclab",
+      "The database to process."
+     ],
+     [
+      "--all (-a)",
+      "Vacuum all databases."
+     ],
+     [
+      "--jobs=2 (-j)",
+      "Run 2 VACUUM commands in parallel. Each job opens its own connection, so keep max_connections in mind."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "vacuumdb: vacuuming database \"vaclab\"\nINFO:  vacuuming \"vaclab.public.orders\"\nINFO:  finished vacuuming \"vaclab.public.orders\": index scans: 0\npages: 0 removed, 637 remain, 1 scanned (0.16% of total), 0 eagerly scanned\n...\nvacuumdb: vacuuming database \"postgres\"\nvacuumdb: vacuuming database \"template1\"\nvacuumdb: vacuuming database \"vaclab\"",
+    "caption": "Output (trimmed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This time VACUUM scanned only 1 of 637 pages, because nothing had changed since the last run: the visibility map lets it skip the rest. That is why vacuuming a quiet table is cheap. vacuumdb skips template0, which does not accept connections."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> in psql, <code class=\"inline-code\">SELECT last_vacuum, last_analyze FROM pg_stat_user_tables WHERE relname = 'orders';</code> shows fresh timestamps in both columns."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Do not schedule VACUUM FULL",
+    "text": "<code class=\"inline-code\">VACUUM FULL</code> and <code class=\"inline-code\">vacuumdb --full</code> take an ACCESS EXCLUSIVE lock and rewrite each table: no one can read or write it until it finishes, and you need free disk space for a full copy. Do not run them on a production server during business hours, and never as a scheduled job. Part 13 shows safer ways to fix bloat."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Watching autovacuum at work",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Check the autovacuum processes and settings",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1. First the shell, to see the launcher process; then psql, connected to vaclab."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "ps -u postgres -o pid,cmd | grep autovacuum",
+    "caption": "On db1, in the shell"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " 2347 postgres: 18/main: autovacuum launcher ",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, backend_type, state\n  FROM pg_stat_activity\n WHERE backend_type LIKE 'autovacuum%';\n\nSELECT name, setting, unit, context\n  FROM pg_settings\n WHERE name LIKE 'autovacuum%' OR name = 'log_autovacuum_min_duration'\n ORDER BY name;",
+    "caption": "In psql (sudo -u postgres psql vaclab)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  |    backend_type     | state\n------+---------------------+-------\n 2347 | autovacuum launcher |\n(1 row)\n\n                 name                  |  setting  | unit |  context\n---------------------------------------+-----------+------+------------\n autovacuum                            | on        |      | sighup\n autovacuum_analyze_scale_factor       | 0.1       |      | sighup\n autovacuum_analyze_threshold          | 50        |      | sighup\n autovacuum_freeze_max_age             | 200000000 |      | postmaster\n autovacuum_max_workers                | 3         |      | sighup\n autovacuum_multixact_freeze_max_age   | 400000000 |      | postmaster\n autovacuum_naptime                    | 60        | s    | sighup\n autovacuum_vacuum_cost_delay          | 2         | ms   | sighup\n autovacuum_vacuum_cost_limit          | -1        |      | sighup\n autovacuum_vacuum_insert_scale_factor | 0.2       |      | sighup\n autovacuum_vacuum_insert_threshold    | 1000      |      | sighup\n autovacuum_vacuum_max_threshold       | 100000000 |      | sighup\n autovacuum_vacuum_scale_factor        | 0.2       |      | sighup\n autovacuum_vacuum_threshold           | 50        |      | sighup\n autovacuum_work_mem                   | -1        | kB   | sighup\n autovacuum_worker_slots               | 16        |      | postmaster\n log_autovacuum_min_duration           | 600000    | ms   | sighup\n(17 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only the launcher is running; workers appear when there is work to do. In the <code class=\"inline-code\">context</code> column, <b>sighup</b> means a reload is enough and <b>postmaster</b> means a restart is needed (Part 5). Three settings need a restart: the two freeze ages (Part 14) and <code class=\"inline-code\">autovacuum_worker_slots</code>, new in PostgreSQL 18."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">autovacuum_worker_slots</code> reserves process slots for autovacuum workers at server start. On Ubuntu, initdb writes <code class=\"inline-code\">autovacuum_worker_slots = 16</code> into postgresql.conf. Because of these slots, <code class=\"inline-code\">autovacuum_max_workers</code> can now be changed with a reload, up to the number of slots. Before PostgreSQL 18, changing <code class=\"inline-code\">autovacuum_max_workers</code> needed a restart. <code class=\"inline-code\">autovacuum_work_mem</code> = -1 means each worker uses <code class=\"inline-code\">maintenance_work_mem</code> (64MB by default) to remember dead tuples."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Log every autovacuum run",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By default autovacuum only logs runs that take 10 minutes or more, so most of its work is invisible. On a lab server, log every run. <b>Where:</b> on db1, as a sudo user, edit the configuration file."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo nano /etc/postgresql/18/main/postgresql.conf",
+    "caption": "On db1, in the shell"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before\n#log_autovacuum_min_duration = 10min\t# log autovacuum activity;\n\n# after\nlog_autovacuum_min_duration = 0\t# log autovacuum activity;",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The setting is reloadable (<code class=\"inline-code\">sighup</code>), so reload instead of restarting. Either run <code class=\"inline-code\">sudo systemctl reload postgresql@18-main</code> in the shell, or this in psql:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_reload_conf();",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_reload_conf\n----------------\n t\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, unit, source, sourceline\n  FROM pg_settings WHERE name = 'log_autovacuum_min_duration';",
+    "caption": "In psql: verify (run it as a separate command after the reload)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "            name             | setting | unit |       source       | sourceline\n-----------------------------+---------+------+--------------------+------------\n log_autovacuum_min_duration | 0       | ms   | configuration file |        592\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The value is 0 and comes from line 592 of the configuration file. A value of 0 logs all autovacuum actions, -1 turns logging off, and any other value logs only runs that take at least that long. On a busy production server, 0 can fill the log; choose a threshold that shows the slow runs you care about. Any value other than -1 also logs runs that were skipped because of a conflicting lock."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> put the # back in front of the line (or set it to 10min) and reload again. Step 12 does this."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Calculate when autovacuum will visit the table, then trigger it",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> psql, connected to vaclab as postgres. Turn autovacuum back on for the table by removing the storage parameter, then calculate its threshold with the formula from \"How it works\"."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLE orders RESET (autovacuum_enabled);\n\nSELECT s.relname,\n       c.reltuples::bigint AS reltuples,\n       s.n_dead_tup,\n       least(current_setting('autovacuum_vacuum_max_threshold')::float8,\n             current_setting('autovacuum_vacuum_threshold')::float8\n           + current_setting('autovacuum_vacuum_scale_factor')::float8 * c.reltuples\n            )::bigint AS vacuum_trigger\n  FROM pg_stat_user_tables s\n  JOIN pg_class c ON c.oid = s.relid\n WHERE s.relname = 'orders';",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER TABLE\n relname | reltuples | n_dead_tup | vacuum_trigger\n---------+-----------+------------+----------------\n orders  |     90000 |          0 |          18050\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "50 + 0.2 × 90,000 = 18,050. Autovacuum will vacuum the table once it has more than 18,050 dead tuples. Now update 20,000 rows to cross that line:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders SET amount = amount + 1 WHERE order_id BETWEEN 40001 AND 60000;",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "UPDATE 20000",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Wait about a minute (one <code class=\"inline-code\">autovacuum_naptime</code>), then check:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT n_dead_tup, last_autovacuum, autovacuum_count,\n       last_autoanalyze, autoanalyze_count, total_autovacuum_time\n  FROM pg_stat_user_tables WHERE relname = 'orders';",
+    "caption": "In psql, about one minute later"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " n_dead_tup |        last_autovacuum        | autovacuum_count |       last_autoanalyze        | autoanalyze_count | total_autovacuum_time\n------------+-------------------------------+------------------+-------------------------------+-------------------+-----------------------\n          0 | 2026-11-04 12:51:41.310785+00 |                1 | 2026-11-04 12:51:41.370391+00 |                 1 |                    26\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Autovacuum vacuumed the table, and also analyzed it, because 20,000 changed rows is more than the analyze threshold (50 + 0.1 × 90,000 = 9,050). <code class=\"inline-code\">total_autovacuum_time</code> is the total time in milliseconds autovacuum has spent on this table; it and <code class=\"inline-code\">total_vacuum_time</code>, <code class=\"inline-code\">total_analyze_time</code> and <code class=\"inline-code\">total_autoanalyze_time</code> are new columns in PostgreSQL 18."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now look at the server log. On Ubuntu it is /var/log/postgresql/postgresql-18-main.log."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo grep -A13 'vaclab.public.orders' /var/log/postgresql/postgresql-18-main.log",
+    "caption": "On db1, in the shell"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-04 12:51:41.310 UTC [2717] LOG:  automatic vacuum of table \"vaclab.public.orders\": index scans: 1\n\tpages: 0 removed, 701 remain, 257 scanned (36.66% of total), 0 eagerly scanned\n\ttuples: 20000 removed, 83024 remain, 0 are dead but not yet removable\n\tremovable cutoff: 897, which was 0 XIDs old when operation ended\n\tfrozen: 0 pages from table (0.00% of total) had 0 tuples frozen\n\tvisibility map: 257 pages set all-visible, 127 pages set all-frozen (0 were all-visible)\n\tindex scan needed: 128 pages from table (18.26% of total) had 19965 dead item identifiers removed\n\tindex \"orders_pkey\": pages: 442 in total, 0 newly deleted, 136 currently deleted, 136 reusable\n\tavg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s\n\tbuffer usage: 1278 hits, 0 reads, 0 dirtied\n\tWAL usage: 625 records, 0 full page images, 208573 bytes, 0 buffers full\n\tsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.02 s\n2026-11-04 12:51:41.370 UTC [2717] LOG:  automatic analyze of table \"vaclab.public.orders\"\n\tavg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s",
+    "caption": "Output (trimmed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The log entry has the same format as <code class=\"inline-code\">VACUUM (VERBOSE)</code>. This is the best place to see what autovacuum did overnight: which tables, how long, and whether anything was \"dead but not yet removable\". The process ID in square brackets (2717) is the worker that did the job."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Watch a throttled VACUUM in pg_stat_progress_vacuum",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see cost-based delay in action, slow a manual VACUUM down on purpose and watch it from a second session. First stop autovacuum from racing us on this table again, and create dead tuples in every row."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> Terminal 1, psql connected to vaclab as postgres."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLE orders SET (autovacuum_enabled = false);\nUPDATE orders SET amount = amount + 1;\nSET vacuum_cost_delay = '50ms';\nSET vacuum_cost_limit = 20;\nSET track_cost_delay_timing = on;\n\\timing on\nVACUUM orders;",
+    "caption": "Terminal 1"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "What it does"
+     ],
+     [
+      "vacuum_cost_delay = '50ms'",
+      "Sleep 50 milliseconds each time the cost limit is reached (default 0, no sleeping). SET changes it for this session only."
+     ],
+     [
+      "vacuum_cost_limit = 20",
+      "Sleep after only 20 cost units of work (default 200). A deliberately tiny value for the demo."
+     ],
+     [
+      "track_cost_delay_timing = on",
+      "New in PostgreSQL 18: record how long VACUUM sleeps, shown in the delay_time column. Off by default; only superusers can change it."
+     ],
+     [
+      "\\timing on",
+      "psql meta-command (Part 4) that prints how long each statement took."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "While Terminal 1 waits, run this in Terminal 2 (<code class=\"inline-code\">sudo -u postgres psql vaclab</code>):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, relid::regclass AS table_name, phase,\n       heap_blks_total, heap_blks_scanned, heap_blks_vacuumed,\n       index_vacuum_count, round(delay_time) AS delay_ms\n  FROM pg_stat_progress_vacuum;\n\nSELECT pid, wait_event_type, wait_event, state, query\n  FROM pg_stat_activity WHERE query LIKE 'VACUUM%';",
+    "caption": "Terminal 2, a few seconds later"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  | table_name |     phase      | heap_blks_total | heap_blks_scanned | heap_blks_vacuumed | index_vacuum_count | delay_ms\n------+------------+----------------+-----------------+-------------------+--------------------+--------------------+----------\n 2773 | orders     | vacuuming heap |            1147 |              1147 |               1014 |                  1 |     7911\n(1 row)\n\n pid  | wait_event_type | wait_event  | state  |     query\n------+-----------------+-------------+--------+----------------\n 2773 | Timeout         | VacuumDelay | active | VACUUM orders;\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The progress view shows one row for every backend or autovacuum worker that is running VACUUM. Process 2773 has scanned all 1147 heap blocks, cleaned the index once, and is in the <b>vacuuming heap</b> phase, removing the dead tuples page by page. It has slept for 7.9 seconds so far, and pg_stat_activity shows it waiting on <b>VacuumDelay</b>: it is not stuck, it is being throttled."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Phase",
+      "What VACUUM is doing"
+     ],
+     [
+      "scanning heap",
+      "Reading table pages, pruning them and collecting dead tuple pointers"
+     ],
+     [
+      "vacuuming indexes",
+      "Removing the collected pointers from every index. Can happen more than once if the pointers do not fit in maintenance_work_mem (autovacuum_work_mem for autovacuum)"
+     ],
+     [
+      "vacuuming heap",
+      "Marking the dead tuples' space free in the table"
+     ],
+     [
+      "cleaning up indexes",
+      "Final index cleanup after the whole table is done"
+     ],
+     [
+      "truncating heap",
+      "Cutting empty pages off the end of the table"
+     ],
+     [
+      "performing final cleanup",
+      "Updating the free space map and the statistics in pg_class"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER TABLE\nUPDATE 90000\nSET\nSET\nSET\nTiming is on.\nVACUUM\nTime: 8784.426 ms (00:08.784)",
+    "caption": "Output in Terminal 1 when VACUUM finishes"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now compare with the defaults. In Terminal 1, quit psql with <code class=\"inline-code\">\\q</code> and start a new session with <code class=\"inline-code\">sudo -u postgres psql vaclab</code>, so the SET values are gone. Then create the same amount of work and vacuum again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders SET amount = amount + 1;\nSHOW vacuum_cost_delay;\n\\timing on\nVACUUM orders;",
+    "caption": "Terminal 1, new psql session"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "UPDATE 90000\n vacuum_cost_delay\n-------------------\n 0\n(1 row)\n\nTiming is on.\nVACUUM\nTime: 30.056 ms",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same work took 30 milliseconds without throttling and almost 9 seconds with it. On a real server the numbers are much bigger, but the lesson is the same: when autovacuum falls behind on a large table, the cause is usually its cost limit, not a lack of workers."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> in Terminal 2, <code class=\"inline-code\">SELECT count(*) FROM pg_stat_progress_vacuum;</code> returns 0 once VACUUM has finished."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Tuning autovacuum",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Tuning works on two levels. Server-wide settings in postgresql.conf apply to every table. Table storage parameters override them for one table, which is the right tool for a few very large or very busy tables. Change one thing at a time, and use the log from Step 8 to see the effect."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Give autovacuum more workers and a bigger cost budget",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1, as a sudo user. Edit /etc/postgresql/18/main/postgresql.conf and change two lines."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before\n#autovacuum_max_workers = 3\t\t# max number of autovacuum subprocesses\n#autovacuum_vacuum_cost_limit = -1\t# default vacuum cost limit for\n\n# after\nautovacuum_max_workers = 5\t\t# max number of autovacuum subprocesses\nautovacuum_vacuum_cost_limit = 1000\t# default vacuum cost limit for",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "Default",
+      "Why change it"
+     ],
+     [
+      "autovacuum_max_workers",
+      "3",
+      "With many busy tables, 3 workers can all be stuck on big tables while small ones wait. Must not exceed autovacuum_worker_slots (16)."
+     ],
+     [
+      "autovacuum_vacuum_cost_limit",
+      "-1 (200)",
+      "The total I/O budget, shared by all running workers. Raising workers without raising this makes each worker slower, not the total faster."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "These values are an example, not a universal recommendation. A higher cost limit means more I/O from autovacuum, so raise it in steps and watch disk latency. Both settings are reloadable in PostgreSQL 18:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_reload_conf();",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, context, pending_restart\n  FROM pg_settings\n WHERE name IN ('autovacuum_max_workers', 'autovacuum_vacuum_cost_limit',\n                'autovacuum_worker_slots')\n ORDER BY name;",
+    "caption": "In psql: verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "             name             | setting |  context   | pending_restart\n------------------------------+---------+------------+-----------------\n autovacuum_max_workers       | 5       | sighup     | f\n autovacuum_vacuum_cost_limit | 1000    | sighup     | f\n autovacuum_worker_slots      | 16      | postmaster | f\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both new values are active and <code class=\"inline-code\">pending_restart</code> is false, so no restart is needed. The server log confirms it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo tail -3 /var/log/postgresql/postgresql-18-main.log",
+    "caption": "On db1, in the shell"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-04 12:53:06.276 UTC [2339] LOG:  received SIGHUP, reloading configuration files\n2026-11-04 12:53:06.276 UTC [2339] LOG:  parameter \"autovacuum_max_workers\" changed to \"5\"\n2026-11-04 12:53:06.276 UTC [2339] LOG:  parameter \"autovacuum_vacuum_cost_limit\" changed to \"1000\"",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> put the # back in front of both lines and reload. On PostgreSQL 17 and older, <code class=\"inline-code\">autovacuum_max_workers</code> could only be changed with a full restart, not a reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Tune one busy table with storage parameters",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The default scale factor of 20% is fine for small tables but far too lazy for big ones: a table with 50 million rows would collect 10 million dead tuples before autovacuum starts. Busy tables such as order tables, session tables and <a href=\"/posts/postgresql/postgresql-for-update-skip-locked-job-queue/\">job queue tables</a> usually need a lower scale factor of their own."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> psql, connected to vaclab as postgres. Turn autovacuum back on for the table and give it its own threshold."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLE orders RESET (autovacuum_enabled);\nALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.01,\n                        autovacuum_vacuum_threshold = 1000);\nSELECT relname, reloptions FROM pg_class WHERE relname = 'orders';",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Storage parameter",
+      "What it does"
+     ],
+     [
+      "autovacuum_vacuum_scale_factor = 0.01",
+      "Per-table value: vacuum after 1% of the rows are dead instead of 20%."
+     ],
+     [
+      "autovacuum_vacuum_threshold = 1000",
+      "Per-table value of the fixed part of the formula, so tiny changes do not trigger a run."
+     ],
+     [
+      "RESET (autovacuum_enabled)",
+      "Removes the storage parameter, so the table follows the server setting again (on)."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER TABLE\nALTER TABLE\n relname |                               reloptions\n---------+------------------------------------------------------------------------\n orders  | {autovacuum_vacuum_scale_factor=0.01,autovacuum_vacuum_threshold=1000}\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The per-table values are stored in <code class=\"inline-code\">pg_class.reloptions</code>. The threshold query from Step 9 ignores them, so here is a version that reads them. It works for every table in the current database, which makes it a useful monitoring query (it does not apply a per-table <code class=\"inline-code\">autovacuum_vacuum_max_threshold</code>)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT s.relname,\n       c.reltuples::bigint AS reltuples,\n       s.n_dead_tup,\n       least(current_setting('autovacuum_vacuum_max_threshold')::float8,\n             coalesce(o.threshold, current_setting('autovacuum_vacuum_threshold')::float8)\n           + coalesce(o.scale_factor, current_setting('autovacuum_vacuum_scale_factor')::float8)\n             * c.reltuples)::bigint AS vacuum_trigger,\n       s.last_autovacuum\n  FROM pg_stat_user_tables s\n  JOIN pg_class c ON c.oid = s.relid\n  LEFT JOIN LATERAL (\n       SELECT max(option_value) FILTER (WHERE option_name = 'autovacuum_vacuum_threshold')::float8    AS threshold,\n              max(option_value) FILTER (WHERE option_name = 'autovacuum_vacuum_scale_factor')::float8 AS scale_factor\n         FROM pg_options_to_table(c.reloptions)) o ON true\n ORDER BY s.n_dead_tup DESC;",
+    "caption": "In psql: dead tuples and autovacuum trigger for every table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " relname | reltuples | n_dead_tup | vacuum_trigger |        last_autovacuum\n---------+-----------+------------+----------------+-------------------------------\n orders  |     90000 |          0 |           1900 | 2026-11-04 12:51:41.310785+00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The trigger dropped from 18,050 to 1000 + 0.01 × 90,000 = 1,900. Test it with 5,000 updated rows, which is far below the server-wide trigger:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders SET status = 'PAID' WHERE order_id BETWEEN 60001 AND 65000;",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "UPDATE 5000",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT relname, n_dead_tup, last_autovacuum, autovacuum_count\n  FROM pg_stat_user_tables WHERE relname = 'orders';",
+    "caption": "In psql, about one minute later"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " relname | n_dead_tup |        last_autovacuum        | autovacuum_count\n---------+------------+-------------------------------+------------------\n orders  |          0 | 2026-11-04 12:53:54.338099+00 |                2\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> <code class=\"inline-code\">autovacuum_count</code> went from 1 to 2 with only 5,000 dead tuples, so the per-table setting is in effect."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Other storage parameters work the same way: <code class=\"inline-code\">autovacuum_vacuum_insert_threshold</code> and <code class=\"inline-code\">autovacuum_vacuum_insert_scale_factor</code> for insert-only tables, <code class=\"inline-code\">autovacuum_analyze_scale_factor</code> for statistics, <code class=\"inline-code\">autovacuum_vacuum_cost_limit</code> and <code class=\"inline-code\">autovacuum_vacuum_cost_delay</code> for the speed of vacuum on that table, and <code class=\"inline-code\">log_autovacuum_min_duration</code> for logging. Workers on tables with their own cost settings are left out of the cost balancing between workers."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">ALTER TABLE orders RESET (autovacuum_vacuum_scale_factor, autovacuum_vacuum_threshold);</code> removes the per-table values, and <code class=\"inline-code\">reloptions</code> is empty again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Clean up the lab",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Destructive command",
+    "text": "DROP DATABASE deletes the database and all its files immediately, with no undo. Run it only on the lab database vaclab, and read the name twice before pressing Enter."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where:</b> on db1. First undo the postgresql.conf changes from Steps 8 and 11 by putting a # back in front of the three lines, so they read as below, and reload."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "#log_autovacuum_min_duration = 10min\t# log autovacuum activity;\n#autovacuum_max_workers = 3\t\t# max number of autovacuum subprocesses\n#autovacuum_vacuum_cost_limit = -1\t# default vacuum cost limit for",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_reload_conf();\n\\c postgres\nDROP DATABASE vaclab;",
+    "caption": "In psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_reload_conf \n----------------\n t\n(1 row)\n\nYou are now connected to database \"postgres\" as user \"postgres\".\nDROP DATABASE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, source FROM pg_settings\n WHERE name IN ('log_autovacuum_min_duration', 'autovacuum_max_workers',\n                'autovacuum_vacuum_cost_limit')\n ORDER BY name;",
+    "caption": "In psql: verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "             name             | setting | source\n------------------------------+---------+---------\n autovacuum_max_workers       | 3       | default\n autovacuum_vacuum_cost_limit | -1      | default\n log_autovacuum_min_duration  | 600000  | default\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> all three settings show <code class=\"inline-code\">default</code> as their source, and <code class=\"inline-code\">\\l</code> no longer lists vaclab."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR:  VACUUM cannot run inside a transaction block",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "VACUUM manages its own transactions, so it cannot run between BEGIN and COMMIT. You also get this error from tools that wrap every statement in a transaction, such as some GUI clients and migration frameworks."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\nERROR:  VACUUM cannot run inside a transaction block\nROLLBACK",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> run VACUUM on its own in autocommit mode (the psql default), or use vacuumdb from the shell. In a GUI client, switch the connection to autocommit first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Turning autovacuum off because it \"uses too much I/O\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With <code class=\"inline-code\">autovacuum = off</code> or <code class=\"inline-code\">autovacuum_enabled = false</code> on a table, dead tuples pile up, tables grow, statistics go stale and queries slow down. Autovacuum still runs to prevent transaction ID wraparound anyway, often at the worst time and on a huge backlog."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> leave autovacuum on. If its I/O hurts, tune the cost settings instead, and schedule a manual VACUUM in a quiet window for the biggest tables if needed."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Expecting VACUUM to shrink the table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Step 3 showed the file staying at 6632 kB after VACUUM. That is normal: plain VACUUM frees space for reuse and only truncates empty pages at the end. <b>Fix:</b> if the table really needs to shrink, read Part 13 on bloat before you reach for VACUUM FULL."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR:  canceling autovacuum task",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Autovacuum holds a SHARE UPDATE EXCLUSIVE lock. When another session asks for a conflicting lock (ALTER TABLE, CREATE INDEX without CONCURRENTLY, LOCK TABLE, TRUNCATE), the autovacuum worker cancels itself so it does not block the application. In our lab, an <code class=\"inline-code\">ALTER TABLE orders ADD COLUMN note text;</code> during a slow autovacuum produced this in the log:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-04 12:54:57.146 UTC [2991] ERROR:  canceling autovacuum task\n2026-11-04 12:54:57.146 UTC [2991] CONTEXT:  while scanning block 20 of relation \"public.orders\"\n\tautomatic vacuum of table \"vaclab.public.orders\"",
+    "caption": "Server log"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Once in a while this is harmless. If a job runs such commands every few minutes, autovacuum may never finish on that table. <b>Fix:</b> grep the log for this message, find the job that takes the lock, and change it (or run a manual VACUUM on the table in a quiet window). An autovacuum run to prevent wraparound (its query in pg_stat_activity ends with \"(to prevent wraparound)\") is not cancelled this way."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Raising autovacuum_max_workers and nothing gets faster",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The cost limit is shared, so five workers each get a fifth of the budget. <b>Fix:</b> raise <code class=\"inline-code\">autovacuum_vacuum_cost_limit</code> together with the worker count, as in Step 11. And keep the worker count at or below <code class=\"inline-code\">autovacuum_worker_slots</code>, otherwise the log shows:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "WARNING:  \"autovacuum_max_workers\" (20) should be less than or equal to \"autovacuum_worker_slots\" (16)\nDETAIL:  The server will only start up to \"autovacuum_worker_slots\" (16) autovacuum workers at a given time.",
+    "caption": "Server log"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To get more slots, raise <code class=\"inline-code\">autovacuum_worker_slots</code> and restart with <code class=\"inline-code\">sudo systemctl restart postgresql@18-main</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "\"dead but not yet removable\" keeps growing",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "VACUUM runs, but the dead tuples stay. Autovacuum cannot fix this by running more often. The cause is something holding back the xmin horizon: a session idle in transaction, an old prepared transaction or a stale replication slot. <b>Fix:</b> find it with the backend_xmin query from Part 11, and end it as shown in <a href=\"/posts/postgresql/postgresql-dba-part-10-connections-sessions/\">Part 10</a>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Forgetting that partitioned parents and temporary tables are not auto-analyzed",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Autovacuum processes each partition like a normal table, but it never runs ANALYZE on the partitioned parent table, and it cannot access temporary tables at all. <b>Fix:</b> run <code class=\"inline-code\">ANALYZE</code> on the parent after large data loads, and VACUUM or ANALYZE temporary tables from the session that created them. In PostgreSQL 18, <code class=\"inline-code\">ANALYZE ONLY parent_table</code> analyzes just the parent without its partitions."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Write one query against pg_settings that lists every vacuum or autovacuum setting that needs a server restart.",
+      "items": []
+     },
+     {
+      "content": "A payments table has 2,000,000 rows (reltuples). With the default settings, how many dead tuples does it need before autovacuum vacuums it? How many after <code class=\"inline-code\">ALTER TABLE payments SET (autovacuum_vacuum_scale_factor = 0.01);</code>?",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answers",
+    "text": "1. <code class=\"inline-code\">SELECT name FROM pg_settings WHERE (name LIKE '%vacuum%') AND context = 'postmaster';</code> returns autovacuum_freeze_max_age, autovacuum_multixact_freeze_max_age and autovacuum_worker_slots on PostgreSQL 18. 2. Default: 50 + 0.2 × 2,000,000 = 400,050 dead tuples (well under the 100,000,000 cap). With the per-table scale factor: 50 + 0.01 × 2,000,000 = 20,050, because the threshold of 50 still comes from the server setting."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Open psql as the postgres user on db1\nsudo -u postgres psql vaclab\n\n# Vacuum one table and print a detailed report (in psql)\nVACUUM (VERBOSE) orders;\n\n# Vacuum and analyze one table from the shell\nsudo -u postgres vacuumdb --analyze --verbose --table=orders vaclab\n\n# Vacuum and analyze every database, 2 jobs in parallel\nsudo -u postgres vacuumdb --all --analyze --jobs=2\n\n# Dead tuples and last (auto)vacuum per table (in psql)\nSELECT relname, n_live_tup, n_dead_tup, last_vacuum, last_autovacuum, autovacuum_count FROM pg_stat_user_tables ORDER BY n_dead_tup DESC;\n\n# All autovacuum settings and whether they need reload (sighup) or restart (postmaster)\nSELECT name, setting, unit, context FROM pg_settings WHERE name LIKE 'autovacuum%' ORDER BY name;\n\n# Running VACUUMs and their phase\nSELECT pid, relid::regclass, phase, heap_blks_total, heap_blks_scanned, round(delay_time) FROM pg_stat_progress_vacuum;\n\n# Edit server-wide settings, then reload (no restart needed for autovacuum_max_workers in PostgreSQL 18)\nsudo nano /etc/postgresql/18/main/postgresql.conf\nsudo systemctl reload postgresql@18-main\n\n# Read autovacuum entries in the server log (needs log_autovacuum_min_duration other than -1)\nsudo grep -A13 'automatic vacuum' /var/log/postgresql/postgresql-18-main.log\n\n# Per-table autovacuum settings: set, check, undo (in psql)\nALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 1000);\nSELECT relname, reloptions FROM pg_class WHERE relname = 'orders';\nALTER TABLE orders RESET (autovacuum_vacuum_scale_factor, autovacuum_vacuum_threshold);",
+    "caption": "Commands from this part, in order (SQL lines are typed in psql)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Plain VACUUM removes dead tuples and makes their space reusable without blocking reads or writes; it only returns empty pages at the end of the file to the operating system.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "VACUUM FULL rewrites the table under an ACCESS EXCLUSIVE lock; autovacuum never runs it, and you should not schedule it.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Autovacuum vacuums a table when dead tuples exceed min(autovacuum_vacuum_max_threshold, threshold + scale_factor × reltuples), and analyzes it on a similar rule.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Autovacuum is throttled by cost-based delay, and its cost limit is shared between workers: raise the limit, not just the worker count.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "In PostgreSQL 18, autovacuum_max_workers is reloadable up to autovacuum_worker_slots, and pg_stat_user_tables reports total_vacuum_time and total_autovacuum_time.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "log_autovacuum_min_duration, pg_stat_user_tables and pg_stat_progress_vacuum show what autovacuum is doing.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Big or busy tables get their own scale factor with ALTER TABLE ... SET (...), stored in pg_class.reloptions.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 13 we look at table and index bloat: how to find it and how to fix it."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your PostgreSQL table has 50 million rows. With default settings, autovacuum waits for 10 million dead rows before it cleans up.\n\nThat is the 20% scale factor at work. Part 12 of my PostgreSQL DBA series covers VACUUM and autovacuum on PostgreSQL 18. What the tests showed:\n\n→ Plain VACUUM frees space for reuse but does not shrink the file. 30,000 new rows went into the freed space and the table did not grow a single page.\n→ Autovacuum starts when dead rows exceed 50 + 0.2 × reltuples (capped at 100 million in PostgreSQL 18).\n→ Autovacuum is slow on purpose: cost-based delay. The same VACUUM took 30 ms unthrottled and almost 9 seconds with a tiny cost limit.\n→ More workers alone do not help. The cost limit is shared, so raise autovacuum_vacuum_cost_limit too. In PostgreSQL 18, autovacuum_max_workers changes with a reload.\n→ Busy tables get their own setting: ALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.01);\n\nWhich table on your server has the most dead tuples right now?\n\nFollow the series for Part 13 on table and index bloat.\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "VACUUM and autovacuum in PostgreSQL 18",
+    "body": "PostgreSQL DBA series, Part 12: how cleanup works and how to tune it"
+   },
+   {
+    "title": "Dead rows need cleaning",
+    "points": [
+     "UPDATE and DELETE leave old row versions behind",
+     "VACUUM marks their space free for new rows",
+     "Plain VACUUM does not block reads or writes",
+     "It only shrinks the file when end pages are empty"
+    ]
+   },
+   {
+    "title": "Read the VACUUM report",
+    "code": "VACUUM (VERBOSE) orders;\n\n-- tuples: 39987 removed,\n--   90000 remain,\n--   0 are dead but not yet removable",
+    "lang": "postgresql"
+   },
+   {
+    "title": "When autovacuum starts",
+    "points": [
+     "Dead rows > 50 + 0.2 x reltuples",
+     "Capped at 100 million (new in PostgreSQL 18)",
+     "Analyze after 50 + 0.1 x reltuples changes",
+     "The launcher checks each database every 1 min"
+    ]
+   },
+   {
+    "title": "Throttled on purpose",
+    "points": [
+     "Each page costs: hit 1, miss 2, dirty 20",
+     "Autovacuum sleeps 2ms when the limit is reached",
+     "The cost limit is shared by all workers",
+     "Raise autovacuum_vacuum_cost_limit, not just workers"
+    ]
+   },
+   {
+    "title": "Tune one busy table",
+    "code": "ALTER TABLE orders SET (\n  autovacuum_vacuum_scale_factor = 0.01,\n  autovacuum_vacuum_threshold = 1000);\n\nSELECT relname, reloptions\n  FROM pg_class\n WHERE relname = 'orders';",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Watch it work",
+    "code": "SELECT relname, n_dead_tup,\n       last_autovacuum,\n       autovacuum_count\n  FROM pg_stat_user_tables\n ORDER BY n_dead_tup DESC;",
+    "lang": "postgresql"
+   }
+  ]
+ }
+}
