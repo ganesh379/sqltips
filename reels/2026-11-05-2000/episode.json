@@ -1,0 +1,559 @@
+{
+ "ep": 3,
+ "total": 140,
+ "title": "PostgreSQL Architecture: The Big Picture",
+ "phase": "Foundations",
+ "lines": [
+  {
+   "say": "A query travels through more parts of PostgreSQL than you think.",
+   "cap": "A query travels through *more* *parts* than you think."
+  },
+  {
+   "say": "This is episode three of the PostgreSQL DBA series. Today: the processes, memory and files behind every query.",
+   "cap": "Episode 3: the *processes,* *memory* and *files* behind a query."
+  },
+  {
+   "say": "PostgreSQL uses a client server model. Your app, or psql, is the client.",
+   "cap": "*Client/server* model: your app or *psql* is the *client.*"
+  },
+  {
+   "say": "The server is a program called postgres. Client and server can run on different machines.",
+   "cap": "The server program is *postgres.* It can be on *another* *host.*"
+  },
+  {
+   "say": "The first process to start is the postmaster. It listens on a port and waits for connections.",
+   "cap": "The *postmaster* starts first and *listens* for connections."
+  },
+  {
+   "say": "Every time a client connects, the postmaster starts a new backend process just for that connection.",
+   "cap": "Each connection gets its *own* *backend* *process.*",
+   "cue": "backend"
+  },
+  {
+   "say": "From then on, your client talks only to its backend, which parses your query, plans it, runs it, and sends the rows back.",
+   "cap": "The backend *parses,* *plans,* *executes* and returns rows."
+  },
+  {
+   "say": "Backends don't work alone. They all use one common memory area called shared memory.",
+   "cap": "All backends use one common *shared* *memory* area."
+  },
+  {
+   "say": "Its largest part is shared buffers, a cache of data pages, usually eight kilobytes each.",
+   "cap": "Largest part: *shared_buffers,* a cache of *8 kB* pages."
+  },
+  {
+   "say": "When a backend changes a page in memory, that page is called dirty, until it is written back to disk.",
+   "cap": "A changed page is *dirty* until written back to disk."
+  },
+  {
+   "say": "But first, the change is logged. Changes reach the data files only after their WAL records are flushed to permanent storage.",
+   "cap": "*WAL* first: data files change only *after* WAL is flushed.",
+   "cue": "WAL"
+  },
+  {
+   "say": "That is the write ahead log. After a crash, PostgreSQL can redo the missing changes from the WAL.",
+   "cap": "After a crash, changes are *redone* from the *WAL.*"
+  },
+  {
+   "say": "Now the helpers. The background writer writes dirty pages to disk a little at a time.",
+   "cap": "*Background* *writer:* writes dirty pages, a little at a time."
+  },
+  {
+   "say": "The checkpointer runs checkpoints. The WAL writer writes WAL records from shared memory to the WAL files.",
+   "cap": "*Checkpointer* runs checkpoints. *WAL* *writer* writes WAL files."
+  },
+  {
+   "say": "The autovacuum launcher starts workers that vacuum and analyze your tables.",
+   "cap": "*Autovacuum* *launcher* starts workers to *vacuum* and *analyze.*"
+  },
+  {
+   "say": "And background workers run extra code, for features like parallel queries and logical replication.",
+   "cap": "*Background* *workers:* parallel queries, logical replication."
+  },
+  {
+   "say": "On disk, the cluster lives in the data directory. Table and index files sit under base, and WAL files under pg_wal.",
+   "cap": "*Data* *directory:* tables under *base,* WAL under *pg_wal.*"
+  },
+  {
+   "say": "Let's see it live. In psql, select backend type from pg_stat_activity.",
+   "cap": "Live: *backend_type* from *pg_stat_activity.*"
+  },
+  {
+   "say": "On PostgreSQL sixteen we get six rows. One is a client backend: that's us.",
+   "cap": "PostgreSQL 16: *6* *rows,* one *client* *backend* is us."
+  },
+  {
+   "say": "The list depends on version and settings. PostgreSQL eighteen, for example, uses I/O workers by default.",
+   "cap": "The list *varies:* PostgreSQL 18 adds *I/O* *workers* by default."
+  },
+  {
+   "say": "A common misconception: one PostgreSQL server means one process. In reality, every connection gets its own backend process.",
+   "cap": "Myth: *one* *server,* *one* *process.* Reality: one per *connection.*"
+  },
+  {
+   "say": "DBA takeaway: every connection is a whole process, so a common practice is a connection pooler like PgBouncer.",
+   "cap": "Each connection is a *process.* Common practice: a *pooler.*"
+  },
+  {
+   "say": "Recap: the postmaster, one backend per connection, shared buffers, WAL first, and background helpers.",
+   "cap": "Recap: *postmaster,* *backends,* *shared* *buffers,* *WAL,* *helpers.*"
+  },
+  {
+   "say": "Next up: what happens when you run a SELECT. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: life of a *SELECT.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "A query travels through *more* *parts* than you think.",
+   "sub": "Episode 3 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 3 · FOUNDATIONS",
+   "title": "PostgreSQL Architecture",
+   "sub": "The big picture"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 7,
+   "heading": "One process per connection",
+   "nodes": [
+    {
+     "id": "ca",
+     "label": "Client A",
+     "sub": "app or psql",
+     "x": 230,
+     "y": 520,
+     "w": 320,
+     "h": 130,
+     "icon": "terminal",
+     "color": "amber",
+     "at": 2
+    },
+    {
+     "id": "cb",
+     "label": "Client B",
+     "sub": "another app",
+     "x": 830,
+     "y": 520,
+     "w": 320,
+     "h": 130,
+     "icon": "users",
+     "color": "amber",
+     "at": 5
+    },
+    {
+     "id": "pm",
+     "label": "Postmaster",
+     "sub": "first process",
+     "x": 670,
+     "y": 860,
+     "w": 320,
+     "h": 150,
+     "icon": "server",
+     "color": "blue",
+     "at": 3
+    },
+    {
+     "id": "ba",
+     "label": "Backend A",
+     "sub": "serves client A",
+     "x": 230,
+     "y": 1220,
+     "w": 320,
+     "h": 140,
+     "icon": "cpu",
+     "color": "green",
+     "at": 5
+    },
+    {
+     "id": "bb",
+     "label": "Backend B",
+     "sub": "serves client B",
+     "x": 830,
+     "y": 1220,
+     "w": 320,
+     "h": 140,
+     "icon": "cpu",
+     "color": "green",
+     "at": 5
+    }
+   ],
+   "edges": [
+    {
+     "from": "ca",
+     "to": "pm",
+     "label": "connect",
+     "at": 4,
+     "flow": true,
+     "color": "amber"
+    },
+    {
+     "from": "pm",
+     "to": "ba",
+     "label": "starts",
+     "at": 5,
+     "color": "blue",
+     "dashed": true
+    },
+    {
+     "from": "pm",
+     "to": "bb",
+     "label": "starts",
+     "at": 5,
+     "color": "blue",
+     "dashed": true
+    },
+    {
+     "from": "ca",
+     "to": "ba",
+     "label": "SQL, rows",
+     "at": 6,
+     "flow": true,
+     "color": "green"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "ca"
+    },
+    {
+     "at": 3,
+     "id": "pm"
+    },
+    {
+     "at": 4,
+     "id": "pm"
+    },
+    {
+     "at": 5,
+     "id": "ba"
+    },
+    {
+     "at": 6,
+     "id": "ba"
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 7,
+   "to": 12,
+   "heading": "Memory and the WAL",
+   "nodes": [
+    {
+     "id": "be",
+     "label": "Backends",
+     "sub": "one per client",
+     "x": 540,
+     "y": 500,
+     "w": 380,
+     "h": 130,
+     "icon": "cpu",
+     "color": "green",
+     "at": 7
+    },
+    {
+     "id": "sb",
+     "label": "Shared buffers",
+     "sub": "8 kB pages, in RAM",
+     "x": 540,
+     "y": 800,
+     "w": 380,
+     "h": 150,
+     "icon": "memory",
+     "color": "blue",
+     "at": 8
+    },
+    {
+     "id": "wal",
+     "label": "WAL files",
+     "sub": "written first",
+     "x": 800,
+     "y": 1210,
+     "w": 320,
+     "h": 150,
+     "icon": "file",
+     "color": "amber",
+     "shape": "db",
+     "at": 10
+    },
+    {
+     "id": "df",
+     "label": "Data files",
+     "sub": "tables, indexes",
+     "x": 280,
+     "y": 1210,
+     "w": 320,
+     "h": 150,
+     "icon": "database",
+     "color": "purple",
+     "shape": "db",
+     "at": 9
+    }
+   ],
+   "edges": [
+    {
+     "from": "be",
+     "to": "sb",
+     "label": "read, change",
+     "at": 7,
+     "flow": true,
+     "color": "green"
+    },
+    {
+     "from": "sb",
+     "to": "wal",
+     "label": "1. log",
+     "at": 10,
+     "flow": true,
+     "color": "amber"
+    },
+    {
+     "from": "sb",
+     "to": "df",
+     "label": "2. later",
+     "at": 10,
+     "flow": true,
+     "color": "purple"
+    },
+    {
+     "from": "wal",
+     "to": "df",
+     "label": "redo",
+     "at": 11,
+     "dashed": true,
+     "color": "red"
+    }
+   ],
+   "focus": [
+    {
+     "at": 7,
+     "id": "be"
+    },
+    {
+     "at": 8,
+     "id": "sb"
+    },
+    {
+     "at": 9,
+     "id": "df"
+    },
+    {
+     "at": 10,
+     "id": "wal"
+    },
+    {
+     "at": 11,
+     "id": "df"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 12,
+   "to": 16,
+   "heading": "Background helpers",
+   "columns": 2,
+   "items": [
+    {
+     "at": 12,
+     "icon": "disk",
+     "title": "Background writer",
+     "text": "Writes dirty pages a little at a time",
+     "color": "blue"
+    },
+    {
+     "at": 13,
+     "icon": "check",
+     "title": "Checkpointer",
+     "text": "Runs checkpoints",
+     "color": "green"
+    },
+    {
+     "at": 13,
+     "icon": "file",
+     "title": "WAL writer",
+     "text": "Writes WAL records to WAL files",
+     "color": "amber"
+    },
+    {
+     "at": 14,
+     "icon": "wrench",
+     "title": "Autovacuum launcher",
+     "text": "Starts vacuum workers",
+     "color": "purple"
+    },
+    {
+     "at": 15,
+     "icon": "bolt",
+     "title": "Background workers",
+     "text": "Run extra code",
+     "color": "cyan"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 16,
+   "to": 17,
+   "heading": "On disk",
+   "columns": 1,
+   "items": [
+    {
+     "at": 16,
+     "icon": "folder",
+     "title": "Data directory",
+     "text": "Files of the database cluster (PGDATA)",
+     "color": "blue"
+    },
+    {
+     "at": 16,
+     "icon": "table",
+     "title": "base/",
+     "text": "Per-database table and index files",
+     "color": "purple"
+    },
+    {
+     "at": 16,
+     "icon": "file",
+     "title": "pg_wal/",
+     "text": "WAL (write-ahead log) files",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 17,
+   "to": 19,
+   "heading": "See the processes",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT backend_type",
+     "at": 17
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  FROM pg_stat_activity;",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "         backend_type",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "------------------------------",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " autovacuum launcher",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " logical replication launcher",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " client backend",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " background writer",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " checkpointer",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " walwriter",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "(6 rows)",
+     "at": 18
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 19,
+   "to": 20,
+   "kind": "fact",
+   "title": "The list varies",
+   "text": "It depends on version and settings. PostgreSQL 18 defaults to io_method = worker, with 3 I/O workers."
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "myth",
+   "title": "One server = one process",
+   "text": "PostgreSQL is process per connection: every client gets its own backend process."
+  },
+  {
+   "type": "callout",
+   "from": 21,
+   "to": 22,
+   "kind": "tip",
+   "title": "Connections are not free",
+   "text": "Each connection is a whole backend process. A common practice: a connection pooler such as PgBouncer."
+  },
+  {
+   "type": "checklist",
+   "from": 22,
+   "to": 23,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 22,
+     "title": "Postmaster starts everything"
+    },
+    {
+     "at": 22,
+     "title": "One backend per connection"
+    },
+    {
+     "at": 22,
+     "title": "Shared buffers cache pages"
+    },
+    {
+     "at": 22,
+     "title": "WAL is written first"
+    },
+    {
+     "at": 22,
+     "title": "Helpers work in the background"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 23,
+   "to": 24,
+   "next": "Ep 4 · What Happens When You Run SELECT"
+  }
+ ]
+}

@@ -1,0 +1,13 @@
+A query travels through more parts of PostgreSQL than you think. Here is the big picture.
+
+PostgreSQL uses a client/server model. The postmaster is the first process of an instance. Every time a client connects, it starts a new backend process just for that connection. The backend parses your query, plans it, executes it and sends the rows back.
+
+All backends share one shared memory area. Its largest part is shared_buffers, a cache of data pages. Changes are logged in the WAL (write-ahead log) first, so after a crash PostgreSQL can redo them.
+
+Helpers run in the background: background writer, checkpointer, WAL writer, autovacuum launcher and background workers. See them yourself with SELECT backend_type FROM pg_stat_activity; the list depends on version and settings. A common PostgreSQL DBA practice is a connection pooler, because every connection is a whole process.
+
+Episode 3 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql
