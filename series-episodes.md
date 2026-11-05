@@ -24,7 +24,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Trace connection, parse, analyze, rewrite, plan, execute and return rows; note cache/storage paths.
   - Format: Query journey animation · Level: Beginner
   - Hook: What happens inside PostgreSQL after you press Enter?
-- [ ] Ep 005 | 2026-11-08 | PostgreSQL Processes: Postmaster, Backend and Workers
+- [x] Ep 005 | 2026-11-08 | PostgreSQL Processes: Postmaster, Backend and Workers (posted 2026-11-06 20:00, Buffer 6aec6440a5300fd99cc7a3f6)
   - Objective: Explain process-based architecture and common background processes without implying every process exists in every configuration.
   - Format: Process map · Level: Beginner
   - Hook: Why does PostgreSQL create multiple processes?

@@ -38,3 +38,4 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-05 | 13:00 | Instagram | Series Ep 002 | Database vs DBMS vs SQL | reels/2026-11-05-1300 | 6aeac7fdb8d162e0d808945a
 - 2026-11-05 | 20:00 | Instagram | Series Ep 003 | PostgreSQL Architecture: The Big Picture | reels/2026-11-05-2000 | 6aeb0f4d1d881477a61e9a1a
 - 2026-11-06 | 13:00 | Instagram | Series Ep 004 | What Happens When You Run SELECT? | reels/2026-11-06-1300 | 6aec22ba80f7fd0537f49cf6
+- 2026-11-06 | 20:00 | Instagram | Series Ep 005 | PostgreSQL Processes: Postmaster, Backend and Workers | reels/2026-11-06-2000 | 6aec6440a5300fd99cc7a3f6
