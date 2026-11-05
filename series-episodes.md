@@ -20,7 +20,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Show client/server model, postmaster, backend processes, shared memory, storage and background workers.
   - Format: Animated architecture walkthrough · Level: Beginner
   - Hook: A query travels through more components than you think.
-- [ ] Ep 004 | 2026-11-07 | What Happens When You Run SELECT?
+- [x] Ep 004 | 2026-11-07 | What Happens When You Run SELECT? (posted 2026-11-06 13:00, Buffer 6aec22ba80f7fd0537f49cf6)
   - Objective: Trace connection, parse, analyze, rewrite, plan, execute and return rows; note cache/storage paths.
   - Format: Query journey animation · Level: Beginner
   - Hook: What happens inside PostgreSQL after you press Enter?
