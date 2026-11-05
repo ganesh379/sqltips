@@ -38,3 +38,4 @@
 - 2026-11-03 [PostgreSQL] postgresql mvcc explained -> _drafts/2026-11-03-postgresql-postgresql-dba-part-11-mvcc-xmin-xmax.json
 - 2026-11-04 [Oracle] ora-01427 single-row subquery returns more than one row -> _drafts/2026-11-04-oracle-ora-01427-single-row-subquery.json
 - 2026-11-04 [PostgreSQL] postgresql autovacuum tuning -> _drafts/2026-11-04-postgresql-postgresql-dba-part-12-vacuum-autovacuum.json
+- 2026-11-05 [Oracle] ora-00054 resource busy -> _drafts/2026-11-05-oracle-ora-00054-resource-busy.json

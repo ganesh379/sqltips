@@ -1,0 +1,824 @@
+{
+ "schemaVersion": 1,
+ "title": "ORA-00054 Resource Busy in Oracle: Causes and Fixes",
+ "slug": "ora-00054-resource-busy-oracle",
+ "category": "plsql",
+ "description": "Fix ORA-00054 resource busy in Oracle: find the session holding the lock, use DDL_LOCK_TIMEOUT and ONLINE builds, and handle NOWAIT in PL/SQL.",
+ "focusKeyword": "ora-00054 resource busy",
+ "tags": [
+  "oracle",
+  "ora-errors",
+  "locking",
+  "ddl",
+  "plsql"
+ ],
+ "related": [
+  "/posts/plsql/oracle-blocking-sessions-query/",
+  "/posts/plsql/ora-00060-deadlock-detected-oracle/",
+  "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle error help: ORA-00054",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-00054/"
+  },
+  {
+   "title": "Oracle error help: ORA-30006",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-30006/"
+  },
+  {
+   "title": "Oracle 19c Reference: DDL_LOCK_TIMEOUT",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/DDL_LOCK_TIMEOUT.html"
+  },
+  {
+   "title": "Oracle 19c Reference: V$LOCKED_OBJECT",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/V-LOCKED_OBJECT.html"
+  },
+  {
+   "title": "Oracle 19c SQL Reference: LOCK TABLE",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/LOCK-TABLE.html"
+  },
+  {
+   "title": "Oracle 19c SQL Reference: SELECT (for_update_clause)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/SELECT.html"
+  },
+  {
+   "title": "Oracle 19c SQL Reference: ALTER SYSTEM (KILL SESSION)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/ALTER-SYSTEM.html"
+  },
+  {
+   "title": "Oracle 19c Administrator's Guide: Managing Indexes (online builds)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/admin/managing-indexes.html"
+  },
+  {
+   "title": "Oracle 19c Concepts: Data Concurrency and Consistency",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/cncpt/data-concurrency-and-consistency.html"
+  }
+ ],
+ "reviewNotes": "Examples written from the 19c docs and not run; please test in two sessions on 19c (and 23ai/26ai if possible). Check: (1) the exact ORA-00054 text on 23ai/26ai, since the error help page lists a newer 'Failed to acquire a lock...' form; (2) that non-ONLINE CREATE INDEX and ALTER TABLE ADD fail with ORA-00054 while another session has uncommitted DML (general Oracle knowledge, not stated on a fetched page); (3) the claim that online index builds need brief locks at start and end and wait on open transactions, and that ONLINE builds are Enterprise Edition only (from general knowledge, not a fetched page); (4) the warning that DML can queue behind a waiting DDL; (5) that FOR UPDATE WAIT n raises ORA-30006 on timeout; (6) the SQL*Plus error layout with the asterisk under TRUNCATE. SID/SERIAL# values in outputs are illustrative. The 'DDL_LOCK_TIMEOUT from 11g' claim comes from third-party pages (Datavail, Doyensys); the 19c parameter page does not state the release.",
+ "generatedAt": "2026-11-05T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>ORA-00054: resource busy and acquire with NOWAIT specified or timeout expired</b> means your statement needed a lock that another session already holds, and Oracle was told not to wait for it (or waited and gave up). It usually hits DDL such as <code class=\"inline-code\">TRUNCATE</code>, <code class=\"inline-code\">ALTER TABLE</code>, <code class=\"inline-code\">DROP TABLE</code> or <code class=\"inline-code\">CREATE INDEX</code> while someone has uncommitted changes on the same table."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The fix is almost never \"run it again and hope\". You find the session holding the lock, decide whether it should finish or be stopped, and then either let your DDL wait with <code class=\"inline-code\">DDL_LOCK_TIMEOUT</code> or use an online operation that does not need an exclusive lock for long. This guide shows each step with a small example you can run in two SQL*Plus or SQL Developer sessions."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What ORA-00054 means",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every <code class=\"inline-code\">INSERT</code>, <code class=\"inline-code\">UPDATE</code>, <code class=\"inline-code\">DELETE</code> or <code class=\"inline-code\">SELECT ... FOR UPDATE</code> takes a table-level DML lock (a TM lock) in row exclusive mode. This lock lets other sessions keep changing other rows, so normal OLTP work does not notice it. It is held until the transaction commits or rolls back."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Most DDL needs a much stronger lock on the table. Oracle cannot truncate or restructure a table while another transaction still has uncommitted changes in it. So the DDL has to get past those TM locks first."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By default, DDL does not queue behind DML locks. <code class=\"inline-code\">DDL_LOCK_TIMEOUT</code> defaults to 0, and the Oracle Reference says a value of zero means NOWAIT. So the DDL checks once, sees the lock, and fails straight away with ORA-00054."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same error appears when you ask for NOWAIT yourself:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Statement",
+      "Why it raises ORA-00054"
+     ],
+     [
+      "TRUNCATE, DROP, ALTER TABLE, CREATE INDEX (without ONLINE)",
+      "DDL needs an exclusive lock and DDL_LOCK_TIMEOUT is 0 by default"
+     ],
+     [
+      "Any DDL with DDL_LOCK_TIMEOUT set above 0",
+      "It waited for the set number of seconds and the lock was still held"
+     ],
+     [
+      "LOCK TABLE ... NOWAIT",
+      "You told Oracle not to wait for the table lock"
+     ],
+     [
+      "SELECT ... FOR UPDATE NOWAIT",
+      "You told Oracle not to wait for locked rows"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Newer message text",
+    "text": "The classic text is the one above. The current Oracle error help page also lists a more detailed form that starts \"Failed to acquire a lock ... because it is currently held by another session\" and names the resource. The cause is the same either way. Note that <code class=\"inline-code\">SELECT ... FOR UPDATE WAIT n</code> raises a different error when the wait runs out: ORA-30006."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small orders table. You need two sessions connected as the same user. Call them Session A and Session B."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE orders (\n  order_id    NUMBER        PRIMARY KEY,\n  customer    VARCHAR2(50)  NOT NULL,\n  amount      NUMBER(10,2)  NOT NULL,\n  status      VARCHAR2(20)  DEFAULT 'NEW' NOT NULL\n);\n\nINSERT INTO orders VALUES (1, 'Asha',   1200.00, 'NEW');\nINSERT INTO orders VALUES (2, 'Ravi',    450.50, 'PAID');\nINSERT INTO orders VALUES (3, 'Meera',  3100.00, 'NEW');\nINSERT INTO orders VALUES (4, 'John',    780.00, 'SHIPPED');\nCOMMIT;",
+    "caption": "Run once in either session"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reproduce ORA-00054 in two sessions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: leave a transaction open in Session A",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Session A\nUPDATE orders\n   SET status = 'PAID'\n WHERE order_id = 1;\n\n-- no COMMIT yet",
+    "caption": "Session A holds a row lock and a TM lock on ORDERS"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "1 row updated.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Session A now holds a lock on row 1 and a row exclusive TM lock on the whole ORDERS table. Nothing looks wrong yet. Other sessions can still read every row and update rows 2, 3 and 4."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: run DDL in Session B",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Session B\nTRUNCATE TABLE orders;",
+    "caption": "Session B tries to empty the table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "TRUNCATE TABLE orders\n               *\nERROR at line 1:\nORA-00054: resource busy and acquire with NOWAIT specified or timeout expired",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Session B failed immediately. It did not wait, because <code class=\"inline-code\">DDL_LOCK_TIMEOUT</code> is 0. If Session A commits or rolls back and Session B runs the same <code class=\"inline-code\">TRUNCATE</code> again, it succeeds."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Try <code class=\"inline-code\">ALTER TABLE orders ADD (note VARCHAR2(100));</code> or <code class=\"inline-code\">CREATE INDEX orders_cust_ix ON orders (customer);</code> in Session B while Session A is still open. In the usual case you get the same ORA-00054, because both need to get past Session A's lock."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find the session that holds the lock",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">V$LOCKED_OBJECT</code> lists the DML (TM) locks held by every transaction, with the object ID and the session ID. Join it to <code class=\"inline-code\">DBA_OBJECTS</code> for the table name and to <code class=\"inline-code\">V$SESSION</code> for who the session is and what it is doing. You need SELECT access on these views, which DBAs have by default."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT lo.session_id        AS sid,\n       s.serial#,\n       s.username,\n       s.status,\n       s.machine,\n       s.program,\n       o.owner,\n       o.object_name,\n       DECODE(lo.locked_mode,\n              2, 'ROW SHARE',\n              3, 'ROW EXCLUSIVE',\n              4, 'SHARE',\n              5, 'SHARE ROW EXCLUSIVE',\n              6, 'EXCLUSIVE',\n              TO_CHAR(lo.locked_mode)) AS lock_mode,\n       s.last_call_et      AS seconds_since_last_call\n  FROM v$locked_object lo\n  JOIN dba_objects     o ON o.object_id = lo.object_id\n  JOIN v$session       s ON s.sid       = lo.session_id\n WHERE o.object_name = 'ORDERS'\n   AND o.owner       = USER;",
+    "caption": "Who holds a lock on ORDERS?"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "SID",
+      "SERIAL#",
+      "USERNAME",
+      "STATUS",
+      "MACHINE",
+      "PROGRAM",
+      "OWNER",
+      "OBJECT_NAME",
+      "LOCK_MODE",
+      "SECONDS_SINCE_LAST_CALL"
+     ],
+     [
+      "142",
+      "31877",
+      "APP",
+      "INACTIVE",
+      "dev-laptop",
+      "sqldeveloper",
+      "APP",
+      "ORDERS",
+      "ROW EXCLUSIVE",
+      "95"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Your SID, SERIAL#, machine and program values will differ."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it like this. Session 142 holds a <b>ROW EXCLUSIVE</b> lock on ORDERS, which is what an uncommitted <code class=\"inline-code\">UPDATE</code> leaves behind. Its status is <b>INACTIVE</b>, which means it is not running anything right now. It ran its last statement 95 seconds ago and then stopped. This is the classic cause of ORA-00054: someone ran DML in a tool and did not commit."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you run this on Oracle RAC, use <code class=\"inline-code\">GV$LOCKED_OBJECT</code> and <code class=\"inline-code\">GV$SESSION</code> and join on <code class=\"inline-code\">inst_id</code> as well, because the holder may be on another instance."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "See what the holding session ran",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">V$SESSION</code> has <code class=\"inline-code\">SQL_ID</code> for the current statement and <code class=\"inline-code\">PREV_SQL_ID</code> for the previous one. An idle session usually has no current statement, so look at the previous one."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT s.sid, q.sql_text\n  FROM v$session s\n  JOIN v$sql     q ON q.sql_id = s.prev_sql_id\n WHERE s.sid = 142\n   AND ROWNUM = 1;",
+    "caption": "Last SQL the holder ran"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "SID",
+      "SQL_TEXT"
+     ],
+     [
+      "142",
+      "UPDATE orders SET status = 'PAID' WHERE order_id = 1"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). This is only the last statement, not the whole transaction. The session may have changed other tables earlier. Still, it usually tells you which application or person to contact."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Already have a blocking session query?",
+    "text": "ORA-00054 is the \"no wait\" side of normal lock blocking. If your DDL was waiting instead of failing, the waiting session shows up in <code class=\"inline-code\">V$SESSION.BLOCKING_SESSION</code>. See the <a href=\"/posts/plsql/oracle-blocking-sessions-query/\">Oracle blocking sessions query</a> guide for that approach."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How to fix ORA-00054",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Pick the fix based on who holds the lock and how urgent your DDL is. Work down this list from the safest option."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 1: let the holder commit or roll back",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the holder is a person in SQL Developer or a batch job that is about to finish, ask them to commit or roll back, or wait for the job. Then run your DDL again. Nothing is lost and nobody's work is undone."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Session A\nCOMMIT;\n\n-- Session B\nTRUNCATE TABLE orders;",
+    "caption": "After the holder commits"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Commit complete.\n\nTable truncated.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 2: make the DDL wait with DDL_LOCK_TIMEOUT",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">DDL_LOCK_TIMEOUT</code> sets how many seconds DDL waits in the DML lock queue before it gives up. It is available from Oracle 11g. The range is 0 to 1,000,000 seconds, and per the docs the maximum value means wait forever. Set it at session level for your maintenance script, not system-wide."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Session B\nALTER SESSION SET ddl_lock_timeout = 60;\n\nTRUNCATE TABLE orders;",
+    "caption": "Wait up to 60 seconds for the lock"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now Session B waits instead of failing. If Session A commits within 60 seconds, the <code class=\"inline-code\">TRUNCATE</code> runs at that moment. If not, Session B gets ORA-00054 after 60 seconds, which is the \"timeout expired\" part of the message."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the right fix when the table is busy with short transactions. Each transaction holds its lock for a moment, and your DDL slips in between them. It does not help when a session has been idle with an open transaction for an hour."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "A waiting DDL can block others",
+    "text": "While your DDL waits for its exclusive lock, new DML on that table can queue behind it. On a busy table, a long timeout can make application sessions hang until your DDL finishes or gives up. Use a short timeout and run maintenance in quiet hours."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 3: use an online operation",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For indexes, use the <code class=\"inline-code\">ONLINE</code> keyword. The Oracle Administrator's Guide says you can run DML on the base table while an online index build is taking place."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE INDEX orders_cust_ix ON orders (customer) ONLINE;\n\nALTER INDEX orders_cust_ix REBUILD ONLINE;",
+    "caption": "Online index build and rebuild"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Index created.\n\nIndex altered.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An online build still needs short table locks at the start and the end. If a transaction stays open for a long time, the online build waits for it rather than failing, so combine <code class=\"inline-code\">ONLINE</code> with Fix 1 when a session has been idle for a long time. Online index builds are an Enterprise Edition feature."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 4: end the holding session (last resort)",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the holder is an abandoned session, for example a laptop that went to sleep with an open transaction, a DBA can end it. Oracle rolls back its uncommitted work and releases its locks. Confirm with the owner first. Their changes are lost."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Use SID and SERIAL# from the V$LOCKED_OBJECT query\nALTER SYSTEM KILL SESSION '142,31877' IMMEDIATE;",
+    "caption": "Kill the session that holds the lock"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "System altered.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">IMMEDIATE</code> tells Oracle to roll back, release locks and return control to you at once. A large transaction can still take time to roll back, and its locks stay until the rollback finishes. A gentler option is <code class=\"inline-code\">ALTER SYSTEM DISCONNECT SESSION '142,31877' POST_TRANSACTION;</code>, which lets the current transaction complete before disconnecting. That only helps if the session is actually going to finish."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Handle ORA-00054 in PL/SQL",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Sometimes you want NOWAIT on purpose. A screen that edits an order should tell the user \"someone else is editing this\" instead of hanging. Use <code class=\"inline-code\">SELECT ... FOR UPDATE NOWAIT</code> and catch the error. ORA-00054 has no predefined exception name, so give it one with <code class=\"inline-code\">PRAGMA EXCEPTION_INIT</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  e_row_locked EXCEPTION;\n  PRAGMA EXCEPTION_INIT(e_row_locked, -54);\n\n  v_status orders.status%TYPE;\nBEGIN\n  SELECT status\n    INTO v_status\n    FROM orders\n   WHERE order_id = 1\n     FOR UPDATE NOWAIT;\n\n  UPDATE orders\n     SET status = 'SHIPPED'\n   WHERE order_id = 1;\n\n  COMMIT;\n  DBMS_OUTPUT.PUT_LINE('Order 1 updated');\nEXCEPTION\n  WHEN e_row_locked THEN\n    DBMS_OUTPUT.PUT_LINE('Order 1 is being edited by another session. Try again later.');\nEND;\n/",
+    "caption": "Lock the row or report that it is busy"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run this in Session B while Session A still has row 1 locked, with SET SERVEROUTPUT ON:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Order 1 is being edited by another session. Try again later.\n\nPL/SQL procedure successfully completed.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you prefer a short wait, use <code class=\"inline-code\">FOR UPDATE WAIT 5</code>. Then the error after 5 seconds is ORA-30006, not ORA-00054, so map <code class=\"inline-code\">-30006</code> as well. For queue tables where any free row will do, <code class=\"inline-code\">FOR UPDATE SKIP LOCKED</code> skips locked rows instead of failing."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For DDL inside PL/SQL, such as a nightly <code class=\"inline-code\">EXECUTE IMMEDIATE</code> <code class=\"inline-code\">TRUNCATE</code>, set <code class=\"inline-code\">DDL_LOCK_TIMEOUT</code> first and then catch <code class=\"inline-code\">-54</code> so the job logs a clear message rather than failing with an unhandled error."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "BEGIN\n  EXECUTE IMMEDIATE 'ALTER SESSION SET ddl_lock_timeout = 30';\n  EXECUTE IMMEDIATE 'TRUNCATE TABLE orders_stage';\nEXCEPTION\n  WHEN OTHERS THEN\n    IF SQLCODE = -54 THEN\n      DBMS_OUTPUT.PUT_LINE('orders_stage still locked after 30 seconds');\n    END IF;\n    RAISE;\nEND;\n/",
+    "caption": "Nightly truncate with a timeout (orders_stage is an example table)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Retrying in a loop without looking.</b> If the holder is an idle session with an open transaction, it will hold the lock until someone ends it. Find it with <code class=\"inline-code\">V$LOCKED_OBJECT</code> first.",
+      "items": []
+     },
+     {
+      "content": "<b>Forgetting your own other session.</b> Very often the holder is you, in another SQL Developer tab or worksheet with an uncommitted <code class=\"inline-code\">UPDATE</code>. Check the USERNAME and MACHINE columns before you contact anyone else.",
+      "items": []
+     },
+     {
+      "content": "<b>Setting DDL_LOCK_TIMEOUT system-wide.</b> <code class=\"inline-code\">ALTER SYSTEM SET ddl_lock_timeout</code> makes every session's DDL wait, including deployments that you would rather fail fast. Set it per session in the script that needs it.",
+      "items": []
+     },
+     {
+      "content": "<b>Killing sessions without asking.</b> Killing rolls back someone's uncommitted work. On production, that may be a payment or a batch that has run for an hour.",
+      "items": []
+     },
+     {
+      "content": "<b>Expecting COMMIT in another session to help.</b> Only the session that holds the lock can release it by committing or rolling back. Running <code class=\"inline-code\">COMMIT</code> in your own session does nothing for theirs.",
+      "items": []
+     },
+     {
+      "content": "<b>Thinking TRUNCATE is \"just a fast DELETE\".</b> TRUNCATE is DDL. It commits, it needs an exclusive lock and it cannot be rolled back. If you only need to remove rows while users are working, DELETE waits for row locks instead of failing.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Best practices to avoid ORA-00054",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Commit or roll back promptly in interactive tools. An open transaction in a forgotten worksheet is the most common cause.",
+      "items": []
+     },
+     {
+      "content": "Put <code class=\"inline-code\">ALTER SESSION SET ddl_lock_timeout = n</code> at the top of deployment and maintenance scripts, with n between 10 and 60 seconds as a starting point you adjust for your system.",
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">CREATE INDEX ... ONLINE</code> and <code class=\"inline-code\">ALTER INDEX ... REBUILD ONLINE</code> on tables that users are writing to.",
+      "items": []
+     },
+     {
+      "content": "Schedule DDL on busy tables in a quiet window, and check V$LOCKED_OBJECT for the table just before you start.",
+      "items": []
+     },
+     {
+      "content": "In applications, use <code class=\"inline-code\">FOR UPDATE NOWAIT</code> or <code class=\"inline-code\">WAIT n</code> where a user is waiting on screen, and handle the error with a friendly message.",
+      "items": []
+     },
+     {
+      "content": "Do not hold transactions open while waiting for user input or for a remote call to finish.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I resolve ORA-00054 resource busy?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Find the session holding a lock on the table with <code class=\"inline-code\">V$LOCKED_OBJECT</code> joined to <code class=\"inline-code\">V$SESSION</code>. Ask it to commit or roll back, or set <code class=\"inline-code\">DDL_LOCK_TIMEOUT</code> so your DDL waits. End the session with <code class=\"inline-code\">ALTER SYSTEM KILL SESSION</code> only as a last resort."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why does TRUNCATE give ORA-00054?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "TRUNCATE is DDL and needs an exclusive lock on the table. If any other session has uncommitted DML on it, the lock is not available, and with the default DDL_LOCK_TIMEOUT of 0 the TRUNCATE fails at once instead of waiting."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I release a lock on a table in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle has no statement that removes another session's lock. Locks are released when the transaction that holds them commits or rolls back. If that session is gone or abandoned, killing it makes Oracle roll back its work and release the locks."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is DDL_LOCK_TIMEOUT in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It is an initialization parameter, available from Oracle 11g, that sets how many seconds DDL waits for a DML lock before raising ORA-00054. The default is 0 (no wait), the maximum is 1,000,000 seconds, and you can change it with ALTER SESSION or ALTER SYSTEM."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does ORA-00054 happen with CREATE INDEX?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes. A normal CREATE INDEX needs to lock the table against DML and fails with ORA-00054 if another transaction has uncommitted changes on it. Use CREATE INDEX ... ONLINE so DML can continue during the build."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "ORA-00054 means another session holds a lock you need and your statement did not wait (or the wait timed out).",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Reproduce it: uncommitted UPDATE in one session, TRUNCATE or ALTER in another.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Find the holder with V$LOCKED_OBJECT + DBA_OBJECTS + V$SESSION, and check PREV_SQL_ID to see what it ran.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Prefer asking the holder to commit or roll back over killing the session.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use ALTER SESSION SET ddl_lock_timeout for maintenance scripts, and keep the timeout short.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use ONLINE for index builds and rebuilds on busy tables.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Handle intentional NOWAIT with PRAGMA EXCEPTION_INIT(e, -54); FOR UPDATE WAIT n raises ORA-30006 instead.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your TRUNCATE fails in one second with ORA-00054, but nobody seems to be using the table.\n\nHere is what is happening and how to fix it.\n\n→ Some session has an uncommitted UPDATE, INSERT or DELETE on that table. Often it is your own other SQL Developer tab.\n\n→ DDL needs an exclusive lock, and DDL_LOCK_TIMEOUT is 0 by default. So Oracle does not wait, it fails at once.\n\n→ Find the holder: join V$LOCKED_OBJECT to DBA_OBJECTS and V$SESSION. An INACTIVE session with a ROW EXCLUSIVE lock is the usual cause.\n\n→ Let your script wait a little: ALTER SESSION SET ddl_lock_timeout = 30;\n\n→ For indexes on busy tables, use CREATE INDEX ... ONLINE so DML can continue.\n\nKill the session only as a last resort. Its uncommitted work is rolled back.\n\nIn PL/SQL, map the error with PRAGMA EXCEPTION_INIT(e_busy, -54) when you use FOR UPDATE NOWAIT on purpose.\n\nWhat do you do first when ORA-00054 hits a production deployment: wait, retry or kill?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #OracleDBA",
+  "slides": [
+   {
+    "title": "ORA-00054: Resource Busy, Fixed",
+    "body": "Why TRUNCATE and ALTER fail at once, and how to find the lock holder"
+   },
+   {
+    "title": "What the error means",
+    "points": [
+     "Another session holds a lock you need",
+     "Usually uncommitted DML on the same table",
+     "DDL does not wait by default (timeout = 0)",
+     "Hits TRUNCATE, ALTER, DROP, CREATE INDEX"
+    ]
+   },
+   {
+    "title": "Reproduce it in two sessions",
+    "code": "-- Session A (no commit)\nUPDATE orders SET status = 'PAID'\n WHERE order_id = 1;\n\n-- Session B\nTRUNCATE TABLE orders;\n-- ORA-00054: resource busy",
+    "lang": "sql"
+   },
+   {
+    "title": "Find who holds the lock",
+    "code": "SELECT s.sid, s.serial#, s.username,\n       s.status, o.object_name\n  FROM v$locked_object lo\n  JOIN dba_objects o\n    ON o.object_id = lo.object_id\n  JOIN v$session s\n    ON s.sid = lo.session_id\n WHERE o.object_name = 'ORDERS';",
+    "lang": "sql"
+   },
+   {
+    "title": "Let DDL wait instead of failing",
+    "code": "ALTER SESSION SET ddl_lock_timeout = 30;\n\nTRUNCATE TABLE orders;\n\nCREATE INDEX orders_cust_ix\n  ON orders (customer) ONLINE;",
+    "lang": "sql"
+   },
+   {
+    "title": "Fix it in the right order",
+    "points": [
+     "1. Ask the holder to commit or roll back",
+     "2. Set a short ddl_lock_timeout in your script",
+     "3. Use ONLINE for index builds",
+     "4. Kill the session only as a last resort"
+    ]
+   },
+   {
+    "title": "Handle NOWAIT in PL/SQL",
+    "code": "DECLARE\n  e_busy EXCEPTION;\n  PRAGMA EXCEPTION_INIT(e_busy, -54);\nBEGIN\n  NULL; -- SELECT ... FOR UPDATE NOWAIT\nEXCEPTION\n  WHEN e_busy THEN\n    DBMS_OUTPUT.PUT_LINE('Row is busy');\nEND;",
+    "lang": "plsql"
+   }
+  ]
+ }
+}
