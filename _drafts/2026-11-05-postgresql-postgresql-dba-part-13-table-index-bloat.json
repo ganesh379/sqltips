@@ -1,0 +1,1686 @@
+{
+  "schemaVersion": 1,
+  "title": "PostgreSQL DBA Part 13: Table and Index Bloat, Find and Fix",
+  "slug": "postgresql-dba-part-13-table-index-bloat",
+  "category": "postgresql",
+  "description": "Find PostgreSQL table and index bloat with pgstattuple and pgstatindex, then fix it with REINDEX CONCURRENTLY, VACUUM FULL or pg_repack on PostgreSQL 18.",
+  "focusKeyword": "postgresql table bloat",
+  "tags": [
+    "postgresql-dba-series",
+    "postgresql",
+    "bloat",
+    "vacuum",
+    "reindex"
+  ],
+  "related": [
+    "/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/",
+    "/posts/postgresql/postgresql-dba-part-10-connections-sessions/"
+  ],
+  "sources": [
+    {
+      "title": "PostgreSQL 18 docs: pgstattuple",
+      "url": "https://www.postgresql.org/docs/current/pgstattuple.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Routine Vacuuming (24.1.2 Recovering Disk Space)",
+      "url": "https://www.postgresql.org/docs/current/routine-vacuuming.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Routine Reindexing",
+      "url": "https://www.postgresql.org/docs/current/routine-reindex.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: REINDEX",
+      "url": "https://www.postgresql.org/docs/current/sql-reindex.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: VACUUM",
+      "url": "https://www.postgresql.org/docs/current/sql-vacuum.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: CLUSTER",
+      "url": "https://www.postgresql.org/docs/current/sql-cluster.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Heap-Only Tuples (HOT)",
+      "url": "https://www.postgresql.org/docs/current/storage-hot.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: B-Tree implementation (bottom-up deletion, deduplication)",
+      "url": "https://www.postgresql.org/docs/current/btree.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: CREATE TABLE storage parameters (fillfactor)",
+      "url": "https://www.postgresql.org/docs/current/sql-createtable.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: CREATE INDEX (B-tree fillfactor 90, deduplicate_items)",
+      "url": "https://www.postgresql.org/docs/current/sql-createindex.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: ALTER TABLE SET storage parameters",
+      "url": "https://www.postgresql.org/docs/current/sql-altertable.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Database object size functions",
+      "url": "https://www.postgresql.org/docs/current/functions-admin.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Cumulative statistics (pg_stat_all_tables, pg_stat_reset_single_table_counters)",
+      "url": "https://www.postgresql.org/docs/current/monitoring-stats.html"
+    },
+    {
+      "title": "pg_repack documentation (doc/pg_repack.rst on GitHub; reorg.github.io was unreachable)",
+      "url": "https://github.com/reorg/pg_repack/blob/master/doc/pg_repack.rst"
+    }
+  ],
+  "reviewNotes": "Series part 13. Part 12 (postgresql-dba-part-12-vacuum-autovacuum) is not live yet, so the intro names it without a link and it is not in related. Publish Part 12 first. Tested on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) from the PGDG repository on Ubuntu 24.04.5 LTS, and pg_repack 1.5.3 (postgresql-18-repack from PGDG); followed the PostgreSQL 18 documentation (docs/current pages listed in sources). All outputs are real; PIDs, OIDs (pg_toast_16424), timings and the df numbers (sandbox filesystem) will differ for readers. VACUUM VERBOSE output in Step 6 is trimmed with '...'. SANDBOX CAVEATS: (1) As in Parts 10-12, postgresql-18 needs liburing2 from archive.ubuntu.com, which is blocked here; I installed a stub package plus a stub liburing.so.2 (only affects io_method=io_uring, not the default). (2) A leftover PostgreSQL 16 cluster existed in the image, so I moved 18 main to port 5432. (3) The lock-queue output in Step 11 was captured with a pg_sleep in Terminal 1 instead of a person typing, so I show only the two blocked rows from the pg_blocking_pids query (verbatim); the article's Terminal 1 is an interactive BEGIN; SELECT. Step 10 df numbers are from the sandbox filesystem. (4) The _ccnew output was produced with SET statement_timeout = '3s' while another session held an open UPDATE on orders. (5) In Step 13 the first attempt (without CLUSTER) gave only 25.2% HOT at fillfactor 80, because an earlier full update plus VACUUM FULL had packed all target rows onto the same ~40 pages; I added CLUSTER USING orders_pkey to spread them evenly, which gave 100%. The article explains why CLUSTER is used there. JUDGEMENT CALLS for the editor: the 'more than 20 to 30% free space' rule of thumb in Step 7 is labelled as a practical rule, not from the docs. The explanation in Step 5 of why pgstattuple showed 140000 dead tuples (old UPDATE versions already pruned during the DELETE scan) is my reading of the output, consistent with VACUUM reporting 340000 dead item identifiers. The pg_repack requirement facts come from its GitHub doc (reorg.github.io was blocked by the sandbox network); 'client and extension versions must match' is from my knowledge of pg_repack, not re-verified, please check or cut. Optional FAQ left out. Length is above the 3,200-word target because the part has 14 steps; easy cuts: the 'Running VACUUM FULL from a nightly cron job' mistake and the Step 12 option table rows -T/-D.",
+  "generatedAt": "2026-11-05T13:10:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is Part 13 of the PostgreSQL DBA series. <b>Table bloat</b> is disk space inside a table's files that no longer holds live rows, and <b>index bloat</b> is the same thing inside an index. You find it by measuring the files with the <code class=\"inline-code\">pgstattuple</code> extension, and you fix it by rebuilding: <code class=\"inline-code\">REINDEX CONCURRENTLY</code> for indexes, and <code class=\"inline-code\">VACUUM FULL</code> or the <code class=\"inline-code\">pg_repack</code> tool for tables."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In <a href=\"/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/\">Part 11</a> you saw that every UPDATE and DELETE leaves an old row version behind, and in Part 12 (VACUUM and autovacuum) you saw how VACUUM cleans those versions up. This part covers what happens when cleanup falls behind. By the end you will be able to measure exactly how much of a table or index is wasted space, decide whether it is worth fixing, fix it with the least locking, and set up a table so it bloats less in the first place."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What you will learn",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "What bloat is, why plain VACUUM does not remove it, and when a little bloat is normal",
+            "items": []
+          },
+          {
+            "content": "How to measure table bloat with <code class=\"inline-code\">pgstattuple</code> and <code class=\"inline-code\">pgstattuple_approx</code>, and index bloat with <code class=\"inline-code\">pgstatindex</code>",
+            "items": []
+          },
+          {
+            "content": "Why <code class=\"inline-code\">n_dead_tup</code> can show 0 on a table that is 80% empty",
+            "items": []
+          },
+          {
+            "content": "How to rebuild bloated indexes online with <code class=\"inline-code\">REINDEX CONCURRENTLY</code> and clean up after a failed run",
+            "items": []
+          },
+          {
+            "content": "How to shrink a table with <code class=\"inline-code\">VACUUM FULL</code>, and online with <code class=\"inline-code\">pg_repack</code>",
+            "items": []
+          },
+          {
+            "content": "How <code class=\"inline-code\">fillfactor</code> and HOT updates prevent bloat",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Prerequisites",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Parts 1 to 12 of this series, especially <a href=\"/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/\">Part 11 (MVCC)</a>, Part 12 (VACUUM and autovacuum) and <a href=\"/posts/postgresql/postgresql-dba-part-10-connections-sessions/\">Part 10 (sessions and pg_stat_activity)</a>.",
+            "items": []
+          },
+          {
+            "content": "One Ubuntu server (24.04 LTS) with PostgreSQL 18 from the PGDG repository, cluster <b>18 main</b> running on port 5432, set up as in Part 2.",
+            "items": []
+          },
+          {
+            "content": "A user with sudo rights. Every SQL command below is run as the postgres operating system user, so the database role is the superuser postgres.",
+            "items": []
+          },
+          {
+            "content": "About 100 MB of free disk space for the lab.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How it works",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Think of a table as a notebook. When you change a row, PostgreSQL does not rub out the old line. It crosses it out and writes the new version further down, because other transactions may still need to read the old line (that is MVCC from Part 11). A crossed-out line that nobody needs any more is a <b>dead tuple</b>. A <b>tuple</b> is PostgreSQL's word for one stored version of a row."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "VACUUM rubs out the dead lines so new rows can be written in their place. But the notebook does not get thinner. The documentation says it plainly: standard VACUUM marks the space available for future reuse, but it will not return the space to the operating system, except when whole pages at the end of the table become empty. A <b>page</b> is the 8 kB block PostgreSQL stores data in."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "So <b>bloat</b> is the empty or dead space inside the files: pages that are mostly blank, or full of dead tuples. Some of it is healthy. A busy table settles at its minimum size plus the space used between two vacuum runs, and that free space gets reused. Bloat becomes a problem when the empty space is much larger than the table will ever refill, because then every sequential scan, every backup and every page in memory carries air."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The usual causes are:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Mass UPDATE or DELETE</b>: a purge of old orders or a one-time update of every row doubles the table, and VACUUM only frees space inside it.",
+            "items": []
+          },
+          {
+            "content": "<b>Autovacuum falling behind</b>: the table changes faster than autovacuum visits it (Part 12 showed how to tune that).",
+            "items": []
+          },
+          {
+            "content": "<b>Long-running transactions</b>: an old snapshot stops VACUUM from removing any tuple that became dead after it started, so dead tuples pile up.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Indexes bloat for their own reasons. When an UPDATE cannot use the <b>HOT</b> (heap-only tuple) shortcut, every index on the table gets a new entry pointing at the new row version, even indexes whose columns did not change. And when you delete most but not all rows in a key range, B-tree pages are left with only a few entries each. The documentation notes that completely empty B-tree pages are reclaimed for reuse, but a page with only a few remaining keys stays allocated."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "These are the tools this part uses:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Tool",
+            "What it does",
+            "Lock and cost"
+          ],
+          [
+            "pg_stat_user_tables",
+            "Estimated live and dead row counts",
+            "Free, but blind to free space"
+          ],
+          [
+            "pgstattuple()",
+            "Exact live, dead and free bytes of a table",
+            "Reads the whole table, read lock only"
+          ],
+          [
+            "pgstattuple_approx()",
+            "Same, estimated, skips all-visible pages",
+            "Much faster on big tables"
+          ],
+          [
+            "pgstatindex()",
+            "B-tree page counts and leaf density",
+            "Reads the whole index"
+          ],
+          [
+            "REINDEX CONCURRENTLY",
+            "Rebuilds an index without blocking writes",
+            "SHARE UPDATE EXCLUSIVE, slower"
+          ],
+          [
+            "VACUUM FULL / CLUSTER",
+            "Rewrites the table and its indexes",
+            "ACCESS EXCLUSIVE: blocks reads and writes"
+          ],
+          [
+            "pg_repack",
+            "Rewrites the table online (third-party)",
+            "ACCESS EXCLUSIVE only briefly at start and end"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Build a bloated table to practise on",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You will create a small orders table, measure it, then bloat it on purpose so every number later in the article has a known cause."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: Create the lab database and an orders table",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> on your PostgreSQL server, as the postgres user. Open psql with the first command, then run the SQL inside it."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo -u postgres psql",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE DATABASE lab13;\n\\c lab13\n\nCREATE TABLE orders (\n    order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer_id integer       NOT NULL,\n    status      text          NOT NULL,\n    amount      numeric(10,2) NOT NULL,\n    updated_at  timestamptz   NOT NULL DEFAULT now()\n) WITH (autovacuum_enabled = false);\n\nINSERT INTO orders (customer_id, status, amount, updated_at)\nSELECT (random() * 5000)::int + 1,\n       'new',\n       round((random() * 9000 + 100)::numeric, 2),\n       now() - (g || ' minutes')::interval\n  FROM generate_series(1, 200000) AS g;\n\nCREATE INDEX idx_orders_customer ON orders (customer_id);\nCREATE INDEX idx_orders_updated  ON orders (updated_at);\n\nANALYZE orders;",
+        "caption": "Create and load the lab table"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">autovacuum_enabled = false</code> switches autovacuum off for this one table, so it cannot clean up in the middle of the demonstration. Never do this on a real table; you drop the whole database at the end. The two indexes are created after the load so they start out freshly built and compact."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE DATABASE\nYou are now connected to database \"lab13\" as user \"postgres\".\nCREATE TABLE\nINSERT 0 200000\nCREATE INDEX\nCREATE INDEX\nANALYZE",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Check:</b> the INSERT reports 200000 rows."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: Record the baseline sizes",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> in the same psql session, database lab13."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT pg_size_pretty(pg_relation_size('orders'))       AS table_size,\n       pg_size_pretty(pg_indexes_size('orders'))        AS index_size,\n       pg_size_pretty(pg_total_relation_size('orders')) AS total_size;\n\nSELECT indexrelid::regclass AS index_name,\n       pg_size_pretty(pg_relation_size(indexrelid)) AS size\n  FROM pg_index\n WHERE indrelid = 'orders'::regclass\n ORDER BY 1;",
+        "caption": "Table and index sizes"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Function",
+            "What it returns"
+          ],
+          [
+            "pg_relation_size(rel)",
+            "Size of the main data fork only (the rows themselves)"
+          ],
+          [
+            "pg_indexes_size(rel)",
+            "Total size of all indexes on the table"
+          ],
+          [
+            "pg_total_relation_size(rel)",
+            "Table plus indexes plus TOAST data"
+          ],
+          [
+            "pg_size_pretty(bytes)",
+            "Bytes as kB, MB, GB (powers of 1024)"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " table_size | index_size | total_size\n------------+------------+------------\n 11 MB      | 10 MB      | 22 MB\n(1 row)\n\n     index_name      |  size\n---------------------+---------\n orders_pkey         | 4408 kB\n idx_orders_customer | 1440 kB\n idx_orders_updated  | 4408 kB\n(3 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "200,000 rows need 11 MB of table and 10 MB of indexes. Keep these numbers: they are the minimum size of this data."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 3: Create bloat with a full update and a purge",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> same session. The first statement changes every row (like a one-time data fix). The second deletes 70% of the rows (like archiving old orders)."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "UPDATE orders SET status = 'paid', updated_at = now();\nDELETE FROM orders WHERE order_id % 10 < 7;",
+        "caption": "Bloat the table on purpose"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "UPDATE 200000\nDELETE 140000",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now run the two size queries from Step 2 again."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " table_size | index_size | total_size\n------------+------------+------------\n 23 MB      | 17 MB      | 40 MB\n(1 row)\n\n     index_name      |  size\n---------------------+---------\n orders_pkey         | 8792 kB\n idx_orders_customer | 2856 kB\n idx_orders_updated  | 5672 kB\n(3 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Only 60,000 rows are left, yet the table doubled to 23 MB. The UPDATE wrote a second version of every row. It could not use HOT because it changed <code class=\"inline-code\">updated_at</code>, which is indexed, so all three indexes got 200,000 new entries too."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Finding table bloat",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 4: Look at the dead row estimate",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> same session. This is the cheap first check every DBA runs."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT relname, n_live_tup, n_dead_tup, n_tup_upd, n_tup_hot_upd\n  FROM pg_stat_user_tables\n WHERE relname = 'orders';",
+        "caption": "Live and dead rows from the statistics system"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " relname | n_live_tup | n_dead_tup | n_tup_upd | n_tup_hot_upd\n---------+------------+------------+-----------+---------------\n orders  |      60000 |     340000 |    200000 |             0\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">n_dead_tup</code> is 340,000: 200,000 old versions from the UPDATE plus 140,000 deleted rows. <code class=\"inline-code\">n_tup_hot_upd</code> is 0, which confirms none of the updates were HOT. The documentation calls both counts <i>estimated</i>; they come from activity counters, not from reading the table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 5: Measure the table exactly with pgstattuple",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> same session. <code class=\"inline-code\">pgstattuple</code> is a contrib extension shipped in the postgresql-18 package, so there is nothing to install with apt. You create it once in each database where you want to use it."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE EXTENSION pgstattuple;\n\\x on\nSELECT * FROM pgstattuple('orders');\n\\x off",
+        "caption": "Exact tuple-level statistics"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE EXTENSION\nExpanded display is on.\n-[ RECORD 1 ]------+---------\ntable_len          | 24100864\ntuple_count        | 60000\ntuple_len          | 3360000\ntuple_percent      | 13.94\ndead_tuple_count   | 140000\ndead_tuple_len     | 7840000\ndead_tuple_percent | 32.53\nfree_space         | 11230256\nfree_percent       | 46.6\nExpanded display is off.",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Column",
+            "Meaning"
+          ],
+          [
+            "table_len",
+            "Physical size of the table in bytes"
+          ],
+          [
+            "tuple_count / tuple_len / tuple_percent",
+            "Live rows: count, bytes, share of the table"
+          ],
+          [
+            "dead_tuple_count / dead_tuple_len / dead_tuple_percent",
+            "Dead rows still taking space"
+          ],
+          [
+            "free_space / free_percent",
+            "Empty space inside pages, ready for reuse"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Live data is only 13.94% of the file. The rest is dead tuples (32.53%) and free space (46.6%). The percentages do not add up to 100 because each page also has a header, a list of row pointers and alignment padding."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Why 140,000 dead tuples and not 340,000? While the DELETE read each page, PostgreSQL pruned the 200,000 old UPDATE versions on the fly (the page pruning you saw in Part 11), leaving free space and small line pointers behind. Only the freshly deleted rows were still whole dead tuples."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "pgstattuple reads the whole table",
+        "text": "The documentation says <code class=\"inline-code\">pgstattuple</code> always performs a full-table scan. It takes only a read lock, so it does not block anyone, but on a 500 GB table it is 500 GB of I/O. Use <code class=\"inline-code\">pgstattuple_approx</code> (Step 7) on big tables, and run either outside peak hours."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 6: Run VACUUM and measure again",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> same session. This step shows what plain VACUUM can and cannot do about bloat."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "VACUUM (VERBOSE) orders;",
+        "caption": "Plain VACUUM with a report"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "INFO:  vacuuming \"lab13.public.orders\"\nINFO:  launched 2 parallel vacuum workers for index vacuuming (planned: 2)\nINFO:  finished vacuuming \"lab13.public.orders\": index scans: 1\npages: 0 removed, 2942 remain, 2942 scanned (100.00% of total), 0 eagerly scanned\ntuples: 140000 removed, 60000 remain, 0 are dead but not yet removable\n...\nindex scan needed: 2942 pages from table (100.00% of total) had 340000 dead item identifiers removed\nindex \"orders_pkey\": pages: 1099 in total, 0 newly deleted, 0 currently deleted, 0 reusable\nindex \"idx_orders_customer\": pages: 357 in total, 0 newly deleted, 0 currently deleted, 0 reusable\nindex \"idx_orders_updated\": pages: 709 in total, 549 newly deleted, 549 currently deleted, 0 reusable\n...",
+        "caption": "Output (trimmed)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">pages: 0 removed, 2942 remain</code> is the key line: VACUUM removed 140,000 dead tuples and 340,000 dead index pointers, but it gave no pages back, because the live rows are spread over the whole file. Now check both views again:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT relname, n_live_tup, n_dead_tup\n  FROM pg_stat_user_tables\n WHERE relname = 'orders';\n\nSELECT table_len, tuple_percent, dead_tuple_count, free_percent\n  FROM pgstattuple('orders');",
+        "caption": "Statistics vs reality after VACUUM"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " relname | n_live_tup | n_dead_tup\n---------+------------+------------\n orders  |      60000 |          0\n(1 row)\n\n table_len | tuple_percent | dead_tuple_count | free_percent\n-----------+---------------+------------------+--------------\n  24100864 |         13.94 |                0 |         82.5\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is the most important lesson in this part. <code class=\"inline-code\">n_dead_tup</code> is 0, so a monitoring check that only looks at dead rows reports a healthy table. Yet 82.5% of the 23 MB file is empty. Dead tuples became free space, and free space is invisible to <code class=\"inline-code\">pg_stat_user_tables</code>. To find bloat you must measure free space."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 7: Rank every table by wasted space with pgstattuple_approx",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> same session, or any database where the extension is created. <code class=\"inline-code\">pgstattuple_approx</code> skips pages the visibility map marks as all-visible and takes their free space from the free space map, so it reads far less data. Its dead tuple figures are exact; live tuple and free space figures are estimates."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT c.oid::regclass                          AS table_name,\n       pg_size_pretty(s.table_len)              AS table_size,\n       round(s.approx_free_percent::numeric, 1) AS free_pct,\n       round(s.dead_tuple_percent::numeric, 1)  AS dead_pct,\n       pg_size_pretty((s.approx_free_space + s.dead_tuple_len)::bigint) AS reclaimable\n  FROM pg_class c\n  JOIN pg_namespace n ON n.oid = c.relnamespace\n CROSS JOIN LATERAL pgstattuple_approx(c.oid) AS s\n WHERE c.relkind = 'r'\n   AND n.nspname NOT IN ('pg_catalog', 'information_schema')\n   AND pg_relation_size(c.oid) > 1024 * 1024\n ORDER BY s.approx_free_space + s.dead_tuple_len DESC\n LIMIT 10;",
+        "caption": "Top 10 tables by free plus dead space"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " table_name | table_size | free_pct | dead_pct | reclaimable\n------------+------------+----------+----------+-------------\n orders     | 23 MB      |     82.3 |      0.0 | 19 MB\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">relkind = </code>'r' keeps ordinary tables, and the size filter skips tables under 1 MB, where bloat does not matter. <code class=\"inline-code\">scanned_percent</code> (not shown) was 0 here because VACUUM had just marked every page all-visible. The <i>reclaimable</i> column is an upper bound: a rewrite keeps some free space for page overhead and fillfactor."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "How much is too much? The documentation gives no threshold. A practical rule many DBAs use: a large table with more than 20 to 30% free space that does not shrink back after normal traffic is worth a look, especially if it is scanned often. A table that refills its free space every day is not bloated, it is working."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Finding index bloat",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 8: Measure B-tree indexes with pgstatindex",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> same session."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT i.indexrelid::regclass                         AS index_name,\n       pg_size_pretty(pg_relation_size(i.indexrelid)) AS size,\n       s.leaf_pages,\n       s.avg_leaf_density,\n       s.deleted_pages\n  FROM pg_index i\n  JOIN pg_class c ON c.oid = i.indexrelid\n  JOIN pg_am a    ON a.oid = c.relam\n CROSS JOIN LATERAL pgstatindex(i.indexrelid) AS s\n WHERE i.indrelid = 'orders'::regclass\n   AND a.amname = 'btree'\n ORDER BY 1;",
+        "caption": "Leaf density of every B-tree index on orders"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "     index_name      |  size   | leaf_pages | avg_leaf_density | deleted_pages\n---------------------+---------+------------+------------------+---------------\n orders_pkey         | 8792 kB |       1093 |            13.71 |             0\n idx_orders_customer | 2856 kB |        355 |             18.5 |             0\n idx_orders_updated  | 5672 kB |        157 |            30.29 |           549\n(3 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Column",
+            "Meaning"
+          ],
+          [
+            "leaf_pages",
+            "Pages that hold index entries pointing at rows"
+          ],
+          [
+            "avg_leaf_density",
+            "How full the leaf pages are, in percent"
+          ],
+          [
+            "deleted_pages",
+            "Empty pages VACUUM has unlinked from the tree, kept for reuse"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A freshly built B-tree fills leaf pages to its <code class=\"inline-code\">fillfactor</code>, which defaults to 90, so a healthy <code class=\"inline-code\">avg_leaf_density</code> is close to 90. The primary key is at 13.71%: 1,093 leaf pages holding what fits in about 160. VACUUM did not fix this, because the pages are not empty, just sparse. <code class=\"inline-code\">idx_orders_updated</code> shows the other case: its 549 pages became completely empty and were deleted, which is space the index can reuse but the file stays the same size."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The filter on <code class=\"inline-code\">btree</code> matters: <code class=\"inline-code\">pgstatindex</code> works only on B-tree indexes. For GIN there is <code class=\"inline-code\">pgstatginindex</code>, and for hash indexes <code class=\"inline-code\">pgstathashindex</code>. For other index types the documentation suggests watching their physical size over time."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Fixing index bloat",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 9: Rebuild the indexes with REINDEX CONCURRENTLY",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> same session, as the postgres role (or a role with the MAINTAIN privilege on the table)."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "REINDEX (VERBOSE) TABLE CONCURRENTLY orders;",
+        "caption": "Rebuild all indexes of orders without blocking writes"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Option",
+            "What it does"
+          ],
+          [
+            "TABLE orders",
+            "Recreates all indexes of the table, including its TOAST table index"
+          ],
+          [
+            "INDEX name",
+            "(alternative) recreates one index"
+          ],
+          [
+            "CONCURRENTLY",
+            "Rebuilds without taking locks that prevent concurrent inserts, updates or deletes"
+          ],
+          [
+            "(VERBOSE)",
+            "Prints a progress report at INFO level as each index is reindexed"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "INFO:  index \"public.orders_pkey\" was reindexed\nINFO:  index \"public.idx_orders_customer\" was reindexed\nINFO:  index \"public.idx_orders_updated\" was reindexed\nINFO:  index \"pg_toast.pg_toast_16424_index\" was reindexed\nINFO:  table \"public.orders\" was reindexed\nDETAIL:  CPU: user: 0.07 s, system: 0.01 s, elapsed: 0.11 s.\nREINDEX",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Check:</b> run the Step 8 query and the first size query again."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "     index_name      |  size   | leaf_pages | avg_leaf_density | deleted_pages\n---------------------+---------+------------+------------------+---------------\n orders_pkey         | 1328 kB |        164 |               90 |             0\n idx_orders_customer | 536 kB  |         65 |            89.89 |             0\n idx_orders_updated  | 424 kB  |         51 |            89.12 |             0\n(3 rows)\n\n table_size | index_size | total_size\n------------+------------+------------\n 23 MB      | 2288 kB    | 25 MB\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The indexes went from 17 MB to 2288 kB and every leaf density is back near 90. <code class=\"inline-code\">idx_orders_updated</code> is now the smallest because every row has the same <code class=\"inline-code\">updated_at</code> value, and a rebuild packs duplicates into one posting list entry (B-tree deduplication, on by default). The table itself is still 23 MB: REINDEX never touches table bloat."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Plain REINDEX blocks writes on the table, and because it takes an ACCESS EXCLUSIVE lock on the index while the planner tries to lock every index of the table, it blocks almost every query on the table too. CONCURRENTLY avoids that, at the price the documentation describes: two scans of the table per index, waits for running transactions that could use the index, and more total work. Other restrictions:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "It cannot run inside a transaction block (BEGIN ... COMMIT).",
+            "items": []
+          },
+          {
+            "content": "Only one concurrent index build can run on a table at a time.",
+            "items": []
+          },
+          {
+            "content": "System catalogs (REINDEX SYSTEM) and exclusion constraint indexes cannot be reindexed concurrently.",
+            "items": []
+          },
+          {
+            "content": "While it runs, it holds back VACUUM on other tables like any long transaction.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Fixing table bloat",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To give table space back to the operating system you must rewrite the table. The documentation names <code class=\"inline-code\">VACUUM FULL</code>, <code class=\"inline-code\">CLUSTER</code> and the table-rewriting forms of <code class=\"inline-code\">ALTER TABLE</code>. All of them take an ACCESS EXCLUSIVE lock and temporarily need extra disk space about equal to the table plus its indexes, because the old files are kept until the new ones are complete."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 10: Check free disk space before any rewrite",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> in a shell on the database server, as any user."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "df -h /var/lib/postgresql/18/main",
+        "caption": "Free space on the filesystem that holds the data directory"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Filesystem      Size  Used Avail Use% Mounted on\n/dev/vda        252G  9.0G   30G  24% /",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Compare <code class=\"inline-code\">Avail</code> with the total_size from Step 9 (25 MB): it must be comfortably larger than the table plus its indexes. If the table lives in another tablespace (Part 9), check that filesystem instead. Running out of space in the middle of a rewrite fails the command and, worse, can fill the disk for everyone else."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 11: Shrink the table with VACUUM FULL",
+        "level": 3
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "danger",
+        "title": "VACUUM FULL locks the table completely",
+        "text": "VACUUM FULL takes an ACCESS EXCLUSIVE lock: no SELECT, INSERT, UPDATE or DELETE on the table until it finishes. The documentation says it is not recommended for routine use and should usually be used only when a significant amount of space must be reclaimed. Do not run it on a busy production table during working hours; plan a maintenance window or use pg_repack (Step 12)."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To see the lock problem for yourself, open four terminals. Each runs sudo -u postgres psql -d lab13."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Terminal 1</b> opens a transaction that has read the table and stays open, like an application that forgot to commit:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "BEGIN;\nSELECT count(*) FROM orders;",
+        "caption": "Terminal 1"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Terminal 2</b> starts the rewrite. It hangs, waiting for Terminal 1:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "VACUUM FULL orders;",
+        "caption": "Terminal 2"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Terminal 3</b> runs an ordinary read. It hangs too:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT count(*) FROM orders;",
+        "caption": "Terminal 3"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Terminal 4</b> shows who is waiting for whom:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT pid, pg_blocking_pids(pid) AS blocked_by, left(query, 30) AS query\n  FROM pg_stat_activity\n WHERE datname = 'lab13'\n   AND cardinality(pg_blocking_pids(pid)) > 0;",
+        "caption": "Who is waiting for whom"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " pid  | blocked_by |            query\n------+------------+------------------------------\n 2773 | {2765}     | VACUUM FULL orders;\n 2778 | {2773}     | SELECT count(*) FROM orders;\n(2 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The plain SELECT is blocked by VACUUM FULL, which has not even started yet. A waiting ACCESS EXCLUSIVE request blocks every lock request queued behind it, so one forgotten transaction plus one VACUUM FULL can stop all reads of a table. Type <code class=\"inline-code\">COMMIT;</code> in Terminal 1 and both waiting commands finish at once. (Part 29 covers locks in depth; <code class=\"inline-code\">pg_blocking_pids</code> was introduced in <a href=\"/posts/postgresql/postgresql-dba-part-10-connections-sessions/\">Part 10</a>.)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Check:</b> run the size query and pgstattuple again."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT pg_size_pretty(pg_relation_size('orders')) AS table_size,\n       pg_size_pretty(pg_indexes_size('orders'))  AS index_size;\nSELECT tuple_count, dead_tuple_count, free_percent FROM pgstattuple('orders');",
+        "caption": "After VACUUM FULL"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " table_size | index_size\n------------+------------\n 3536 kB    | 2288 kB\n(1 row)\n\n tuple_count | dead_tuple_count | free_percent\n-------------+------------------+--------------\n       60000 |                0 |         0.28\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The table went from 23 MB to 3536 kB and free space is 0.28%. VACUUM FULL wrote a new file and rebuilt every index, so you did not need Step 9 first; it was shown separately because often only indexes are bloated. Progress of a running VACUUM FULL appears in the view pg_stat_progress_cluster, not pg_stat_progress_vacuum."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 12: Shrink a table online with pg_repack",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "pg_repack is a third-party extension, not part of PostgreSQL, but it is packaged in the PGDG repository. It builds a compacted copy of the table in the background, records changes made meanwhile with a trigger, replays them, then swaps the files. Its documentation says it holds an ACCESS EXCLUSIVE lock only for a short period during initial setup and during the final swap-and-drop phase, so normal reads and writes continue for the rest of the run."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "First bloat the table again so there is something to repack. <b>Where:</b> psql on lab13, as postgres:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "UPDATE orders SET status = 'shipped', updated_at = now();\nUPDATE orders SET status = 'delivered', updated_at = now();\nVACUUM orders;",
+        "caption": "Two full updates create two dead versions per row"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "UPDATE 60000\nUPDATE 60000\nVACUUM",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The size query now shows 11 MB of table and 5912 kB of indexes. <b>Where:</b> a shell on the server, with sudo. Install the package, then create the extension in the database:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo apt-get install -y postgresql-18-repack\nsudo -u postgres psql -d lab13 -c \"CREATE EXTENSION pg_repack;\"",
+        "caption": "Install pg_repack 1.5.3 from PGDG"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE EXTENSION",
+        "caption": "Output (last line)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Do a dry run first, then the real run. <b>Where:</b> shell, as the postgres user:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo -u postgres /usr/lib/postgresql/18/bin/pg_repack --dry-run -d lab13 -t orders\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_repack -d lab13 -t orders",
+        "caption": "Dry run, then repack one table"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Option",
+            "What it does"
+          ],
+          [
+            "-d lab13",
+            "Database to connect to"
+          ],
+          [
+            "-t orders",
+            "Repack only this table (repeat -t for more tables)"
+          ],
+          [
+            "-N, --dry-run",
+            "List what would be repacked and exit"
+          ],
+          [
+            "-x, --only-indexes",
+            "Repack only the indexes of the given table"
+          ],
+          [
+            "-T, --wait-timeout=SECS",
+            "How long to wait for the exclusive locks before cancelling conflicting queries"
+          ],
+          [
+            "-D, --no-kill-backend",
+            "Skip the table instead of cancelling other sessions when the timeout passes"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "INFO: Dry run enabled, not executing repack\nINFO: repacking table \"public.orders\"\nINFO: repacking table \"public.orders\"",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Check:</b> the size query now shows 4000 kB of table and 2288 kB of indexes. That is a little more than after VACUUM FULL because 'delivered' is a longer value than 'paid'. pg_repack requirements from its documentation:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "The table must have a PRIMARY KEY or a UNIQUE index on NOT NULL columns.",
+            "items": []
+          },
+          {
+            "content": "Only superusers or owners of the tables and indexes can use it.",
+            "items": []
+          },
+          {
+            "content": "It needs free disk space about twice the size of the table and its indexes.",
+            "items": []
+          },
+          {
+            "content": "No DDL on the table while it runs, and it cannot process temporary tables.",
+            "items": []
+          },
+          {
+            "content": "The pg_repack client and the extension version must match, so install it from the same repository as the server.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Preventing bloat with fillfactor and HOT updates",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A HOT update writes the new row version on the same page and adds no index entries. The documentation lists two conditions: the update does not change any column used by an index (BRIN indexes excepted), and there is enough free space on the page that holds the old row. You control the second condition with the table's <code class=\"inline-code\">fillfactor</code>: the percentage of each page INSERT fills, between 10 and 100, default 100."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 13: Measure HOT updates, then lower fillfactor",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> psql on lab13, as postgres. First put the rows back in primary key order with <code class=\"inline-code\">CLUSTER</code>, another table rewrite (same ACCESS EXCLUSIVE lock as VACUUM FULL), so the updated rows are spread evenly over the pages. Then reset the table's counters so the HOT numbers below count only this test. <code class=\"inline-code\">pg_stat_reset_single_table_counters</code> is restricted to superusers by default."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CLUSTER orders USING orders_pkey;\nSELECT pg_stat_reset_single_table_counters('orders'::regclass);\n\nUPDATE orders SET status = 'returned' WHERE order_id % 50 = 7;\n\nSELECT n_tup_upd, n_tup_hot_upd,\n       round(100.0 * n_tup_hot_upd / nullif(n_tup_upd, 0), 1) AS hot_pct\n  FROM pg_stat_user_tables\n WHERE relname = 'orders';",
+        "caption": "HOT ratio with fillfactor 100 (the default)"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " n_tup_upd | n_tup_hot_upd | hot_pct\n-----------+---------------+---------\n      4000 |             0 |     0.0\n(1 row)",
+        "caption": "Output (last query)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The update did not touch an indexed column, yet 0% of updates were HOT: the pages were 100% full, so every new version went to another page and needed new entries in all three indexes. Statistics counters are sent at the end of a transaction, so if you see zeros, wait a second and query again."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now leave 20% of each page free. Changing the setting does not move existing rows; the ALTER TABLE documentation says you need a rewrite such as VACUUM FULL or CLUSTER to apply it:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "ALTER TABLE orders SET (fillfactor = 80);\nCLUSTER orders;\nSELECT reloptions FROM pg_class WHERE relname = 'orders';\nSELECT pg_size_pretty(pg_relation_size('orders')) AS table_size;\n\nSELECT pg_stat_reset_single_table_counters('orders'::regclass);\nUPDATE orders SET status = 'refunded' WHERE order_id % 50 = 7;",
+        "caption": "Apply fillfactor 80 and repeat the update"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "                reloptions\n------------------------------------------\n {autovacuum_enabled=false,fillfactor=80}\n(1 row)\n\n table_size\n------------\n 5000 kB\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">CLUSTER orders</code> without USING reuses the index chosen last time. Run the HOT query again:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " n_tup_upd | n_tup_hot_upd | hot_pct\n-----------+---------------+---------\n      4000 |          4000 |   100.0\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Every update was HOT. Now change an indexed column instead (reset the counters first, then run the HOT query):"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "UPDATE orders SET updated_at = now() WHERE order_id % 50 = 7;",
+        "caption": "Update an indexed column"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " n_tup_upd | n_tup_hot_upd | hot_pct\n-----------+---------------+---------\n      4000 |             0 |     0.0\n(1 row)",
+        "caption": "Output (HOT query)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Free page space does not help when an indexed column changes. The trade-off is clear in the numbers: fillfactor 80 made the table 25% bigger (4000 kB to 5000 kB) to buy HOT updates. Use it on tables with frequent updates of non-indexed columns (status, counters, last_seen timestamps that are not indexed). Leave tables that are only inserted into at 100. And question every index on a frequently updated column: each one turns HOT updates into index bloat."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Undo:</b> ALTER TABLE orders RESET (fillfactor); then rewrite the table if you want the pages packed again."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 14: Clean up the lab",
+        "level": 3
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "Drop only the lab database",
+        "text": "DROP DATABASE deletes the database and all its files permanently. Check the name before you press Enter."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Where:</b> a shell, as the postgres user."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo -u postgres psql -c \"DROP DATABASE lab13;\"\nsudo -u postgres psql -Atc \"SELECT count(*) FROM pg_database WHERE datname = 'lab13';\"",
+        "caption": "Remove the lab"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "DROP DATABASE\n0",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If you do not need pg_repack elsewhere, remove it with sudo apt-get remove postgresql-18-repack."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes and how to fix them",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "ERROR:  function pgstattuple(unknown) does not exist",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ERROR:  function pgstattuple(unknown) does not exist\nLINE 1: SELECT * FROM pgstattuple('pg_class');\n                      ^\nHINT:  No function matches the given name and argument types. You might need to add explicit type casts.",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Extensions are created per database. You created pgstattuple in lab13, then connected to another database. Fix: run <code class=\"inline-code\">CREATE EXTENSION pgstattuple;</code> in the database you are checking."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "ERROR:  permission denied for function pgstattuple",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Even the table owner gets this error. The documentation says only the role <code class=\"inline-code\">pg_stat_scan_tables</code> has EXECUTE on these functions by default (superusers bypass it). Fix: give your monitoring role that predefined role instead of superuser."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "GRANT pg_stat_scan_tables TO app_owner;",
+        "caption": "Let a monitoring role use pgstattuple"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "GRANT ROLE",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "ERROR:  REINDEX CONCURRENTLY cannot run inside a transaction block",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You ran it after BEGIN, or from a tool that wraps every script in a transaction. Fix: run it on its own, in autocommit mode. In psql, do not wrap it in BEGIN; in a migration tool, mark that migration as non-transactional."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "An index ending in _ccnew marked INVALID",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If a concurrent reindex is cancelled or fails (a statement_timeout, a lost connection, a duplicate in a unique index), it leaves its half-built copy behind. In the lab, a statement_timeout of 3s while another session held an open UPDATE produced this:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ERROR:  canceling statement due to statement timeout\n\nIndexes:\n    \"orders_pkey\" PRIMARY KEY, btree (order_id)\n    \"idx_orders_customer\" btree (customer_id)\n    \"idx_orders_customer_ccnew\" btree (customer_id) INVALID\n    \"idx_orders_updated\" btree (updated_at)",
+        "caption": "Output (from \\d orders)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The invalid index is not used by queries but is still updated on every write. Find every one in the database, drop it, and retry:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT indexrelid::regclass AS index_name, indrelid::regclass AS table_name\n  FROM pg_index\n WHERE NOT indisvalid;\n\nDROP INDEX CONCURRENTLY idx_orders_customer_ccnew;\nREINDEX INDEX CONCURRENTLY idx_orders_customer;",
+        "caption": "Find and remove leftover invalid indexes"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The documentation's rule: a name ending in <code class=\"inline-code\">_ccnew</code> is the unfinished new copy, so drop it and run REINDEX CONCURRENTLY again. A name ending in <code class=\"inline-code\">_ccold</code> is the old index that could not be dropped; the rebuild succeeded, so just drop it. A number may follow the suffix, such as _ccnew1."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "WARNING: relation must have a primary key or not-null unique keys",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "WARNING: relation \"public.order_events\" must have a primary key or not-null unique keys",
+        "caption": "Output (pg_repack)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "pg_repack skipped the table, and its exit status is still 0, so a cron job will not notice. Fix: add a primary key (or a unique index on NOT NULL columns) first, or use VACUUM FULL in a maintenance window. Check the output of scheduled pg_repack runs for WARNING lines."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Bloat comes straight back after a rewrite",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A rewrite only removes the symptom. If a session sits <b>idle in transaction</b> for hours, VACUUM cannot remove anything that died after its snapshot started, as the lab showed:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "tuples: 0 removed, 64000 remain, 4000 are dead but not yet removable",
+        "caption": "Output (VACUUM VERBOSE, while a REPEATABLE READ transaction was open)"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT pid, state, age(backend_xmin) AS xmin_age, now() - xact_start AS xact_age\n  FROM pg_stat_activity\n WHERE backend_xmin IS NOT NULL\n ORDER BY age(backend_xmin) DESC;",
+        "caption": "Find the session holding back cleanup"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " pid  |        state        | xmin_age |    xact_age\n------+---------------------+----------+-----------------\n 3091 | idle in transaction |        1 | 00:00:01.111693\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Once that transaction ended, the next VACUUM reported 4000 removed. Fix the cause: end or terminate the old session (<a href=\"/posts/postgresql/postgresql-dba-part-10-connections-sessions/\">Part 10</a>), set <code class=\"inline-code\">idle_in_transaction_session_timeout</code>, check old replication slots and prepared transactions, and tune autovacuum for the table (Part 12)."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Running VACUUM FULL from a nightly cron job",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Scheduled VACUUM FULL takes a full lock every night to shrink a table that will grow back the next day. The documentation's advice is to run standard VACUUM often enough that VACUUM FULL is never needed. Keep rewrites for one-time events such as a large purge."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Practice exercise",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "ordered",
+        "items": [
+          {
+            "content": "Create a table payments (payment_id bigint primary key, status text, amount numeric) with 100,000 rows. Delete every row where payment_id % 4 <> 0, run VACUUM, and use pgstattuple to report free_percent. Has the file shrunk?",
+            "items": []
+          },
+          {
+            "content": "Rebuild only the primary key index of payments without blocking writes, and confirm with pgstatindex that avg_leaf_density is close to 90.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "Answer",
+        "text": "1. After the delete and VACUUM, <code class=\"inline-code\">pg_relation_size</code> is unchanged and free_percent is about 69% (69.07 in a test run, with the table still 5024 kB as before the delete), because the remaining rows sit on every page and VACUUM can only truncate empty pages at the end. 2. Run <code class=\"inline-code\">REINDEX INDEX CONCURRENTLY payments_pkey;</code> and then <code class=\"inline-code\">SELECT avg_leaf_density FROM pgstatindex('payments_pkey');</code>. In the test it went from 22.63 to 89.13. The table stays the same size until you run VACUUM FULL or pg_repack."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Quick reference",
+        "level": 2
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "# Sizes of a table and its indexes\nsudo -u postgres psql -d mydb -c \"SELECT pg_size_pretty(pg_relation_size('orders')), pg_size_pretty(pg_indexes_size('orders'));\"\n\n# Cheap check: estimated dead rows and HOT updates\nsudo -u postgres psql -d mydb -c \"SELECT relname, n_live_tup, n_dead_tup, n_tup_upd, n_tup_hot_upd FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 10;\"\n\n# Install the measuring extension (once per database)\nsudo -u postgres psql -d mydb -c \"CREATE EXTENSION IF NOT EXISTS pgstattuple;\"\n\n# Exact table bloat (full scan) and approximate (faster)\nsudo -u postgres psql -d mydb -c \"SELECT * FROM pgstattuple('orders');\"\nsudo -u postgres psql -d mydb -c \"SELECT * FROM pgstattuple_approx('orders');\"\n\n# B-tree index density (healthy is near 90)\nsudo -u postgres psql -d mydb -c \"SELECT avg_leaf_density, leaf_pages, deleted_pages FROM pgstatindex('orders_pkey');\"\n\n# Let a monitoring role use pgstattuple\nsudo -u postgres psql -d mydb -c \"GRANT pg_stat_scan_tables TO monitor;\"\n\n# Rebuild indexes without blocking writes\nsudo -u postgres psql -d mydb -c \"REINDEX (VERBOSE) TABLE CONCURRENTLY orders;\"\n\n# Find invalid indexes left by a failed concurrent build\nsudo -u postgres psql -d mydb -c \"SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;\"\n\n# Check disk space before any table rewrite\ndf -h /var/lib/postgresql/18/main\n\n# Rewrite the table (ACCESS EXCLUSIVE lock: maintenance window only)\nsudo -u postgres psql -d mydb -c \"VACUUM FULL orders;\"\n\n# Online rewrite with pg_repack\nsudo apt-get install -y postgresql-18-repack\nsudo -u postgres psql -d mydb -c \"CREATE EXTENSION pg_repack;\"\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_repack --dry-run -d mydb -t orders\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_repack -d mydb -t orders\n\n# Leave room for HOT updates, then rewrite to apply it\nsudo -u postgres psql -d mydb -c \"ALTER TABLE orders SET (fillfactor = 80);\"",
+        "caption": "Every command from this part, in order"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary and what's next",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "Bloat is free and dead space inside table and index files; plain VACUUM makes it reusable but does not shrink the file.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "n_dead_tup can be 0 on a table that is mostly empty, so measure free space with pgstattuple or pgstattuple_approx.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "pgstatindex shows B-tree leaf density; a fresh index is near 90%, and sparse pages stay allocated until a rebuild.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "REINDEX CONCURRENTLY rebuilds indexes without blocking writes; drop any _ccnew or _ccold INVALID index a failed run leaves.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "VACUUM FULL and CLUSTER shrink tables but take an ACCESS EXCLUSIVE lock and need free space about the size of the table plus indexes.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "pg_repack does the same rewrite online, needs a primary key, and locks exclusively only at the start and end.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "fillfactor below 100 plus fewer indexes on updated columns gives HOT updates and less bloat; long transactions bring bloat back.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In Part 14 we look at transaction ID wraparound and freezing."
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your monitoring says orders has 0 dead rows. The table is still 82% empty space.\n\nThat is table bloat, and plain VACUUM will not fix it.\n\nTested on PostgreSQL 18 in Part 13 of the PostgreSQL DBA series:\n\n1. VACUUM turns dead rows into free space for reuse. It does not shrink the file, so n_dead_tup drops to 0 while the bloat stays.\n2. Measure free space, not dead rows: SELECT free_percent FROM pgstattuple('orders');\n3. Index bloat shows up as low avg_leaf_density in pgstatindex. A fresh B-tree is near 90%.\n4. REINDEX TABLE CONCURRENTLY orders rebuilds the indexes without blocking writes. If it fails, drop the INVALID _ccnew index it leaves behind.\n5. VACUUM FULL shrinks the table but locks out reads and writes. pg_repack does it online if the table has a primary key.\n\nPrevention beats repair: fillfactor 80 took HOT updates from 0% to 100% in the lab, as long as no indexed column changed.\n\nHow do you check bloat on your production tables today?\n\nFollow the series for Part 14 on transaction ID wraparound.\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+    "slides": [
+      {
+        "title": "PostgreSQL Table and Index Bloat",
+        "body": "Part 13: find wasted space, fix it, and stop it coming back"
+      },
+      {
+        "title": "VACUUM does not shrink the file",
+        "points": [
+          "VACUUM turns dead rows into free space inside pages",
+          "Only empty pages at the end of the table go back to the OS",
+          "After a 70% purge the lab table stayed at 23 MB"
+        ]
+      },
+      {
+        "title": "Measure free space, not dead rows",
+        "code": "CREATE EXTENSION pgstattuple;\n\nSELECT tuple_percent,\n       dead_tuple_count,\n       free_percent\n  FROM pgstattuple('orders');",
+        "lang": "postgresql",
+        "points": [
+          "n_dead_tup was 0, free_percent was 82.5"
+        ]
+      },
+      {
+        "title": "Index bloat: check leaf density",
+        "code": "SELECT avg_leaf_density,\n       leaf_pages\n  FROM pgstatindex('orders_pkey');",
+        "lang": "postgresql",
+        "points": [
+          "Fresh B-tree: about 90",
+          "Lab primary key after the purge: 13.71"
+        ]
+      },
+      {
+        "title": "Rebuild indexes without blocking",
+        "code": "REINDEX TABLE CONCURRENTLY orders;\n\nSELECT indexrelid::regclass\n  FROM pg_index\n WHERE NOT indisvalid;",
+        "lang": "postgresql",
+        "points": [
+          "Drop any leftover _ccnew INVALID index, then retry"
+        ]
+      },
+      {
+        "title": "Shrinking the table",
+        "points": [
+          "VACUUM FULL: ACCESS EXCLUSIVE lock, blocks reads too",
+          "pg_repack: online, needs a primary key",
+          "Both need free disk about the size of table plus indexes"
+        ]
+      },
+      {
+        "title": "Prevent it: fillfactor and HOT",
+        "body": "With fillfactor 80, updates of a non-indexed column were 100% HOT in the lab, versus 0% at the default 100. Updating an indexed column is never HOT, so keep indexes off busy columns."
+      }
+    ]
+  }
+}

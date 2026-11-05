@@ -11,3 +11,4 @@
 - Part 10 | postgresql-dba-part-10-connections-sessions | 2026-11-02
 - Part 11 | postgresql-dba-part-11-mvcc-xmin-xmax | 2026-11-03
 - Part 12 | postgresql-dba-part-12-vacuum-autovacuum | 2026-11-04
+- Part 13 | postgresql-dba-part-13-table-index-bloat | 2026-11-05
