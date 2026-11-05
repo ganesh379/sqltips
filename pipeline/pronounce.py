@@ -49,6 +49,7 @@ WORDS = {
     "autovacuum": "auto vacuum", "basebackup": "base backup", "isready": "is ready",
     "waldump": "wall dump", "receivewal": "receive wall", "dumpall": "dump all",
     "statio": "stat I-O", "repack": "re-pack",
+    "walsender": "wall sender", "walreceiver": "wall receiver", "walwriter": "wall writer",
     # extensions, tools and related products
     "pgvector": "P-G vector", "pgaudit": "P-G audit", "pglogical": "P-G logical",
     "pgBadger": "P-G Badger", "pgbadger": "P-G Badger", "PostGIS": "Post-G-I-S",

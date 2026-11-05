@@ -1,0 +1,597 @@
+{
+ "ep": 5,
+ "total": 140,
+ "title": "PostgreSQL Processes: Postmaster, Backend and Workers",
+ "phase": "Foundations",
+ "lines": [
+  {
+   "say": "Why does PostgreSQL create multiple processes?",
+   "cap": "Why does PostgreSQL create *multiple* *processes?*"
+  },
+  {
+   "say": "This is episode five of the PostgreSQL DBA series. Today: the process map of a real server.",
+   "cap": "Episode 5: the *process* *map* of a real server."
+  },
+  {
+   "say": "PostgreSQL uses a process per user model. Every client connects to exactly one backend process.",
+   "cap": "*Process per user:* each client gets *one* *backend.*"
+  },
+  {
+   "say": "We can't know how many clients will connect, so a supervisor process waits for them: the postmaster.",
+   "cap": "A supervisor waits for clients: the *postmaster.*",
+   "cue": "postmaster"
+  },
+  {
+   "say": "It listens on a TCP port, and for every connection request it spawns a new backend process.",
+   "cap": "Each new connection: the postmaster *spawns* a *backend.*",
+   "cue": "spawns"
+  },
+  {
+   "say": "All these processes cooperate through shared memory and semaphores.",
+   "cap": "Processes cooperate through *shared* *memory* and *semaphores.*",
+   "cue": "shared"
+  },
+  {
+   "say": "Let's see them on a real Linux server. List every process owned by the postgres user.",
+   "cap": "Live: list the *postgres* user's *processes.*"
+  },
+  {
+   "say": "The first line is the postmaster, with the options it was started with. Output trimmed.",
+   "cap": "First line: the *postmaster* and its start options."
+  },
+  {
+   "say": "Next come background processes it launched: checkpointer, background writer, WAL writer and two launchers.",
+   "cap": "Then *background* *processes:* checkpointer, writers, launchers."
+  },
+  {
+   "say": "The last line is a client backend: user, database, client host and activity. Here: idle.",
+   "cap": "Client backend: *user,* *database,* *host,* *activity.*",
+   "cue": "idle"
+  },
+  {
+   "say": "The catch: not every process exists on every server. It depends on settings and role.",
+   "cap": "Not every process exists on *every* *server.*"
+  },
+  {
+   "say": "The autovacuum launcher runs only when autovacuum is on, which is the default.",
+   "cap": "*Autovacuum* *launcher:* only when autovacuum = *on.*"
+  },
+  {
+   "say": "The archiver is tied to archive_mode. On my test server, it appeared after I turned archive_mode on and restarted.",
+   "cap": "*Archiver:* appeared after *archive_mode* = on + restart."
+  },
+  {
+   "say": "With streaming replication, you see a walsender on the primary and a walreceiver on the standby.",
+   "cap": "Replication: *walsender* on primary, *walreceiver* on standby.",
+   "cue": "walreceiver"
+  },
+  {
+   "say": "Parallel workers come and go with parallel queries, from a pool set by max_worker_processes, eight by default.",
+   "cap": "*Parallel* *workers:* pool from *max_worker_processes* (8)."
+  },
+  {
+   "say": "Check your server: select the process ID and backend type from pg_stat_activity.",
+   "cap": "Check yours: *pid* and *backend_type* from *pg_stat_activity.*"
+  },
+  {
+   "say": "On my PostgreSQL sixteen test server: six rows, one client backend. The postmaster itself is not listed.",
+   "cap": "PostgreSQL 16: *6* *rows.* The *postmaster* is not listed."
+  },
+  {
+   "say": "Now a common mistake: ending a stuck session with kill minus nine.",
+   "cap": "Common mistake: *kill -9* on a stuck session."
+  },
+  {
+   "say": "On a test server, the postmaster logged the kill, then terminated every other active server process.",
+   "cap": "Postmaster terminated *every* *other* *session* too."
+  },
+  {
+   "say": "Then it reinitialized and ran recovery, because the dead process possibly corrupted shared memory.",
+   "cap": "Then *crash* *recovery:* shared memory *possibly* *corrupted.*",
+   "cue": "recovery"
+  },
+  {
+   "say": "The safe way is pg_terminate_backend with the process ID. In my test, only that session ended.",
+   "cap": "Safe way: *pg_terminate_backend(pid).* Only that session ends."
+  },
+  {
+   "say": "DBA takeaway: every connection is a full process, and a parallel worker costs about as much as another session.",
+   "cap": "Every connection is a *process.* So is every *parallel* *worker.*"
+  },
+  {
+   "say": "Recap: one postmaster, one backend per connection, and helper processes that depend on your settings.",
+   "cap": "Recap: *postmaster,* *one* *backend* per connection, *helpers.*"
+  },
+  {
+   "say": "Check them in pg_stat_activity, and end sessions with pg_terminate_backend, not kill minus nine.",
+   "cap": "Check *pg_stat_activity.* Use *pg_terminate_backend,* not kill -9."
+  },
+  {
+   "say": "Next up: cluster, instance, database and schema. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *cluster,* *database,* *schema.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "Why does PostgreSQL create *multiple* *processes?*",
+   "sub": "Episode 5 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 5 · FOUNDATIONS",
+   "title": "PostgreSQL Processes",
+   "sub": "Postmaster, backends and workers"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 6,
+   "heading": "Process per user",
+   "nodes": [
+    {
+     "id": "ca",
+     "label": "Client A",
+     "sub": "app or psql",
+     "x": 230,
+     "y": 500,
+     "w": 320,
+     "h": 130,
+     "icon": "terminal",
+     "color": "amber",
+     "at": 2
+    },
+    {
+     "id": "cb",
+     "label": "Client B",
+     "sub": "another app",
+     "x": 850,
+     "y": 500,
+     "w": 320,
+     "h": 130,
+     "icon": "users",
+     "color": "amber",
+     "at": 4
+    },
+    {
+     "id": "pm",
+     "label": "Postmaster",
+     "sub": "supervisor process",
+     "x": 540,
+     "y": 780,
+     "w": 340,
+     "h": 140,
+     "icon": "server",
+     "color": "blue",
+     "at": 3
+    },
+    {
+     "id": "ba",
+     "label": "Backend A",
+     "sub": "serves client A",
+     "x": 230,
+     "y": 1030,
+     "w": 320,
+     "h": 130,
+     "icon": "cpu",
+     "color": "green",
+     "at": 2
+    },
+    {
+     "id": "bb",
+     "label": "Backend B",
+     "sub": "serves client B",
+     "x": 850,
+     "y": 1030,
+     "w": 320,
+     "h": 130,
+     "icon": "cpu",
+     "color": "green",
+     "at": 4
+    },
+    {
+     "id": "sm",
+     "label": "Shared memory",
+     "sub": "plus semaphores",
+     "x": 540,
+     "y": 1265,
+     "w": 380,
+     "h": 150,
+     "icon": "memory",
+     "color": "purple",
+     "at": 5
+    }
+   ],
+   "edges": [
+    {
+     "from": "ca",
+     "to": "ba",
+     "at": 2,
+     "flow": true,
+     "color": "green"
+    },
+    {
+     "from": "cb",
+     "to": "pm",
+     "label": "connect",
+     "at": 4,
+     "flow": true,
+     "color": "amber"
+    },
+    {
+     "from": "pm",
+     "to": "bb",
+     "label": "spawns",
+     "at": 4,
+     "dashed": true,
+     "color": "blue"
+    },
+    {
+     "from": "ba",
+     "to": "sm",
+     "label": "shared",
+     "at": 5,
+     "flow": true,
+     "color": "purple"
+    },
+    {
+     "from": "bb",
+     "to": "sm",
+     "label": "shared",
+     "at": 5,
+     "flow": true,
+     "color": "purple"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "ba"
+    },
+    {
+     "at": 3,
+     "id": "pm"
+    },
+    {
+     "at": 4,
+     "id": "bb"
+    },
+    {
+     "at": 5,
+     "id": "sm"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 6,
+   "to": 10,
+   "heading": "The process map",
+   "title": "shell: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "ps -u postgres -o cmd",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": ".../16/bin/postgres -D .../16/main",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "postgres: checkpointer",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "postgres: background writer",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "postgres: walwriter",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "postgres: autovacuum launcher",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "postgres: logical replication launcher",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "postgres: postgres appdb [local] idle",
+     "at": 9
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 10,
+   "to": 15,
+   "heading": "Depends on settings",
+   "columns": 2,
+   "items": [
+    {
+     "at": 10,
+     "icon": "server",
+     "title": "Always there",
+     "text": "Postmaster + a backend per client",
+     "color": "blue"
+    },
+    {
+     "at": 11,
+     "icon": "wrench",
+     "title": "Autovacuum launcher",
+     "text": "If autovacuum = on",
+     "color": "purple"
+    },
+    {
+     "at": 12,
+     "icon": "file",
+     "title": "Archiver",
+     "text": "Appears with archive_mode = on",
+     "color": "amber"
+    },
+    {
+     "at": 13,
+     "icon": "sync",
+     "title": "walsender",
+     "text": "On the primary, per standby",
+     "color": "green"
+    },
+    {
+     "at": 13,
+     "icon": "network",
+     "title": "walreceiver",
+     "text": "On a streaming standby",
+     "color": "cyan"
+    },
+    {
+     "at": 14,
+     "icon": "bolt",
+     "title": "Parallel workers",
+     "text": "During parallel queries",
+     "color": "red"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 15,
+   "to": 17,
+   "heading": "Check your server",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT pid, backend_type",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  FROM pg_stat_activity;",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": " pid  |         backend_type",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "------+------------------------------",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "  979 | logical replication launcher",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "  978 | autovacuum launcher",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": " 1365 | client backend",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "  975 | background writer",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "  974 | checkpointer",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "  977 | walwriter",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "(6 rows)",
+     "at": 16
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 17,
+   "to": 20,
+   "heading": "Mistake: kill -9",
+   "title": "test server: postgres log",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "# kill one backend (test only!)",
+     "at": 17
+    },
+    {
+     "kind": "cmd",
+     "text": "sudo kill -9 1400",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "LOG: server process (PID 1400)",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "  was terminated by signal 9: Killed",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "LOG: terminating any other active",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "  server processes",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "LOG: all server processes",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "  terminated; reinitializing",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "LOG: database system was not properly",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "  shut down; automatic recovery",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "  in progress",
+     "at": 19
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 20,
+   "to": 21,
+   "heading": "The safe way",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT pg_terminate_backend(1449);",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": " pg_terminate_backend",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "----------------------",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": " t",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "(1 row)",
+     "at": 20
+    },
+    {
+     "kind": "comment",
+     "text": "-- the ended session sees:",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "FATAL:  terminating connection due",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "  to administrator command",
+     "at": 20
+    },
+    {
+     "kind": "comment",
+     "text": "-- other sessions keep running",
+     "at": 20
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 21,
+   "to": 22,
+   "kind": "tip",
+   "title": "Connections are processes",
+   "text": "Each connection is a full process, and a parallel worker costs about as much as another session. Watch your connection count."
+  },
+  {
+   "type": "checklist",
+   "from": 22,
+   "to": 24,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 22,
+     "title": "One postmaster supervises"
+    },
+    {
+     "at": 22,
+     "title": "One backend per connection"
+    },
+    {
+     "at": 22,
+     "title": "Helpers depend on settings"
+    },
+    {
+     "at": 23,
+     "title": "Check pg_stat_activity"
+    },
+    {
+     "at": 23,
+     "title": "pg_terminate_backend, not kill -9"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 24,
+   "to": 25,
+   "next": "Ep 6 · Cluster, Instance, Database, Schema"
+  }
+ ]
+}
