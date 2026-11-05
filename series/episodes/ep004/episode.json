@@ -1,0 +1,564 @@
+{
+ "ep": 4,
+ "total": 140,
+ "title": "What Happens When You Run SELECT?",
+ "phase": "Foundations",
+ "lines": [
+  {
+   "say": "What happens inside PostgreSQL after you press Enter?",
+   "cap": "What happens *inside* PostgreSQL after you press *Enter?*"
+  },
+  {
+   "say": "This is episode four of the PostgreSQL DBA series. Today: the journey of one SELECT query.",
+   "cap": "Episode 4: the *journey* of one *SELECT.*"
+  },
+  {
+   "say": "Step one, connect. Your client, like psql, connects, and the postmaster starts a backend process just for that connection.",
+   "cap": "Step 1: *connect.* The postmaster starts *your* *backend.*",
+   "cue": "backend"
+  },
+  {
+   "say": "Your query travels to that backend as plain text. The client does no parsing at all.",
+   "cap": "The query arrives as *plain* *text.* No parsing in the client."
+  },
+  {
+   "say": "Step two, the parser. It checks the syntax and builds a parse tree. It does not look up any tables yet.",
+   "cap": "Step 2: *parser* checks *syntax,* builds a *parse* *tree.*"
+  },
+  {
+   "say": "So a typo, like select with no T at the end, fails right here, with a syntax error.",
+   "cap": "A typo like *SELEC* fails here: *syntax* *error.*",
+   "cue": "typo"
+  },
+  {
+   "say": "Step three, analysis. It looks up tables, columns and functions in the system catalogs, and builds a query tree.",
+   "cap": "Step 3: *analysis* looks up the *system* *catalogs.*"
+  },
+  {
+   "say": "That's why a misspelled table name gives a different error: relation does not exist.",
+   "cap": "Wrong table name: *relation* *does* *not* *exist.*"
+  },
+  {
+   "say": "Step four, the rewriter. It applies rules from the system catalogs. Query a view, and it swaps in the view's base tables.",
+   "cap": "Step 4: *rewriter* applies *rules,* expands *views.*",
+   "cue": "view"
+  },
+  {
+   "say": "Step five, the planner, also called the optimizer. It builds the possible paths, like a sequential scan or an index scan.",
+   "cap": "Step 5: *planner* builds paths: *seq* *scan,* *index* *scan.*"
+  },
+  {
+   "say": "It estimates the cost of each path and picks the cheapest one. The result is the query plan.",
+   "cap": "It estimates *cost* and picks the *cheapest* plan."
+  },
+  {
+   "say": "Step six, the executor. It walks the plan tree, and each node hands up one row at a time when asked.",
+   "cap": "Step 6: *executor* pulls rows *one* *at* *a* *time.*"
+  },
+  {
+   "say": "The executor reads data pages through shared buffers, the page cache in shared memory.",
+   "cap": "Pages come through *shared_buffers,* the page *cache.*"
+  },
+  {
+   "say": "Page already there? That's a hit. If not, it's a read: the page is fetched into the cache first.",
+   "cap": "In cache: a *hit.* Not in cache: a *read.*"
+  },
+  {
+   "say": "Finally, the backend sends the rows back to your client.",
+   "cap": "Step 7: rows go *back* *to* *the* *client.*"
+  },
+  {
+   "say": "Let's watch it. Right after a server restart, run EXPLAIN with ANALYZE and BUFFERS on an orders table.",
+   "cap": "Live: *EXPLAIN* *(ANALYZE,* *BUFFERS)* after a restart."
+  },
+  {
+   "say": "The planner chose an index scan on the primary key. Buffers shows shared read equals three: three pages were not cached yet.",
+   "cap": "*Index* *scan.* *shared* *read=3:* pages were not cached."
+  },
+  {
+   "say": "Run it again, and it says shared hit equals three. The same pages now come straight from shared buffers. Output trimmed.",
+   "cap": "Second run: *shared* *hit=3.* Served from *cache.*"
+  },
+  {
+   "say": "A common misconception: PostgreSQL runs your query exactly as written. In reality, the planner decides how to run it.",
+   "cap": "Myth: it runs *as* *written.* The *planner* decides *how.*"
+  },
+  {
+   "say": "DBA takeaway: when a query is slow, don't guess.",
+   "cap": "DBA takeaway: slow query? *Don't* *guess.*"
+  },
+  {
+   "say": "Run EXPLAIN with ANALYZE and BUFFERS, then check the plan and where the pages came from.",
+   "cap": "Check the *plan* and the *hit* and *read* counts."
+  },
+  {
+   "say": "But careful: with ANALYZE, the statement really runs. For an UPDATE or DELETE, wrap it in BEGIN and ROLLBACK.",
+   "cap": "*ANALYZE* really *runs* it. Wrap writes in *BEGIN/ROLLBACK.*"
+  },
+  {
+   "say": "Recap: connect, parse, analyze, rewrite, plan, execute, and send the rows back.",
+   "cap": "Recap: *parse,* *analyze,* *rewrite,* *plan,* *execute.*"
+  },
+  {
+   "say": "Next up: PostgreSQL processes, the postmaster, backends and workers. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *processes.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "What happens *inside* PostgreSQL after you press *Enter?*",
+   "sub": "Episode 4 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 4 · FOUNDATIONS",
+   "title": "What Happens When You Run SELECT?",
+   "sub": "The journey of one query"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 4,
+   "heading": "Step 1: Connect",
+   "nodes": [
+    {
+     "id": "cl",
+     "label": "Client",
+     "sub": "psql or an app",
+     "x": 540,
+     "y": 520,
+     "w": 360,
+     "h": 140,
+     "icon": "terminal",
+     "color": "amber"
+    },
+    {
+     "id": "pm",
+     "label": "Postmaster",
+     "sub": "listens for connections",
+     "x": 540,
+     "y": 850,
+     "w": 380,
+     "h": 140,
+     "icon": "server",
+     "color": "blue"
+    },
+    {
+     "id": "be",
+     "label": "Backend",
+     "sub": "your own process",
+     "x": 540,
+     "y": 1200,
+     "w": 380,
+     "h": 140,
+     "icon": "cpu",
+     "color": "green",
+     "at": 2
+    }
+   ],
+   "edges": [
+    {
+     "from": "cl",
+     "to": "pm",
+     "label": "connect",
+     "flow": true,
+     "color": "amber"
+    },
+    {
+     "from": "pm",
+     "to": "be",
+     "label": "starts",
+     "at": 2,
+     "dashed": true,
+     "color": "blue"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "be"
+    },
+    {
+     "at": 3,
+     "id": "be"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 4,
+   "to": 8,
+   "heading": "Parser vs analysis",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- parser: syntax only",
+     "at": 4
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELEC 1;",
+     "at": 5
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  syntax error at or near \"SELEC\"",
+     "at": 5
+    },
+    {
+     "kind": "comment",
+     "text": "-- analysis: checks the catalogs",
+     "at": 6
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT * FROM ordrs;",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  relation \"ordrs\" does not exist",
+     "at": 7
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 8,
+   "to": 15,
+   "heading": "Inside your backend",
+   "nodes": [
+    {
+     "id": "pa",
+     "label": "Parser",
+     "sub": "syntax, parse tree",
+     "x": 270,
+     "y": 500,
+     "w": 340,
+     "h": 120,
+     "icon": "search",
+     "color": "blue"
+    },
+    {
+     "id": "an",
+     "label": "Analysis",
+     "sub": "catalog lookups",
+     "x": 810,
+     "y": 500,
+     "w": 340,
+     "h": 120,
+     "icon": "book",
+     "color": "blue"
+    },
+    {
+     "id": "rw",
+     "label": "Rewriter",
+     "sub": "rules, views",
+     "x": 270,
+     "y": 710,
+     "w": 340,
+     "h": 120,
+     "icon": "sync",
+     "color": "purple",
+     "at": 8
+    },
+    {
+     "id": "pl",
+     "label": "Planner",
+     "sub": "cheapest plan",
+     "x": 810,
+     "y": 710,
+     "w": 340,
+     "h": 120,
+     "icon": "flow",
+     "color": "amber",
+     "at": 9
+    },
+    {
+     "id": "ex",
+     "label": "Executor",
+     "sub": "walks the plan",
+     "x": 270,
+     "y": 940,
+     "w": 340,
+     "h": 120,
+     "icon": "bolt",
+     "color": "green",
+     "at": 11
+    },
+    {
+     "id": "sb",
+     "label": "Shared buffers",
+     "sub": "page cache",
+     "x": 810,
+     "y": 940,
+     "w": 340,
+     "h": 150,
+     "icon": "memory",
+     "color": "cyan",
+     "at": 12
+    },
+    {
+     "id": "df",
+     "label": "Data files",
+     "sub": "on disk",
+     "x": 810,
+     "y": 1200,
+     "w": 340,
+     "h": 140,
+     "icon": "database",
+     "color": "purple",
+     "at": 13,
+     "shape": "db"
+    },
+    {
+     "id": "cl",
+     "label": "Client",
+     "sub": "gets the rows",
+     "x": 270,
+     "y": 1200,
+     "w": 340,
+     "h": 140,
+     "icon": "terminal",
+     "color": "amber",
+     "at": 14
+    }
+   ],
+   "edges": [
+    {
+     "from": "pa",
+     "to": "an",
+     "label": "parse tree",
+     "color": "blue"
+    },
+    {
+     "from": "an",
+     "to": "rw",
+     "label": "query tree",
+     "at": 8,
+     "color": "blue"
+    },
+    {
+     "from": "rw",
+     "to": "pl",
+     "label": "rewritten",
+     "at": 9,
+     "color": "purple"
+    },
+    {
+     "from": "pl",
+     "to": "ex",
+     "label": "plan",
+     "at": 11,
+     "color": "amber",
+     "flow": true
+    },
+    {
+     "from": "ex",
+     "to": "sb",
+     "label": "pages",
+     "at": 12,
+     "color": "cyan",
+     "flow": true
+    },
+    {
+     "from": "df",
+     "to": "sb",
+     "label": "read in",
+     "at": 13,
+     "color": "purple",
+     "dashed": true
+    },
+    {
+     "from": "ex",
+     "to": "cl",
+     "label": "rows",
+     "at": 14,
+     "color": "green",
+     "flow": true
+    }
+   ],
+   "focus": [
+    {
+     "at": 8,
+     "id": "rw"
+    },
+    {
+     "at": 9,
+     "id": "pl"
+    },
+    {
+     "at": 10,
+     "id": "pl"
+    },
+    {
+     "at": 11,
+     "id": "ex"
+    },
+    {
+     "at": 12,
+     "id": "sb"
+    },
+    {
+     "at": 13,
+     "id": "df"
+    },
+    {
+     "at": 14,
+     "id": "cl"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 15,
+   "to": 18,
+   "heading": "Hit or read?",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "EXPLAIN (ANALYZE, BUFFERS,",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb(# ",
+     "text": "  COSTS OFF)",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "SELECT amount FROM orders",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "WHERE id = 42;",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "Index Scan using orders_pkey on orders",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "   Index Cond: (id = 42)",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "   Buffers: shared read=3",
+     "at": 16
+    },
+    {
+     "kind": "comment",
+     "text": "-- same query, second run:",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "   Buffers: shared hit=3",
+     "at": 17
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 18,
+   "to": 19,
+   "kind": "myth",
+   "title": "It runs as written",
+   "text": "SQL says what you want. The planner decides how: which scan, which join, which order."
+  },
+  {
+   "type": "callout",
+   "from": 19,
+   "to": 20,
+   "kind": "tip",
+   "title": "Slow query? Don't guess",
+   "text": "Measure first. EXPLAIN shows what PostgreSQL really did."
+  },
+  {
+   "type": "cards",
+   "from": 20,
+   "to": 21,
+   "heading": "EXPLAIN (ANALYZE, BUFFERS)",
+   "columns": 1,
+   "items": [
+    {
+     "at": 20,
+     "icon": "flow",
+     "title": "Which plan?",
+     "text": "Seq scan, index scan, join order",
+     "color": "amber"
+    },
+    {
+     "at": 20,
+     "icon": "memory",
+     "title": "Hit or read?",
+     "text": "shared hit = in cache, read = fetched",
+     "color": "cyan"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 21,
+   "to": 22,
+   "kind": "warning",
+   "title": "ANALYZE really runs it",
+   "text": "For UPDATE or DELETE: BEGIN; EXPLAIN ANALYZE ...; ROLLBACK;"
+  },
+  {
+   "type": "checklist",
+   "from": 22,
+   "to": 23,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 22,
+     "title": "Connect: one backend for you"
+    },
+    {
+     "at": 22,
+     "title": "Parse: syntax, parse tree"
+    },
+    {
+     "at": 22,
+     "title": "Analyze: catalogs, query tree"
+    },
+    {
+     "at": 22,
+     "title": "Rewrite: rules and views"
+    },
+    {
+     "at": 22,
+     "title": "Plan: cheapest path wins"
+    },
+    {
+     "at": 22,
+     "title": "Execute: pages, then rows"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 23,
+   "to": 24,
+   "next": "Ep 5 · PostgreSQL Processes"
+  }
+ ]
+}

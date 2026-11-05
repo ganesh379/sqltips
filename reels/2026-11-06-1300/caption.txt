@@ -1,0 +1,13 @@
+What happens inside PostgreSQL after you press Enter? Here is the journey of one SELECT.
+
+Your client connects and the postmaster starts a backend process for you. The query arrives as plain text. The parser checks syntax (a typo gives "syntax error at or near"), then analysis looks up the system catalogs (a wrong table name gives "relation does not exist").
+
+The rewriter applies rules and expands views. The planner/optimizer compares paths like a sequential scan and an index scan and picks the cheapest plan. The executor walks the plan tree, reads pages through shared_buffers, and the rows go back to the client.
+
+PostgreSQL DBA tip: run EXPLAIN (ANALYZE, BUFFERS) to see the plan and "shared hit" vs "shared read". ANALYZE really runs the statement, so wrap an UPDATE or DELETE in BEGIN; ... ROLLBACK;
+
+Episode 4 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql
