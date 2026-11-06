@@ -28,7 +28,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain process-based architecture and common background processes without implying every process exists in every configuration.
   - Format: Process map · Level: Beginner
   - Hook: Why does PostgreSQL create multiple processes?
-- [ ] Ep 006 | 2026-11-09 | Cluster, Instance, Database and Schema
+- [x] Ep 006 | 2026-11-09 | Cluster, Instance, Database and Schema (posted 2026-11-07 13:00, Buffer 6aed68c4c1e74b84e5cbf56c)
   - Objective: Clarify PostgreSQL cluster terminology and hierarchy; explain that one server instance can host multiple databases.
   - Format: Layered diagram · Level: Beginner
   - Hook: Cluster vs database vs schema — don't confuse these.
