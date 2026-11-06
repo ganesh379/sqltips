@@ -1,0 +1,1668 @@
+{
+  "schemaVersion": 1,
+  "title": "PostgreSQL DBA Part 14: Transaction ID Wraparound and Freezing",
+  "slug": "postgresql-dba-part-14-transaction-id-wraparound-freezing",
+  "category": "postgresql",
+  "description": "Check Postgres transaction ID wraparound risk with age(datfrozenxid), see VACUUM freeze rows, and recover when writes stop, tested on PostgreSQL 18.",
+  "focusKeyword": "postgres transaction id wraparound",
+  "tags": [
+    "postgresql-dba-series",
+    "postgresql",
+    "vacuum",
+    "wraparound",
+    "autovacuum"
+  ],
+  "related": [
+    "/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/",
+    "/posts/postgresql/postgresql-dba-part-10-connections-sessions/",
+    "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/"
+  ],
+  "sources": [
+    {
+      "title": "PostgreSQL 18 docs: Routine Vacuuming: 24.1.5 Preventing Transaction ID Wraparound Failures (and 24.1.6 Autovacuum)",
+      "url": "https://www.postgresql.org/docs/current/routine-vacuuming.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Server configuration: Vacuuming (freeze, failsafe, eager freeze settings)",
+      "url": "https://www.postgresql.org/docs/current/runtime-config-vacuum.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: VACUUM",
+      "url": "https://www.postgresql.org/docs/current/sql-vacuum.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: System information functions (age, mxid_age)",
+      "url": "https://www.postgresql.org/docs/current/functions-info.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: pg_class catalog (relfrozenxid, relminmxid, relallfrozen)",
+      "url": "https://www.postgresql.org/docs/current/catalog-pg-class.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: pg_database catalog (datfrozenxid, datminmxid)",
+      "url": "https://www.postgresql.org/docs/current/catalog-pg-database.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: pg_visibility",
+      "url": "https://www.postgresql.org/docs/current/pgvisibility.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: pageinspect",
+      "url": "https://www.postgresql.org/docs/current/pageinspect.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: pg_resetwal",
+      "url": "https://www.postgresql.org/docs/current/app-pgresetwal.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: PREPARE TRANSACTION",
+      "url": "https://www.postgresql.org/docs/current/sql-prepare-transaction.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: pg_prepared_xacts",
+      "url": "https://www.postgresql.org/docs/current/view-pg-prepared-xacts.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Resource consumption (max_prepared_transactions)",
+      "url": "https://www.postgresql.org/docs/current/runtime-config-resource.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Error reporting and logging (log_autovacuum_min_duration)",
+      "url": "https://www.postgresql.org/docs/current/runtime-config-logging.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: CREATE TABLE storage parameters (autovacuum_freeze_*)",
+      "url": "https://www.postgresql.org/docs/current/sql-createtable.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: vacuumdb",
+      "url": "https://www.postgresql.org/docs/current/app-vacuumdb.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Monitoring statistics (pg_stat_activity)",
+      "url": "https://www.postgresql.org/docs/current/monitoring-stats.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Release notes PostgreSQL 18 (eager freezing, relallfrozen)",
+      "url": "https://www.postgresql.org/docs/current/release-18.html"
+    }
+  ],
+  "reviewNotes": "Series part 14. Part 13 (postgresql-dba-part-13-table-index-bloat) is not live yet, so the intro names it without a link and it is not in related. Publish Part 13 first (and Part 12, which is also not live and is named without a link). Tested on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) from the PGDG repository on Ubuntu 24.04.5 LTS; followed the PostgreSQL 18 documentation (docs/current pages in sources). All outputs are real; XIDs, timestamps and PIDs will differ for readers. SANDBOX CAVEATS: (1) As in Parts 10-13, postgresql-18 needs liburing2 from archive.ubuntu.com, which is blocked here; I installed a stub liburing2 package (only affects io_method=io_uring, not the default worker). (2) A leftover PostgreSQL 16 cluster existed in the image, so 18 main was created on port 5432 by hand; I removed that '16 main ... down' line from the pg_lsclusters outputs in Steps 10, 12 and 18; everything else is verbatim. (3) The main cluster had already used about 100,000 XIDs from a trial run, which is why xmin is 100776 and database age 100033 in Steps 2-3 (explained in Step 2). (4) Step 12 log excerpt: timestamps/PIDs removed from the log lines; text verbatim. Startup after pg_resetwal took about 37 seconds before 'ready to accept connections'. (5) Step 17: 99 failsafe warnings trimmed with '...'. Between Step 15 and Step 17 autovacuum had already fixed database postgres, and it fixed template0 about 20 seconds after vacuumdb; the article explains both. EDITOR CHECKS: (a) The emergency lab uses pg_resetwal -x on a throwaway cluster, with a danger callout repeating the docs' last-resort warning. Please confirm you are happy to publish this technique. (b) The '500 million / 1 billion' alert thresholds in the Step 3 tip are labelled as rules of thumb, not documentation. (c) pg_settings on 18.6 shows context 'user' for vacuum_max_eager_freeze_failure_rate while the docs say it can only be set in postgresql.conf or on the command line; the article avoids claiming either and only says it can be set in postgresql.conf and reloaded. (d) The anti-wraparound log line on 18.6 reads 'automatic vacuum to prevent wraparound' (not 'aggressive') because the per-table autovacuum_freeze_max_age does not lower the server-wide vacuum_freeze_table_age cap; the article does not claim it was aggressive. (e) The pg_xact segment math (256 kB files, 0x100000 XIDs each) comes from the pg_resetwal -x doc text, which says multiply by 0x100000 per file; the 256 kB file size is from my knowledge of SLRU (32 pages x 8 kB) and worked in the test. Optional FAQ left out. The per-table autovacuum_freeze_max_age minimum of 100,000 (Step 8) was checked on 18.6: ALTER TABLE ... SET (autovacuum_freeze_max_age = 99999) gives 'Valid values are between \"100000\" and \"2000000000\"'. LENGTH: about 4,100 words of prose, lists and tables (above the 3,200 target) because the part has 18 steps including a full recovery lab; easy cuts if needed: the audit_log per-table example in 'Settings that control freezing' and the 'Turning autovacuum off' and 'prepared transactions are disabled' mistakes.",
+  "generatedAt": "2026-11-06T13:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is Part 14 of the PostgreSQL DBA series. <b>Transaction ID wraparound</b> is what happens when PostgreSQL's 32-bit transaction counter runs out of room: old rows would suddenly look like they were written in the future and vanish from every query. PostgreSQL prevents this by <b>freezing</b> old rows during VACUUM, and if freezing falls too far behind, it stops accepting writes to protect your data."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In Part 13 (table and index bloat) you saw what happens when VACUUM cannot keep up with dead rows. This part covers the other job VACUUM must never fall behind on. By the end you will be able to measure how close every database and table is to wraparound, watch VACUUM freeze rows, recognise the warning and error messages, and recover a database that has stopped accepting writes, in the order the PostgreSQL documentation gives. You will reproduce a real wraparound emergency on a throwaway cluster, so the first time you see these messages is not in production."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What you will learn",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Why a 32-bit transaction ID needs freezing, and what a frozen row is",
+            "items": []
+          },
+          {
+            "content": "How to check wraparound risk with <code class=\"inline-code\">age(datfrozenxid)</code> and <code class=\"inline-code\">age(relfrozenxid)</code>",
+            "items": []
+          },
+          {
+            "content": "The difference between a normal VACUUM, an aggressive VACUUM and <code class=\"inline-code\">VACUUM (FREEZE)</code>",
+            "items": []
+          },
+          {
+            "content": "What an autovacuum \"to prevent wraparound\" is and why you should not cancel it",
+            "items": []
+          },
+          {
+            "content": "The exact WARNING and ERROR messages near wraparound, and the documented recovery steps",
+            "items": []
+          },
+          {
+            "content": "Which settings control freezing (<code class=\"inline-code\">vacuum_freeze_min_age</code>, <code class=\"inline-code\">autovacuum_freeze_max_age</code> and friends) and their defaults",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Prerequisites",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Parts 1 to 13 of this series, especially <a href=\"/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/\">Part 11 (MVCC, xmin and xmax)</a>, Part 12 (VACUUM and autovacuum) and <a href=\"/posts/postgresql/postgresql-dba-part-10-connections-sessions/\">Part 10 (sessions and pg_stat_activity)</a>.",
+            "items": []
+          },
+          {
+            "content": "One Ubuntu server (24.04 LTS) with PostgreSQL 18 from the PGDG repository, cluster <b>18 main</b> running on port 5432, set up as in Part 2. We call this server db1.",
+            "items": []
+          },
+          {
+            "content": "A user with sudo rights. SQL commands are run in psql as the postgres operating system user, which connects as the database superuser postgres.",
+            "items": []
+          },
+          {
+            "content": "About 300 MB of free disk space. The emergency lab writes a large server log on purpose.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How it works",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Every transaction that changes data gets a <b>transaction ID</b> (XID). As you saw in <a href=\"/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/\">Part 11</a>, each row version stores the XID that created it in its hidden <code class=\"inline-code\">xmin</code> column. To decide whether you can see a row, PostgreSQL compares that <code class=\"inline-code\">xmin</code> with your own transaction: older means visible, newer means \"in the future\" and invisible."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The XID is a 32-bit number, so there are only about 4 billion of them. PostgreSQL does not stop at the end. It treats the XID space as a circle, like the hands of a clock: for any XID, the 2 billion XIDs behind it count as the past and the 2 billion ahead count as the future. That works as long as no row is more than about 2 billion transactions old."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now picture a row written at XID 1,000 that nobody touches for years. After a little more than 2 billion new transactions, XID 1,000 is no longer \"behind\" the current XID on the circle. It is ahead. The row suddenly looks like it was written in the future, and every query stops returning it. The documentation calls this catastrophic data loss, adding that the data is still there, which is cold comfort if you cannot get at it."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The fix is <b>freezing</b>. When VACUUM finds a row whose creating transaction is old enough that every current and future transaction must see it, it sets a <b>frozen</b> flag in the row header. A frozen row is treated as older than every normal XID, forever, so it can never jump into the future. Since PostgreSQL 9.4 freezing only sets a flag bit; the original <code class=\"inline-code\">xmin</code> is kept for forensic use."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "PostgreSQL tracks how far behind freezing is with two numbers:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Column",
+            "Where",
+            "What it means"
+          ],
+          [
+            "relfrozenxid",
+            "pg_class (one row per table)",
+            "Every XID in the table older than this is frozen. Advanced only by a VACUUM that scans every page that might hold unfrozen rows."
+          ],
+          [
+            "datfrozenxid",
+            "pg_database (one row per database)",
+            "The oldest relfrozenxid of all tables in that database."
+          ],
+          [
+            "relminmxid / datminmxid",
+            "pg_class / pg_database",
+            "The same idea for multixact IDs (explained below)."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The function <code class=\"inline-code\">age(xid)</code> returns the number of transactions between an XID and the current transaction counter. So <code class=\"inline-code\">age(datfrozenxid)</code> answers the key question: how many transactions has this database gone without being fully frozen? The hard limit is about 2.1 billion (2<sup>31</sup>)."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "VACUUM has three levels of freezing work:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Kind of VACUUM",
+            "Which pages it scans",
+            "When it happens"
+          ],
+          [
+            "Normal",
+            "Pages with dead rows (pages marked all-visible in the visibility map are skipped). Since PostgreSQL 18 it may also eagerly scan a few all-visible pages to freeze them.",
+            "Every regular VACUUM and autovacuum"
+          ],
+          [
+            "Aggressive",
+            "Every page that is not already marked all-frozen",
+            "When age(relfrozenxid) passes <code class=\"inline-code\">vacuum_freeze_table_age</code> (default 150 million), or with VACUUM (FREEZE)"
+          ],
+          [
+            "Anti-wraparound autovacuum",
+            "An autovacuum forced on the table",
+            "When age(relfrozenxid) passes <code class=\"inline-code\">autovacuum_freeze_max_age</code> (default 200 million). Runs even if autovacuum is turned off."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If all of that fails, for example because something prevents VACUUM from freezing old rows, PostgreSQL protects itself in stages. When the oldest database is 40 million transactions from the limit, every new XID produces a WARNING. When it is 3 million away, PostgreSQL refuses to start any transaction that needs a new XID: reads still work, writes fail. You will see both in the lab."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Multixact IDs</b> (MXIDs) are a second 32-bit counter. When more than one transaction locks the same row (for example two sessions running <code class=\"inline-code\">SELECT ... FOR SHARE</code>), PostgreSQL stores a multixact ID in the row's <code class=\"inline-code\">xmax</code> instead of a single XID. Multixacts wrap around the same way and are frozen by the same VACUUM, with their own settings. You check them with <code class=\"inline-code\">mxid_age()</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Build a lab table",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: Create the lab database and an orders table",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On db1, as your sudo user, create a scratch database:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo -u postgres psql -X -c \"CREATE DATABASE freezelab;\"",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE DATABASE",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Then open psql in it with <code class=\"inline-code\">sudo -u postgres psql -d freezelab</code> and run the following. The two extensions ship with PostgreSQL 18 (the contrib modules are part of the postgresql-18 package): <code class=\"inline-code\">pg_visibility</code> reads the visibility map, and <code class=\"inline-code\">pageinspect</code> shows raw row headers."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE EXTENSION pg_visibility;\nCREATE EXTENSION pageinspect;\n\nCREATE TABLE orders (\n    order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer_id int           NOT NULL,\n    amount      numeric(10,2) NOT NULL,\n    created_at  timestamptz   NOT NULL DEFAULT now()\n);\n\nINSERT INTO orders (customer_id, amount)\nSELECT (random() * 999)::int + 1,\n       round((random() * 5000)::numeric, 2)\n  FROM generate_series(1, 100000);",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE EXTENSION\nCREATE EXTENSION\nCREATE TABLE\nINSERT 0 100000",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You now have 100,000 rows, all created by a single INSERT, so they all share one transaction ID."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: Look at the transaction ID stored in each row",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In the same psql session, in database freezelab:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT order_id, xmin, age(xmin) AS xmin_age\n  FROM orders\n ORDER BY order_id\n LIMIT 3;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " order_id |  xmin  | xmin_age \n----------+--------+----------\n        1 | 100776 |        1\n        2 | 100776 |        1\n        3 | 100776 |        1\n(3 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "All rows carry the same <code class=\"inline-code\">xmin</code>, the XID of the INSERT. Your number will be different; this test server had already used about 100,000 transactions. <code class=\"inline-code\">xmin_age</code> is 1 because only one transaction has started since. On a busy production server the same rows would be millions of transactions old within days."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Check:</b> <code class=\"inline-code\">SELECT pg_current_xact_id();</code> returns a number larger than the <code class=\"inline-code\">xmin</code> above."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Check how close you are to wraparound",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 3: Check every database with age(datfrozenxid)",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is the query to put in your monitoring. Run it in psql as postgres, in any database:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT datname,\n       age(datfrozenxid)       AS xid_age,\n       mxid_age(datminmxid)    AS mxid_age,\n       round(100.0 * age(datfrozenxid)\n             / current_setting('autovacuum_freeze_max_age')::int, 2)\n                               AS pct_to_forced_vacuum,\n       round(100.0 * age(datfrozenxid) / 2147483647, 4)\n                               AS pct_to_wraparound\n  FROM pg_database\n ORDER BY xid_age DESC;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "  datname  | xid_age | mxid_age | pct_to_forced_vacuum | pct_to_wraparound \n-----------+---------+----------+----------------------+-------------------\n postgres  |  100033 |        0 |                 0.05 |            0.0047\n template1 |  100033 |        0 |                 0.05 |            0.0047\n template0 |  100033 |        0 |                 0.05 |            0.0047\n freezelab |  100033 |        0 |                 0.05 |            0.0047\n(4 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Column",
+            "What it tells you"
+          ],
+          [
+            "xid_age",
+            "Transactions since the database was last fully frozen. Hard limit about 2.1 billion."
+          ],
+          [
+            "mxid_age",
+            "The same for multixact IDs. 0 here because nothing has used row locks shared by several transactions."
+          ],
+          [
+            "pct_to_forced_vacuum",
+            "How far along the way to autovacuum_freeze_max_age (200 million). At 100% anti-wraparound autovacuums start."
+          ],
+          [
+            "pct_to_wraparound",
+            "How far along the way to the hard limit of 2<sup>31</sup> - 1. This is the number that must never get near 100."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On a healthy server xid_age sawtooths: it climbs to around 200 million, an anti-wraparound autovacuum freezes the oldest tables, and it drops again. Values steadily climbing past 200 million, and especially past 500 million, mean freezing is being held back and you should find out why (Step 16 shows where to look)."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "What to alert on",
+        "text": "A common practice is to alert when age(datfrozenxid) passes about 500 million (25% of the way to wraparound) and to page someone above 1 billion. These are rules of thumb, not documented limits. The documented limits are the warning at 40 million and the write stop at 3 million transactions before wraparound."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 4: Find the oldest tables with age(relfrozenxid)",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A database is only as young as its oldest table. In psql, connected to freezelab, use the documentation's query with a size column added. It takes the older of the table and its TOAST table (the side table that stores large values), because both must be frozen:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT c.oid::regclass AS table_name,\n       greatest(age(c.relfrozenxid), age(t.relfrozenxid)) AS xid_age,\n       mxid_age(c.relminmxid) AS mxid_age,\n       pg_size_pretty(pg_total_relation_size(c.oid)) AS size\n  FROM pg_class c\n  LEFT JOIN pg_class t ON c.reltoastrelid = t.oid\n WHERE c.relkind IN ('r', 'm')\n ORDER BY xid_age DESC\n LIMIT 5;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "      table_name       | xid_age | mxid_age |  size  \n-----------------------+---------+----------+--------\n pg_statistic          |  100033 |        0 | 360 kB\n pg_type               |  100033 |        0 | 240 kB\n pg_foreign_table      |  100033 |        0 | 16 kB\n pg_authid             |  100033 |        0 | 72 kB\n pg_statistic_ext_data |  100033 |        0 | 16 kB\n(5 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Right now system catalogs top the list because they are as old as the database. On a real server you would see your biggest, least-vacuumed tables here. Run this in each database whose <code class=\"inline-code\">xid_age</code> is high in Step 3; it only sees tables in the current database."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Watch VACUUM freeze rows",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 5: Run a normal VACUUM and read the freezing lines",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In psql, connected to freezelab:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "VACUUM (VERBOSE) orders;\n\nSELECT relfrozenxid, age(relfrozenxid) AS xid_age,\n       relpages, relallvisible, relallfrozen\n  FROM pg_class\n WHERE relname = 'orders';",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "INFO:  vacuuming \"freezelab.public.orders\"\nINFO:  finished vacuuming \"freezelab.public.orders\": index scans: 0\npages: 0 removed, 736 remain, 736 scanned (100.00% of total), 0 eagerly scanned\ntuples: 0 removed, 100000 remain, 0 are dead but not yet removable\nremovable cutoff: 100777, which was 0 XIDs old when operation ended\nnew relfrozenxid: 100776, which is 1 XIDs ahead of previous value\nfrozen: 0 pages from table (0.00% of total) had 0 tuples frozen\nvisibility map: 736 pages set all-visible, 0 pages set all-frozen (0 were all-visible)\nindex scan not needed: 0 pages from table (0.00% of total) had 0 dead item identifiers removed\navg read rate: 0.000 MB/s, avg write rate: 4.696 MB/s\nbuffer usage: 1529 hits, 0 reads, 4 dirtied\nWAL usage: 740 records, 4 full page images, 76602 bytes, 0 buffers full\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s\nVACUUM\n relfrozenxid | xid_age | relpages | relallvisible | relallfrozen \n--------------+---------+----------+---------------+--------------\n       100776 |       1 |      736 |           736 |            0\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The lines that matter for this part:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>new relfrozenxid</b>: VACUUM scanned every page, so it could advance relfrozenxid to the oldest XID still in the table (the INSERT's XID).",
+            "items": []
+          },
+          {
+            "content": "<b>frozen: 0 pages</b>: nothing was frozen. The rows are only 1 transaction old, far younger than vacuum_freeze_min_age (50 million), so freezing them now would be wasted work if they changed soon.",
+            "items": []
+          },
+          {
+            "content": "<b>visibility map: 736 pages set all-visible, 0 pages set all-frozen</b>: future normal VACUUMs can skip these pages, but an aggressive VACUUM will still have to visit them to freeze them.",
+            "items": []
+          },
+          {
+            "content": "<b>0 eagerly scanned</b>: eager scanning is new in PostgreSQL 18. A normal VACUUM may now also visit some all-visible but not all-frozen pages to freeze them early, so the next aggressive VACUUM has less to do.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In the second result, <code class=\"inline-code\">relallfrozen</code> is a new column in PostgreSQL 18: the number of pages marked all-frozen. Compare it with <code class=\"inline-code\">relpages</code> to see how much of a table still needs freezing."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 6: Freeze everything with VACUUM (FREEZE)",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">FREEZE</code> is the same as running VACUUM with vacuum_freeze_min_age and vacuum_freeze_table_age set to zero: an aggressive scan that freezes every row it can. In psql, connected to freezelab:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "VACUUM (FREEZE, VERBOSE) orders;\n\nSELECT relfrozenxid, age(relfrozenxid) AS xid_age,\n       relpages, relallvisible, relallfrozen\n  FROM pg_class\n WHERE relname = 'orders';\n\nSELECT * FROM pg_visibility_map_summary('orders');",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "INFO:  aggressively vacuuming \"freezelab.public.orders\"\nINFO:  finished vacuuming \"freezelab.public.orders\": index scans: 0\npages: 0 removed, 736 remain, 736 scanned (100.00% of total), 0 eagerly scanned\ntuples: 0 removed, 100000 remain, 0 are dead but not yet removable\nremovable cutoff: 100777, which was 0 XIDs old when operation ended\nnew relfrozenxid: 100777, which is 1 XIDs ahead of previous value\nfrozen: 736 pages from table (100.00% of total) had 100000 tuples frozen\nvisibility map: 0 pages set all-visible, 736 pages set all-frozen (736 were all-visible)\nindex scan not needed: 0 pages from table (0.00% of total) had 0 dead item identifiers removed\navg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s\nbuffer usage: 1530 hits, 0 reads, 0 dirtied\nWAL usage: 1473 records, 0 full page images, 293730 bytes, 0 buffers full\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s\nVACUUM\n relfrozenxid | xid_age | relpages | relallvisible | relallfrozen \n--------------+---------+----------+---------------+--------------\n       100777 |       0 |      736 |           736 |          736\n(1 row)\n\n all_visible | all_frozen \n-------------+------------\n         736 |        736\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now the first line says <b>aggressively vacuuming</b>, all 100,000 tuples were frozen, and all 736 pages are marked all-frozen in the visibility map. relfrozenxid is at the current XID, so the age is 0. From now on every VACUUM can skip these pages completely until a row on them changes."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Notice the cost: 1,473 WAL records for a 6 MB table. Freezing writes to every page it touches, which also produces WAL (the change log that replicas and backups read). That is why PostgreSQL does not freeze young rows by default."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 7: See the frozen flag in the row header",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In psql, connected to freezelab, read the first two rows of page 0 with pageinspect:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT lp, t_xmin, t_xmax,\n       heap_tuple_infomask_flags(t_infomask, t_infomask2) AS flags\n  FROM heap_page_items(get_raw_page('orders', 0))\n WHERE lp <= 2;\n\nSELECT order_id, xmin, age(xmin) AS xmin_age\n  FROM orders\n ORDER BY order_id\n LIMIT 2;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " lp | t_xmin | t_xmax |                                               flags                                               \n----+--------+--------+---------------------------------------------------------------------------------------------------\n  1 | 100776 |      0 | (\"{HEAP_HASVARWIDTH,HEAP_XMIN_COMMITTED,HEAP_XMIN_INVALID,HEAP_XMAX_INVALID}\",{HEAP_XMIN_FROZEN})\n  2 | 100776 |      0 | (\"{HEAP_HASVARWIDTH,HEAP_XMIN_COMMITTED,HEAP_XMIN_INVALID,HEAP_XMAX_INVALID}\",{HEAP_XMIN_FROZEN})\n(2 rows)\n\n order_id |  xmin  | xmin_age \n----------+--------+----------\n        1 | 100776 |        1\n        2 | 100776 |        1\n(2 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The second set of flags contains <code class=\"inline-code\">HEAP_XMIN_FROZEN</code>, which is how frozen is stored (the two bits XMIN_COMMITTED and XMIN_INVALID set together). The <code class=\"inline-code\">t_xmin</code> value is unchanged at 100776, and so is the <code class=\"inline-code\">xmin</code> column you query. So <code class=\"inline-code\">age(xmin)</code> is not a way to check freezing: use <code class=\"inline-code\">relfrozenxid</code>, <code class=\"inline-code\">relallfrozen</code> or <code class=\"inline-code\">pg_visibility_map_summary()</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "See an autovacuum to prevent wraparound",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In production the forced vacuum appears at 200 million transactions. To see one in a minute, lower the limit for one table. The storage parameter autovacuum_freeze_max_age can only be set lower than the server setting, and its minimum is 100,000."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 8: Lower the per-table limit and use up 110,000 XIDs",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In psql, connected to freezelab. The procedure <code class=\"inline-code\">burn_xids</code> is a lab helper: each loop asks for a transaction ID and commits, so each loop uses one XID. Never create it on a real server."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "ALTER TABLE orders SET (autovacuum_freeze_max_age = 100000,\n                        log_autovacuum_min_duration = 0);\n\nCREATE PROCEDURE burn_xids(n int)\nLANGUAGE plpgsql AS $$\nBEGIN\n  FOR i IN 1..n LOOP\n    PERFORM pg_current_xact_id();  -- assigns a new transaction ID\n    COMMIT;                        -- ends it, so the next loop gets a new one\n  END LOOP;\nEND $$;\n\nCALL burn_xids(110000);\n\nSELECT age(relfrozenxid) AS xid_age\n  FROM pg_class\n WHERE relname = 'orders';",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ALTER TABLE\nCREATE PROCEDURE\nCALL\n xid_age \n---------\n  110002\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The table is now 110,002 transactions old, over its limit of 100,000. Within about a minute (autovacuum_naptime is 60 seconds) the autovacuum launcher notices. Because the table has <code class=\"inline-code\">log_autovacuum_min_duration = 0</code>, the run is logged. On db1, as your sudo user:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo grep -A12 \"to prevent wraparound\" /var/log/postgresql/postgresql-18-main.log",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "2026-11-06 12:54:38.822 UTC [2950] LOG:  automatic vacuum to prevent wraparound of table \"freezelab.public.orders\": index scans: 0\n\tpages: 0 removed, 736 remain, 1 scanned (0.14% of total), 0 eagerly scanned\n\ttuples: 0 removed, 100000 remain, 0 are dead but not yet removable\n\tremovable cutoff: 210779, which was 0 XIDs old when operation ended\n\tnew relfrozenxid: 210779, which is 110002 XIDs ahead of previous value\n\tfrozen: 0 pages from table (0.00% of total) had 0 tuples frozen\n\tvisibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)\n\tindex scan not needed: 0 pages from table (0.00% of total) had 0 dead item identifiers removed\n\tavg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s\n\tbuffer usage: 57 hits, 0 reads, 0 dirtied\n\tWAL usage: 1 records, 0 full page images, 351 bytes, 0 buffers full\n\tsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s\n2026-11-06 12:54:38.869 UTC [2950] LOG:  automatic analyze of table \"freezelab.public.orders\"",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>automatic vacuum to prevent wraparound</b> is the anti-wraparound autovacuum. It scanned only 1 of 736 pages because Step 6 had marked every page all-frozen, and still advanced relfrozenxid by 110,002. This is why regular freezing matters: a forced vacuum on a well-frozen table is cheap, and one on a never-frozen 500 GB table reads all of it."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "While such a run is in progress, its query in <code class=\"inline-code\">pg_stat_activity</code> ends with <b>(to prevent wraparound)</b>. Unlike a normal autovacuum, it is not automatically cancelled when another session needs a conflicting lock, so an ALTER TABLE or a TRUNCATE can queue behind it. Do not terminate it: it will simply start again, from the beginning, a minute later."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Check:</b> in psql, connected to freezelab:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT age(relfrozenxid) AS xid_age, last_autovacuum\n  FROM pg_class c\n  JOIN pg_stat_user_tables s ON s.relid = c.oid\n WHERE c.relname = 'orders';",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " xid_age |        last_autovacuum        \n---------+-------------------------------\n       1 | 2026-11-06 12:54:38.822574+00\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 9: Undo the lab settings",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In psql, connected to freezelab, remove the two storage parameters so the table uses the server settings again:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "ALTER TABLE orders RESET (autovacuum_freeze_max_age, log_autovacuum_min_duration);",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ALTER TABLE",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Check:</b> <code class=\"inline-code\">SELECT reloptions FROM pg_class WHERE relname = 'orders';</code> returns NULL."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Lab: reproduce a wraparound emergency safely",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Wraparound emergencies are rare, so most DBAs see the messages for the first time during an outage. In this lab you build a second, disposable cluster called <b>wraplab</b> on port 5433, leave a forgotten prepared transaction in it (a classic real-world cause), and move its transaction counter close to the limit with <code class=\"inline-code\">pg_resetwal</code>."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "danger",
+        "title": "Lab only: never run pg_resetwal on a real cluster to do this",
+        "text": "pg_resetwal rewrites the cluster's control information. The documentation says it should be used only as a last resort, when the server will not start because of corruption, and that afterwards you should immediately dump your data, run initdb and restore. Here it is used only on the throwaway wraplab cluster to fast-forward the XID counter. Never run these steps against 18 main or any cluster that holds data you care about."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 10: Create the disposable wraplab cluster",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On db1, as your sudo user. <code class=\"inline-code\">max_prepared_transactions</code> is 0 by default, which disables prepared transactions, and it can only be set at server start, so set it before starting the cluster:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo pg_createcluster 18 wraplab --port 5433\necho \"max_prepared_transactions = 5\" | sudo tee /etc/postgresql/18/wraplab/conf.d/lab.conf\nsudo pg_ctlcluster 18 wraplab start\npg_lsclusters",
+        "caption": ""
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Option",
+            "What it does"
+          ],
+          [
+            "18 wraplab",
+            "Major version and name of the new cluster. Its data goes to /var/lib/postgresql/18/wraplab and its config to /etc/postgresql/18/wraplab/."
+          ],
+          [
+            "--port 5433",
+            "Port for the new cluster, so it does not clash with 18 main on 5432."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Creating new PostgreSQL cluster 18/wraplab ...\n/usr/lib/postgresql/18/bin/initdb -D /var/lib/postgresql/18/wraplab --auth-local peer --auth-host scram-sha-256 --no-instructions\n...\nmax_prepared_transactions = 5\nVer Cluster Port Status Owner    Data directory                 Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main    /var/log/postgresql/postgresql-18-main.log\n18  wraplab 5433 online postgres /var/lib/postgresql/18/wraplab /var/log/postgresql/postgresql-18-wraplab.log",
+        "caption": "Output (initdb messages trimmed)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Both clusters are online. The Ubuntu packaging reads every file in conf.d, so lab.conf is picked up."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 11: Leave a forgotten prepared transaction",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A <b>prepared transaction</b> (<code class=\"inline-code\">PREPARE TRANSACTION</code>) is the first half of a two-phase commit, used by external transaction managers. It survives disconnects and restarts until someone runs COMMIT PREPARED or ROLLBACK PREPARED. While it exists, VACUUM cannot freeze anything newer than its XID. The documentation warns that leaving one for a long time can, in extreme cases, cause the database to stop to prevent wraparound. Connect with <code class=\"inline-code\">sudo -u postgres psql -p 5433</code> and run:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE TABLE payments (\n    payment_id int PRIMARY KEY,\n    amount     numeric(10,2) NOT NULL\n);\n\nBEGIN;\nINSERT INTO payments VALUES (1, 499.00);\nPREPARE TRANSACTION 'pay_batch_42';\n\nSELECT gid, transaction, prepared FROM pg_prepared_xacts;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE TABLE\nBEGIN\nINSERT 0 1\nPREPARE TRANSACTION\n     gid      | transaction |           prepared           \n--------------+-------------+------------------------------\n pay_batch_42 |         753 | 2026-11-06 12:56:12.58082+00\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "XID 753 is now pinned. Quit psql and stop the cluster, as your sudo user:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo pg_ctlcluster 18 wraplab stop",
+        "caption": ""
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 12: Fast-forward the transaction counter (lab only)",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On db1, as your sudo user. First a dry run with <code class=\"inline-code\">-n</code>, which prints the current and new values without changing anything:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo ls /var/lib/postgresql/18/wraplab/pg_xact\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_resetwal -n -x 0x7FD00000 \\\n    /var/lib/postgresql/18/wraplab | grep -i \"NextXID\\|oldestXID:\\|Values to be changed\"",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "0000\nLatest checkpoint's NextXID:          0:754\nLatest checkpoint's oldestXID:        744\nValues to be changed:\nNextXID:                              2144337920",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Then do it for real, create the commit status file for the new XID range, and start the cluster:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo -u postgres /usr/lib/postgresql/18/bin/pg_resetwal -x 0x7FD00000 /var/lib/postgresql/18/wraplab\nsudo -u postgres dd if=/dev/zero of=/var/lib/postgresql/18/wraplab/pg_xact/07FD bs=256k count=1 status=none\nsudo pg_ctlcluster 18 wraplab start",
+        "caption": ""
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Option",
+            "What it does"
+          ],
+          [
+            "-n",
+            "Dry run: print the values reconstructed from pg_control and the values about to be changed, then exit."
+          ],
+          [
+            "-x 0x7FD00000",
+            "Set the next transaction ID. The documentation suggests a multiple of 0x100000; 0x7FD00000 is 2,144,337,920, about 3.1 million short of the limit for this cluster."
+          ],
+          [
+            "dd ... pg_xact/07FD",
+            "pg_xact stores two bits of commit status per XID in 256 kB files, each covering 0x100000 XIDs. 0x7FD00000 / 0x100000 = 0x7FD, so the server needs a file named 07FD; dd creates it filled with zeros."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Write-ahead log reset",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The server log, /var/log/postgresql/postgresql-18-wraplab.log, already shows the first warning at startup:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "WARNING:  database with OID 1 must be vacuumed within 3146471 transactions\nHINT:  To avoid XID assignment failures, execute a database-wide VACUUM in that database.\n\tYou might also need to commit or roll back old prepared transactions, or drop stale replication slots.\nLOG:  recovering prepared transaction 753 from shared memory\nLOG:  database system is ready to accept connections",
+        "caption": "Output (log lines, timestamps removed)"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 13: See the wraparound WARNING",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Connect with <code class=\"inline-code\">sudo -u postgres psql -p 5433</code> and run:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "INSERT INTO payments VALUES (2, 120.00);\n\nSELECT datname, age(datfrozenxid) AS xid_age,\n       2147483647 - age(datfrozenxid) AS xids_left\n  FROM pg_database\n ORDER BY xid_age DESC;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "WARNING:  database \"template1\" must be vacuumed within 3146471 transactions\nHINT:  To avoid transaction ID assignment failures, execute a database-wide VACUUM in that database.\nYou might also need to commit or roll back old prepared transactions, or drop stale replication slots.\nINSERT 0 1\n  datname  |  xid_age   | xids_left \n-----------+------------+-----------\n postgres  | 2144337177 |   3146470\n template1 | 2144337177 |   3146470\n template0 | 2144337177 |   3146470\n(3 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Every statement that takes a new XID now prints this WARNING, in the client and in the server log. All three databases have the same age because the prepared transaction holds them all back; the message names template1 (OID 1). In production, this is the moment to act. Writes still work."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 14: Hit the write stop",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Still in psql on port 5433, use up the remaining XIDs. <code class=\"inline-code\">client_min_messages = error</code> hides the 146,000 warnings from your screen, but every one still goes to the server log, which grows to about 80 MB."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE PROCEDURE burn_xids(n int)\nLANGUAGE plpgsql AS $$\nBEGIN\n  FOR i IN 1..n LOOP\n    PERFORM pg_current_xact_id();\n    COMMIT;\n  END LOOP;\nEND $$;\n\nSET client_min_messages = error;\nCALL burn_xids(150000);\nRESET client_min_messages;\n\nINSERT INTO payments VALUES (3, 75.00);\nSELECT count(*) FROM payments;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "WARNING:  database \"template1\" must be vacuumed within 3146470 transactions\nHINT:  To avoid transaction ID assignment failures, execute a database-wide VACUUM in that database.\nYou might also need to commit or roll back old prepared transactions, or drop stale replication slots.\nCREATE PROCEDURE\nSET\nERROR:  database is not accepting commands that assign new transaction IDs to avoid wraparound data loss in database \"template1\"\nHINT:  Execute a database-wide VACUUM in that database.\nYou might also need to commit or roll back old prepared transactions, or drop stale replication slots.\nCONTEXT:  SQL statement \"SELECT pg_current_xact_id()\"\nPL/pgSQL function burn_xids(integer) line 4 at PERFORM\nRESET\nERROR:  database is not accepting commands that assign new transaction IDs to avoid wraparound data loss in database \"template1\"\nHINT:  Execute a database-wide VACUUM in that database.\nYou might also need to commit or roll back old prepared transactions, or drop stale replication slots.\n count \n-------\n     1\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is the documented error. PostgreSQL stopped 3 million transactions short of wraparound. In this state, transactions already in progress can continue and read-only queries work (the SELECT returned), but anything that needs a new XID fails. Note that the payments count is 1: row 1 belongs to the prepared transaction, which was never committed."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "Do not stop the server or use single-user mode",
+        "text": "The documentation says it is not necessary or desirable to stop the postmaster or enter single-user mode to recover from this. VACUUM still runs normally. Single-user mode takes the system down and disables the wraparound safeguards, so it is riskier. Follow the steps below instead."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Recover, in the order the documentation gives",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The documentation lists four steps: resolve old prepared transactions, end long-running transactions, drop stale replication slots, then VACUUM. The first three remove whatever is stopping VACUUM from freezing; without them, VACUUM runs and nothing improves."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 15: Resolve old prepared transactions",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On the wraplab cluster, in psql as postgres:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT gid, database, owner, prepared,\n       age(transaction) AS xid_age\n  FROM pg_prepared_xacts\n ORDER BY age(transaction) DESC;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "     gid      | database |  owner   |           prepared           |  xid_age   \n--------------+----------+----------+------------------------------+------------\n pay_batch_42 | postgres | postgres | 2026-11-06 12:56:12.58082+00 | 2144483638\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A prepared transaction 2.1 billion XIDs old is the blocker. In real life, first ask the team that owns the transaction manager whether it should be committed or rolled back. Here it is abandoned, so roll it back. ROLLBACK PREPARED does not need a new XID, so it works even in this state:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "ROLLBACK PREPARED 'pay_batch_42';",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ROLLBACK PREPARED",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<b>Check:</b> <code class=\"inline-code\">SELECT count(*) FROM pg_prepared_xacts;</code> returns 0."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 16: Check long-running sessions and replication slots",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In psql on port 5433, look for sessions holding an old XID or snapshot (see <a href=\"/posts/postgresql/postgresql-dba-part-10-connections-sessions/\">Part 10</a> for terminating sessions) and for replication slots holding back <code class=\"inline-code\">xmin</code>:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT pid, datname, usename, state, xact_start,\n       age(backend_xid)  AS xid_age,\n       age(backend_xmin) AS xmin_age\n  FROM pg_stat_activity\n WHERE pid <> pg_backend_pid()\n   AND (backend_xid IS NOT NULL OR backend_xmin IS NOT NULL)\n ORDER BY greatest(age(backend_xid), age(backend_xmin)) DESC;\n\nSELECT slot_name, slot_type, active,\n       age(xmin) AS xmin_age, age(catalog_xmin) AS catalog_xmin_age\n  FROM pg_replication_slots;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " pid | datname | usename | state | xact_start | xid_age | xmin_age \n-----+---------+---------+-------+------------+---------+----------\n(0 rows)\n\n slot_name | slot_type | active | xmin_age | catalog_xmin_age \n-----------+-----------+--------+----------+------------------\n(0 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Both are empty in the lab. In production, commit, roll back or terminate (<code class=\"inline-code\">pg_terminate_backend(pid)</code>) any session with a huge xid_age or xmin_age, and drop slots with a huge xmin_age that belong to replicas that no longer exist (<code class=\"inline-code\">SELECT pg_drop_replication_slot('slot_name');</code>). The documentation warns that if you drop a slot for a replica that still exists, that replica may need to be rebuilt."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 17: VACUUM every database",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On db1, as your sudo user. <code class=\"inline-code\">vacuumdb</code> runs a plain VACUUM in every database you can connect to. It must run as a superuser, otherwise VACUUM skips system catalogs and cannot advance datfrozenxid:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo -u postgres vacuumdb --all --port 5433",
+        "caption": ""
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Option",
+            "What it does"
+          ],
+          [
+            "--all",
+            "Vacuum all databases (those that allow connections; template0 does not)."
+          ],
+          [
+            "--port 5433",
+            "Connect to the wraplab cluster."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "vacuumdb: vacuuming database \"postgres\"\nWARNING:  database \"template1\" must be vacuumed within 3000000 transactions\nHINT:  To avoid XID assignment failures, execute a database-wide VACUUM in that database.\nYou might also need to commit or roll back old prepared transactions, or drop stale replication slots.\nvacuumdb: vacuuming database \"template1\"\nWARNING:  bypassing nonessential maintenance of table \"template1.pg_catalog.pg_proc\" as a failsafe after 0 index scans\nDETAIL:  The table's relfrozenxid or relminmxid is too far in the past.\nHINT:  Consider increasing configuration parameter \"maintenance_work_mem\" or \"autovacuum_work_mem\".\nYou might also need to consider other ways for VACUUM to keep up with the allocation of transaction IDs.\nWARNING:  bypassing nonessential maintenance of table \"template1.pg_toast.pg_toast_1255\" as a failsafe after 0 index scans\n...\nWARNING:  database \"template0\" must be vacuumed within 3000000 transactions\nHINT:  To avoid XID assignment failures, execute a database-wide VACUUM in that database.\nYou might also need to commit or roll back old prepared transactions, or drop stale replication slots.",
+        "caption": "Output (99 similar failsafe warnings trimmed)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Two things to read here. First, <b>bypassing nonessential maintenance ... as a failsafe</b>: this is the vacuum failsafe. When a table's age passes <code class=\"inline-code\">vacuum_failsafe_age</code> (default 1.6 billion), VACUUM stops cost-based throttling and skips index cleanup to finish freezing as fast as possible. Second, by the time vacuumdb reached database postgres, autovacuum had already fixed it: anti-wraparound autovacuum is always on, and Step 15 removed its blocker."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The last warning names template0. It does not allow connections, so vacuumdb skips it, but autovacuum processes it for wraparound. Wait a minute and check, in psql on port 5433:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT datname, datallowconn, age(datfrozenxid) AS xid_age\n  FROM pg_database\n ORDER BY xid_age DESC;\n\nINSERT INTO payments VALUES (3, 75.00);\nSELECT * FROM payments ORDER BY payment_id;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "  datname  | datallowconn | xid_age \n-----------+--------------+---------\n postgres  | t            |  146471\n template1 | t            |       0\n template0 | f            |       0\n(3 rows)\n\nINSERT 0 1\n payment_id | amount \n------------+--------\n          2 | 120.00\n          3 |  75.00\n(2 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Every database is young again and the INSERT works. Do not use VACUUM FULL here (it needs a new XID, so it fails) or VACUUM FREEZE (it does far more work than needed); the documentation warns against both in this situation. Once writes work, review autovacuum settings so it cannot happen again (Part 12)."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 18: Remove the lab",
+        "level": 3
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "Check the cluster name before dropping",
+        "text": "pg_dropcluster deletes the cluster's data directory and configuration. Make sure the name is wraplab, not main."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On db1, as your sudo user:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "sudo pg_dropcluster 18 wraplab --stop\nsudo rm -f /var/log/postgresql/postgresql-18-wraplab.log\npg_lsclusters\nsudo -u postgres psql -X -c \"DROP DATABASE freezelab;\"",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log\nDROP DATABASE",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Only 18 main remains."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Settings that control freezing",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Run this in psql on 18 main to see your current values:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "SELECT name, setting, unit, context\n  FROM pg_settings\n WHERE name IN ('autovacuum_freeze_max_age', 'autovacuum_multixact_freeze_max_age',\n                'vacuum_freeze_min_age', 'vacuum_freeze_table_age',\n                'vacuum_multixact_freeze_min_age', 'vacuum_multixact_freeze_table_age',\n                'vacuum_failsafe_age', 'vacuum_multixact_failsafe_age',\n                'vacuum_max_eager_freeze_failure_rate')\n ORDER BY name;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "                 name                 |  setting   | unit |  context   \n--------------------------------------+------------+------+------------\n autovacuum_freeze_max_age            | 200000000  |      | postmaster\n autovacuum_multixact_freeze_max_age  | 400000000  |      | postmaster\n vacuum_failsafe_age                  | 1600000000 |      | user\n vacuum_freeze_min_age                | 50000000   |      | user\n vacuum_freeze_table_age              | 150000000  |      | user\n vacuum_max_eager_freeze_failure_rate | 0.03       |      | user\n vacuum_multixact_failsafe_age        | 1600000000 |      | user\n vacuum_multixact_freeze_min_age      | 5000000    |      | user\n vacuum_multixact_freeze_table_age    | 150000000  |      | user\n(9 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Setting",
+            "Default",
+            "What it controls"
+          ],
+          [
+            "vacuum_freeze_min_age",
+            "50 million",
+            "How old an XID must be before VACUUM freezes rows that carry it. Capped at half of autovacuum_freeze_max_age."
+          ],
+          [
+            "vacuum_freeze_table_age",
+            "150 million",
+            "Table age at which VACUUM becomes aggressive. Capped at 95% of autovacuum_freeze_max_age."
+          ],
+          [
+            "autovacuum_freeze_max_age",
+            "200 million",
+            "Table age at which an anti-wraparound autovacuum is forced, even with autovacuum off. Restart needed."
+          ],
+          [
+            "vacuum_failsafe_age",
+            "1.6 billion",
+            "Table age at which VACUUM drops throttling and index cleanup to finish freezing (at least 105% of autovacuum_freeze_max_age)."
+          ],
+          [
+            "vacuum_max_eager_freeze_failure_rate",
+            "0.03",
+            "New in PostgreSQL 18. How many all-visible pages a normal VACUUM may try and fail to freeze, as a fraction of the table, before it stops eager scanning. 0 disables eager scanning."
+          ],
+          [
+            "vacuum_multixact_* / autovacuum_multixact_freeze_max_age",
+            "5 million / 150 million / 400 million / 1.6 billion",
+            "The same controls for multixact IDs."
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The <code class=\"inline-code\">context</code> column tells you how to apply a change (Part 5): <b>postmaster</b> needs <code class=\"inline-code\">sudo systemctl restart postgresql@18-main</code>; the others can be set in /etc/postgresql/18/main/postgresql.conf and applied with <code class=\"inline-code\">SELECT pg_reload_conf();</code>."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Should you raise autovacuum_freeze_max_age? The documentation says the only downside of a higher value is disk space: pg_xact keeps commit status back to that horizon, about 50 MB at the default and about half a gigabyte at the maximum of 2 billion (pg_commit_ts can grow to about 2 GB and 20 GB if track_commit_timestamp is on). Raising it means fewer forced vacuums, but each one has more to do, and you get less warning time."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "For big tables that only receive INSERTs, the documentation suggests lowering the table's <code class=\"inline-code\">autovacuum_freeze_min_age</code> so the insert-triggered autovacuums freeze rows early, while each page is still in memory. In psql, as an example on a new table:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE TABLE audit_log (\n    log_id    bigint GENERATED ALWAYS AS IDENTITY,\n    logged_at timestamptz NOT NULL DEFAULT now(),\n    message   text\n);\n\nALTER TABLE audit_log SET (autovacuum_freeze_min_age = 1000000);\n\nSELECT relname, reloptions\n  FROM pg_class\n WHERE relname = 'audit_log';",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "CREATE TABLE\nALTER TABLE\n  relname  |             reloptions              \n-----------+-------------------------------------\n audit_log | {autovacuum_freeze_min_age=1000000}\n(1 row)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To undo it: <code class=\"inline-code\">ALTER TABLE audit_log RESET (autovacuum_freeze_min_age);</code>"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes and how to fix them",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "WARNING: database \"mydb\" must be vacuumed within N transactions",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is the 40-million warning. Do not wait for the error. Follow Steps 15 to 17 now: find old prepared transactions, long-running sessions and stale replication slots, remove them, then VACUUM the named database as a superuser. A non-superuser VACUUM skips system catalogs and cannot advance datfrozenxid."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "ERROR: database is not accepting commands that assign new transaction IDs to avoid wraparound data loss",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Writes are stopped. Same fix, in the same order. Do not restart into single-user mode, and do not run VACUUM FULL or VACUUM FREEZE. If autovacuum is already running \"(to prevent wraparound)\" on the table, let it finish; it has the failsafe enabled."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Cancelling or killing an autovacuum \"(to prevent wraparound)\"",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "It holds a lock that blocks DDL such as ALTER TABLE, so it is tempting to terminate it. It will restart a minute later and scan from the beginning. Let it run, and schedule DDL after it. To make these runs short, keep tables frozen with regular VACUUM so most pages are already all-frozen, as Step 8 showed."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Turning autovacuum off to stop it \"using resources\"",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Anti-wraparound autovacuum still runs, but now on a huge backlog, at a time you did not choose. Keep <code class=\"inline-code\">autovacuum = on</code> and tune it instead (Part 12)."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "ERROR: prepared transactions are disabled",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "PostgreSQL adds the hint <i>Set \"max_prepared_transactions\" to a nonzero value.</i> You see this if you run PREPARE TRANSACTION while <code class=\"inline-code\">max_prepared_transactions = 0</code> (the default). If your application does not use two-phase commit, leave it at 0: that makes forgotten prepared transactions impossible."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Checking age(xmin) on rows to see if they are frozen",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "As Step 7 showed, freezing keeps the original xmin, so age(xmin) keeps growing. Check relfrozenxid, relallfrozen or pg_visibility_map_summary() instead."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Practice exercise",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "ordered",
+        "items": [
+          {
+            "content": "On 18 main, list the three databases with the highest age(datfrozenxid) and show what percentage of autovacuum_freeze_max_age each has used.",
+            "items": []
+          },
+          {
+            "content": "Create a table with 10,000 rows, run a normal VACUUM, and use pg_visibility_map_summary() to show that no page is all-frozen. Then make every page all-frozen without using the FREEZE option.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "Answer",
+        "text": "1. Use the Step 3 query with LIMIT 3 at the end. 2. After CREATE EXTENSION pg_visibility, a plain VACUUM gives all_frozen = 0. Run SET vacuum_freeze_min_age = 0; SET vacuum_freeze_table_age = 0; and VACUUM again: the documentation says FREEZE is equivalent to these two settings at zero, so pg_visibility_map_summary() now shows all_frozen equal to all_visible. RESET both settings afterwards."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Quick reference",
+        "level": 2
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "bash",
+        "code": "# Age of every database (run on 18 main)\nsudo -u postgres psql -c \"SELECT datname, age(datfrozenxid), mxid_age(datminmxid) FROM pg_database ORDER BY 2 DESC;\"\n\n# Oldest tables in one database (include TOAST)\nsudo -u postgres psql -d mydb -c \"SELECT c.oid::regclass, greatest(age(c.relfrozenxid), age(t.relfrozenxid)) AS xid_age FROM pg_class c LEFT JOIN pg_class t ON c.reltoastrelid = t.oid WHERE c.relkind IN ('r','m') ORDER BY 2 DESC LIMIT 10;\"\n\n# Freezing details for one table\nsudo -u postgres psql -d mydb -c \"VACUUM (VERBOSE) orders;\"\nsudo -u postgres psql -d mydb -c \"SELECT relpages, relallvisible, relallfrozen FROM pg_class WHERE relname = 'orders';\"\n\n# Freeze a table completely\nsudo -u postgres psql -d mydb -c \"VACUUM (FREEZE, VERBOSE) orders;\"\n\n# Running anti-wraparound autovacuums\nsudo -u postgres psql -c \"SELECT pid, datname, query FROM pg_stat_activity WHERE query LIKE '%to prevent wraparound%';\"\n\n# Emergency step 1: old prepared transactions\nsudo -u postgres psql -c \"SELECT gid, database, age(transaction) FROM pg_prepared_xacts ORDER BY 3 DESC;\"\n\n# Emergency step 2: old transactions and snapshots\nsudo -u postgres psql -c \"SELECT pid, datname, age(backend_xid), age(backend_xmin) FROM pg_stat_activity WHERE backend_xid IS NOT NULL OR backend_xmin IS NOT NULL;\"\n\n# Emergency step 3: replication slots holding xmin\nsudo -u postgres psql -c \"SELECT slot_name, active, age(xmin), age(catalog_xmin) FROM pg_replication_slots;\"\n\n# Emergency step 4: VACUUM every database as superuser\nsudo -u postgres vacuumdb --all",
+        "caption": ""
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary and what's next",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "Transaction IDs are 32 bits; a row more than about 2 billion transactions old would look like it is in the future.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "VACUUM freezes old rows by setting a flag; the original xmin is kept.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Monitor age(datfrozenxid) per database and age(relfrozenxid) per table; investigate anything climbing well past 200 million.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Aggressive VACUUM starts at vacuum_freeze_table_age (150 million); anti-wraparound autovacuum at autovacuum_freeze_max_age (200 million), even with autovacuum off.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Never cancel an autovacuum \"(to prevent wraparound)\".",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "At 40 million XIDs left you get WARNINGs; at 3 million, writes stop.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Recover in order: prepared transactions, long-running sessions, stale replication slots, then a superuser VACUUM of each database. No single-user mode, no VACUUM FULL, no VACUUM FREEZE.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In Part 15 we look at WAL: the write-ahead log, wal_level and WAL segments."
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your PostgreSQL database can refuse every INSERT and UPDATE while reads keep working. The cause is a 32-bit counter.\n\nThat is transaction ID wraparound. I reproduced it on a throwaway PostgreSQL 18 cluster in Part 14 of the PostgreSQL DBA series:\n\n1. Transaction IDs are 32 bits. A row older than about 2 billion transactions would look like it was written in the future and disappear from queries.\n2. VACUUM prevents this by freezing old rows. Check how far behind it is with SELECT datname, age(datfrozenxid) FROM pg_database;\n3. At 200 million an autovacuum \"to prevent wraparound\" is forced, even with autovacuum off. Do not kill it.\n4. 40 million XIDs before the limit you get a WARNING on every write. At 3 million, writes stop with \"database is not accepting commands that assign new transaction IDs\".\n5. Recovery order from the docs: old prepared transactions, long-running sessions, stale replication slots, then VACUUM as superuser. No single-user mode, no VACUUM FULL.\n\nIn my lab the blocker was one forgotten prepared transaction.\n\nWhat does your monitoring alert on today: age(datfrozenxid), or nothing yet?\n\nFollow the series for Part 15 on WAL.\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+    "slides": [
+      {
+        "title": "PostgreSQL Transaction ID Wraparound",
+        "body": "Part 14: check the risk, see freezing, recover when writes stop"
+      },
+      {
+        "title": "Why a 32-bit counter is a problem",
+        "points": [
+          "Each write gets a transaction ID (XID), stored in the row as xmin",
+          "XIDs form a circle: 2 billion behind you, 2 billion ahead",
+          "A row older than that would look like the future and vanish"
+        ]
+      },
+      {
+        "title": "Check the age of every database",
+        "code": "SELECT datname,\n       age(datfrozenxid) AS xid_age,\n       mxid_age(datminmxid) AS mxid_age\n  FROM pg_database\n ORDER BY xid_age DESC;",
+        "lang": "postgresql",
+        "body": "Healthy servers sawtooth up to about 200 million and back down."
+      },
+      {
+        "title": "Freezing in one command",
+        "code": "VACUUM (FREEZE, VERBOSE) orders;\n\nSELECT relpages, relallfrozen\n  FROM pg_class\n WHERE relname = 'orders';",
+        "lang": "postgresql",
+        "body": "relallfrozen is new in PostgreSQL 18. Frozen pages are skipped by later vacuums."
+      },
+      {
+        "title": "The three stages of trouble",
+        "points": [
+          "200 million: autovacuum to prevent wraparound, even if autovacuum is off",
+          "40 million left: WARNING must be vacuumed within N transactions",
+          "3 million left: writes stop, reads still work"
+        ]
+      },
+      {
+        "title": "Recover in the documented order",
+        "points": [
+          "1. Commit or roll back old prepared transactions",
+          "2. End long-running transactions",
+          "3. Drop stale replication slots",
+          "4. VACUUM each database as superuser, no VACUUM FULL"
+        ]
+      }
+    ]
+  }
+}
