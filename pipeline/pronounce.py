@@ -19,7 +19,8 @@ WORDS = {
     # product and tools
     "PostgreSQL": "Postgres-Q-L", "Postgresql": "Postgres-Q-L", "postgresql": "Postgres-Q-L",
     "POSTGRESQL": "Postgres-Q-L",
-    "psql": "P-S-Q-L", "PSQL": "P-S-Q-L", "appdb": "app D-B",
+    "psql": "P-S-Q-L", "PSQL": "P-S-Q-L", "appdb": "app D-B", "reportdb": "report D-B",
+    "fdw": "F-D-W", "datname": "dat-name",
     "pg": "P-G", "PG": "P-G",
     "pgBouncer": "P-G Bouncer", "PgBouncer": "P-G Bouncer", "pgbouncer": "P-G Bouncer",
     "pgAdmin": "P-G Admin", "pgadmin": "P-G Admin",

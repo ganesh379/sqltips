@@ -1,0 +1,578 @@
+{
+ "ep": 6,
+ "total": 140,
+ "title": "Cluster, Instance, Database and Schema",
+ "phase": "Foundations",
+ "lines": [
+  {
+   "say": "Cluster, database, schema: don't confuse these.",
+   "cap": "*Cluster,* *database,* *schema:* don't confuse these."
+  },
+  {
+   "say": "This is episode six of the PostgreSQL DBA series. Today: four layers every DBA must know.",
+   "cap": "Episode 6: the *four* *layers* every DBA must know."
+  },
+  {
+   "say": "Start at the top. A database cluster is a collection of databases, managed by one running server.",
+   "cap": "*Cluster:* a collection of databases, one running server.",
+   "cue": "cluster"
+  },
+  {
+   "say": "You create it with initdb, and on disk it lives in one data directory, often called PGDATA.",
+   "cap": "Created by *initdb.* Lives in one *data* *directory.*"
+  },
+  {
+   "say": "The instance is the running part: the postmaster, its processes and their shared memory.",
+   "cap": "*Instance:* postmaster, processes, *shared* *memory.*",
+   "cue": "instance"
+  },
+  {
+   "say": "One instance manages exactly one cluster. Several instances can run on one server, if their ports don't conflict.",
+   "cap": "One instance, *one* *cluster.* Many instances need *different* *ports.*"
+  },
+  {
+   "say": "Inside the cluster live databases, like appdb.",
+   "cap": "Inside the cluster live *databases.*"
+  },
+  {
+   "say": "A new cluster already has three: postgres, template1 and template0.",
+   "cap": "New cluster: *postgres,* *template1,* *template0.*",
+   "cue": "three"
+  },
+  {
+   "say": "Roles, tablespaces and database names are global objects, shared by the whole cluster.",
+   "cap": "*Global* *objects:* roles, tablespaces, database names."
+  },
+  {
+   "say": "Inside each database are schemas, and schemas hold the tables, views and functions.",
+   "cap": "Databases hold *schemas.* Schemas hold *tables* and *functions.*",
+   "cue": "schemas"
+  },
+  {
+   "say": "So the full hierarchy is: cluster, database, schema, table.",
+   "cap": "*Cluster* > *database* > *schema* > *table.*"
+  },
+  {
+   "say": "Careful: the docs say cluster is sometimes used for the instance. And it's not the CLUSTER command either.",
+   "cap": "*Cluster* can mean the instance. Not the *CLUSTER* *command.*"
+  },
+  {
+   "say": "Let's check a real server. Select datname from pg_database.",
+   "cap": "Live: *datname* from *pg_database.*"
+  },
+  {
+   "say": "Five rows: the three defaults, plus appdb and reportdb, which I created for this demo.",
+   "cap": "*5* *rows:* 3 defaults + *appdb* and *reportdb.*"
+  },
+  {
+   "say": "Now, connected to appdb, list the schemas with backslash d n.",
+   "cap": "In appdb: list schemas with *\\dn.*"
+  },
+  {
+   "say": "public comes with every new database, and by default, tables without a schema name go there.",
+   "cap": "*public* is in every new database. *Default* home for tables."
+  },
+  {
+   "say": "Common mistake: one connection reaches exactly one database.",
+   "cap": "Mistake: one connection reaches *one* *database* only."
+  },
+  {
+   "say": "From appdb, I queried reportdb. PostgreSQL refused: cross-database references are not implemented.",
+   "cap": "*ERROR:* cross-database references are *not* *implemented.*",
+   "cue": "refused"
+  },
+  {
+   "say": "Schemas are different. From the same connection, billing dot invoices works, if you have the privileges.",
+   "cap": "*billing.invoices* works from the same connection.",
+   "cue": "invoices"
+  },
+  {
+   "say": "To reach another database, the docs point to foreign data wrappers, such as postgres_fdw.",
+   "cap": "Across databases: *foreign* *data* *wrappers* like *postgres_fdw.*"
+  },
+  {
+   "say": "Their advice: unrelated projects get separate databases. Related projects can share one, with separate schemas.",
+   "cap": "*Unrelated:* separate databases. *Related:* separate schemas.",
+   "cue": "Related"
+  },
+  {
+   "say": "DBA takeaway: databases in a cluster share one WAL, so a physical backup covers the whole cluster.",
+   "cap": "One *shared* *WAL.* A physical backup is *cluster-wide.*"
+  },
+  {
+   "say": "Recap: the cluster is the data, and the instance runs it.",
+   "cap": "Recap: *cluster* is the data, *instance* runs it."
+  },
+  {
+   "say": "Databases are isolated, and schemas are namespaces inside them.",
+   "cap": "*Databases* are isolated. *Schemas* are namespaces."
+  },
+  {
+   "say": "Next up: what lives inside the PostgreSQL data directory. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: inside *PGDATA.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "*Cluster,* *database,* *schema:* don't confuse these.",
+   "sub": "Episode 6 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 6 · FOUNDATIONS",
+   "title": "Cluster, Instance, Database, Schema",
+   "sub": "The PostgreSQL hierarchy"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 11,
+   "heading": "The hierarchy",
+   "nodes": [
+    {
+     "id": "inst",
+     "label": "Instance",
+     "sub": "postmaster + memory",
+     "x": 540,
+     "y": 490,
+     "w": 380,
+     "h": 120,
+     "icon": "server",
+     "color": "blue",
+     "at": 4
+    },
+    {
+     "id": "clu",
+     "label": "Database cluster",
+     "sub": "one data directory",
+     "x": 540,
+     "y": 700,
+     "w": 380,
+     "h": 130,
+     "icon": "folder",
+     "color": "amber",
+     "at": 2
+    },
+    {
+     "id": "db1",
+     "label": "postgres",
+     "sub": "default DB",
+     "x": 200,
+     "y": 920,
+     "w": 260,
+     "h": 120,
+     "icon": "database",
+     "color": "green",
+     "at": 7
+    },
+    {
+     "id": "db2",
+     "label": "appdb",
+     "sub": "demo DB",
+     "x": 540,
+     "y": 920,
+     "w": 260,
+     "h": 120,
+     "icon": "database",
+     "color": "green",
+     "at": 6
+    },
+    {
+     "id": "db3",
+     "label": "templates",
+     "sub": "template0, 1",
+     "x": 880,
+     "y": 920,
+     "w": 260,
+     "h": 120,
+     "icon": "database",
+     "color": "green",
+     "at": 7
+    },
+    {
+     "id": "sc1",
+     "label": "public",
+     "sub": "schema",
+     "x": 370,
+     "y": 1130,
+     "w": 280,
+     "h": 110,
+     "icon": "layers",
+     "color": "purple",
+     "at": 9
+    },
+    {
+     "id": "sc2",
+     "label": "billing",
+     "sub": "schema",
+     "x": 710,
+     "y": 1130,
+     "w": 280,
+     "h": 110,
+     "icon": "layers",
+     "color": "purple",
+     "at": 9
+    },
+    {
+     "id": "tb",
+     "label": "Tables",
+     "sub": "views, functions",
+     "x": 540,
+     "y": 1290,
+     "w": 380,
+     "h": 110,
+     "icon": "table",
+     "color": "cyan",
+     "at": 9
+    }
+   ],
+   "edges": [
+    {
+     "from": "inst",
+     "to": "clu",
+     "label": "manages",
+     "at": 4,
+     "flow": true,
+     "color": "blue"
+    },
+    {
+     "from": "clu",
+     "to": "db1",
+     "at": 7,
+     "color": "green"
+    },
+    {
+     "from": "clu",
+     "to": "db2",
+     "at": 6,
+     "color": "green"
+    },
+    {
+     "from": "clu",
+     "to": "db3",
+     "at": 7,
+     "color": "green"
+    },
+    {
+     "from": "db2",
+     "to": "sc1",
+     "at": 9,
+     "color": "purple"
+    },
+    {
+     "from": "db2",
+     "to": "sc2",
+     "at": 9,
+     "color": "purple"
+    },
+    {
+     "from": "sc1",
+     "to": "tb",
+     "at": 9,
+     "flow": true,
+     "color": "cyan"
+    },
+    {
+     "from": "sc2",
+     "to": "tb",
+     "at": 9,
+     "flow": true,
+     "color": "cyan"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "clu"
+    },
+    {
+     "at": 3,
+     "id": "clu"
+    },
+    {
+     "at": 4,
+     "id": "inst"
+    },
+    {
+     "at": 5,
+     "id": "inst"
+    },
+    {
+     "at": 6,
+     "id": "db2"
+    },
+    {
+     "at": 7,
+     "id": "db1"
+    },
+    {
+     "at": 8,
+     "id": "clu"
+    },
+    {
+     "at": 9,
+     "id": "sc1"
+    },
+    {
+     "at": 10,
+     "id": "tb"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 11,
+   "to": 12,
+   "kind": "fact",
+   "title": "One word, two meanings",
+   "text": "The docs note that \"cluster\" is sometimes used for the instance. Neither has anything to do with the CLUSTER command."
+  },
+  {
+   "type": "terminal",
+   "from": 12,
+   "to": 14,
+   "heading": "Databases in the cluster",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT datname FROM pg_database;",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "  datname",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "-----------",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": " postgres",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": " appdb",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": " template1",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": " template0",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": " reportdb",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "(5 rows)",
+     "at": 13
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 14,
+   "to": 16,
+   "heading": "Schemas in appdb",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\dn",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "       List of schemas",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "  Name   |       Owner",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "---------+-------------------",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": " billing | postgres",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": " public  | pg_database_owner",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "(2 rows)",
+     "at": 15
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 16,
+   "to": 19,
+   "heading": "Mistake: cross-database query",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT * FROM",
+     "at": 17
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  reportdb.public.sales;",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  cross-database references",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "  are not implemented:",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "  \"reportdb.public.sales\"",
+     "at": 17
+    },
+    {
+     "kind": "comment",
+     "text": "-- another schema, same database",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT count(*)",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  FROM billing.invoices;",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " count",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "-------",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "     0",
+     "at": 18
+    }
+   ]
+  },
+  {
+   "type": "compare",
+   "from": 19,
+   "to": 21,
+   "heading": "Databases vs schemas",
+   "left": {
+    "title": "Separate databases",
+    "color": "green",
+    "rows": [
+     "Isolated from each other",
+     "One per connection",
+     "Cross-DB: postgres_fdw",
+     "For unrelated projects"
+    ]
+   },
+   "right": {
+    "title": "Separate schemas",
+    "color": "purple",
+    "rows": [
+     "Namespaces in one DB",
+     "Query across schemas",
+     "Needs privileges",
+     "For related projects"
+    ]
+   },
+   "at": [
+    19,
+    19,
+    19,
+    20
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 21,
+   "to": 22,
+   "kind": "warning",
+   "title": "One cluster, one WAL",
+   "text": "All databases in a cluster share one WAL. A physical backup copies the whole cluster, not one database."
+  },
+  {
+   "type": "checklist",
+   "from": 22,
+   "to": 24,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 22,
+     "title": "Cluster = databases + globals"
+    },
+    {
+     "at": 22,
+     "title": "Instance = running server"
+    },
+    {
+     "at": 23,
+     "title": "One connection, one database"
+    },
+    {
+     "at": 23,
+     "title": "Schemas = namespaces in a DB"
+    },
+    {
+     "at": 23,
+     "title": "public is in every new DB"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 24,
+   "to": 25,
+   "next": "Ep 7 · Inside the Data Directory (PGDATA)"
+  }
+ ]
+}

@@ -1,0 +1,13 @@
+Cluster vs database vs schema: don't confuse these. Here is the PostgreSQL hierarchy in one picture.
+
+A database cluster is a collection of databases and global objects (roles, tablespaces, database names), created by initdb and stored in one data directory. The instance is the running server: the postmaster, its processes and shared memory. One instance manages exactly one cluster.
+
+Inside the cluster are databases (a new cluster has postgres, template1 and template0). Inside each database are schemas, and schemas hold tables, views and functions. Every new database has a schema called public.
+
+PostgreSQL DBA tip: one connection reaches only one database. Querying another database's table fails with "cross-database references are not implemented". Schemas in the same database are reachable with schema.table if you have privileges. And all databases in a cluster share one WAL, so a physical backup covers the whole cluster.
+
+Episode 6 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql
