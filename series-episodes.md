@@ -1,6 +1,6 @@
 # PostgreSQL DBA Series: 140 daily episodes
 
-Source: Ganesh's plan "PostgreSQL_DBA_Instagram_Reels_Daily_Series.xlsx" (2026-11-03). Episode 1 on 2026-11-04 at 20:00 IST; from 2026-11-05, TWO episodes a day on Instagram, at 13:00 and 20:00 IST.
+Source: Ganesh's plan "PostgreSQL_DBA_Instagram_Reels_Daily_Series.xlsx" (2026-11-03). Episode 1 on 2026-11-04 at 20:00 IST; 2026-11-05 to 2026-11-06 two a day (13:00 and 20:00 IST); from 2026-11-07, ONE episode a day at 13:00 IST (changed by Ganesh on 2026-11-06).
 Episodes go out strictly in order: each daily task takes the FIRST unchecked episode, then marks it [x] with "(posted <date> <HH:MM>, Buffer <id>)". The dates below are the original one-a-day plan and no longer decide the order.
 Format per the plan: vertical 1080x1920, 30 fps, 90 to 180 seconds, animated explainer + real terminal/SQL demo + DBA perspective, Sarvam voice.
 Accuracy rule (from the plan): verify every claim against the official PostgreSQL docs for the version shown, and test every command on a disposable instance. Never show real passwords, keys, customer data, production hostnames or private IPs.
@@ -24,11 +24,11 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Trace connection, parse, analyze, rewrite, plan, execute and return rows; note cache/storage paths.
   - Format: Query journey animation · Level: Beginner
   - Hook: What happens inside PostgreSQL after you press Enter?
-- [x] Ep 005 | 2026-11-08 | PostgreSQL Processes: Postmaster, Backend and Workers (posted 2026-11-06 20:00, Buffer 6aec6440a5300fd99cc7a3f6)
+- [x] Ep 005 | 2026-11-08 | PostgreSQL Processes: Postmaster, Backend and Workers (posted 2026-11-07 13:00, moved from 2026-11-06 20:00, Buffer 6aec6440a5300fd99cc7a3f6)
   - Objective: Explain process-based architecture and common background processes without implying every process exists in every configuration.
   - Format: Process map · Level: Beginner
   - Hook: Why does PostgreSQL create multiple processes?
-- [x] Ep 006 | 2026-11-09 | Cluster, Instance, Database and Schema (posted 2026-11-07 13:00, Buffer 6aed68c4c1e74b84e5cbf56c)
+- [x] Ep 006 | 2026-11-09 | Cluster, Instance, Database and Schema (posted 2026-11-08 13:00, moved from 2026-11-07 13:00, Buffer 6aed68c4c1e74b84e5cbf56c)
   - Objective: Clarify PostgreSQL cluster terminology and hierarchy; explain that one server instance can host multiple databases.
   - Format: Layered diagram · Level: Beginner
   - Hook: Cluster vs database vs schema — don't confuse these.

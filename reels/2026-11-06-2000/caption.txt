@@ -6,7 +6,7 @@ Not every process exists on every server. The autovacuum launcher needs autovacu
 
 PostgreSQL DBA tip: check SELECT pid, backend_type FROM pg_stat_activity; and end a stuck session with pg_terminate_backend(pid), not kill -9. On a test server, kill -9 on one backend made the postmaster log "terminating any other active server processes" and run crash recovery.
 
-Episode 5 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+Episode 5 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for a new episode every day.
 
 Send this to a friend who's learning PostgreSQL.
 
