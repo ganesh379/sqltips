@@ -40,3 +40,4 @@
 - 2026-11-04 [PostgreSQL] postgresql autovacuum tuning -> _drafts/2026-11-04-postgresql-postgresql-dba-part-12-vacuum-autovacuum.json
 - 2026-11-05 [Oracle] ora-00054 resource busy -> _drafts/2026-11-05-oracle-ora-00054-resource-busy.json
 - 2026-11-05 [PostgreSQL] postgresql table bloat -> _drafts/2026-11-05-postgresql-postgresql-dba-part-13-table-index-bloat.json
+- 2026-11-06 [Oracle] oracle split string by delimiter -> _drafts/2026-11-06-oracle-oracle-split-string-by-delimiter.json

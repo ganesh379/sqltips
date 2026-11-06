@@ -1,0 +1,1009 @@
+{
+ "schemaVersion": 1,
+ "title": "Oracle Split String by Delimiter Into Rows (With Examples)",
+ "slug": "oracle-split-string-by-delimiter",
+ "category": "plsql",
+ "description": "Oracle split string by delimiter into rows with REGEXP_SUBSTR and CONNECT BY: get the nth value, keep empty values, and split every row of a table.",
+ "focusKeyword": "oracle split string by delimiter",
+ "tags": [
+  "oracle",
+  "sql",
+  "regexp",
+  "string-functions"
+ ],
+ "related": [
+  "/posts/plsql/oracle-listagg-distinct/",
+  "/posts/plsql/oracle-json-table-example/",
+  "/posts/interview-questions/tricky-sql-queries-for-interview-preparation/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle 19c SQL Language Reference: REGEXP_SUBSTR",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/REGEXP_SUBSTR.html"
+  },
+  {
+   "title": "Oracle 19c SQL Language Reference: REGEXP_COUNT",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/REGEXP_COUNT.html"
+  },
+  {
+   "title": "Oracle 19c SQL Language Reference: SELECT (LATERAL, CROSS APPLY, OUTER APPLY)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/SELECT.html"
+  },
+  {
+   "title": "Oracle 19c SQL Language Reference: Hierarchical Queries",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Hierarchical-Queries.html"
+  },
+  {
+   "title": "Oracle 19c SQL Language Reference: Nulls",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Nulls.html"
+  },
+  {
+   "title": "Oracle APEX API Reference: APEX_STRING.SPLIT",
+   "url": "https://docs.oracle.com/en/database/oracle/apex/24.2/aeapi/SPLIT-Function-Signature-1.html"
+  }
+ ],
+ "reviewNotes": "Examples written from the 19c SQL Language Reference and the APEX 24.2 API reference; nothing was run, so every query and every output block (marked expected output) needs a test run, ideally on 19c and 23ai. Please check in particular: (1) the ([^,]*)(,|$) pattern with subexpr 1 returns Oracle / NULL / AWS for 'Oracle,,AWS'; (2) that a NULL skills value in the CROSS APPLY query gives exactly one row with NULL (relies on CONNECT BY always returning the root row when LEVEL <= NULL); (3) the claim that REGEXP_COUNT(NULL, ',') returns NULL; (4) the 'Works from' column in the comparison table (REGEXP_SUBSTR 10g, REGEXP_COUNT and subexpr 11g, CROSS APPLY/LATERAL 12c); (5) that Oracle 23ai/26ai still has no built-in SQL SPLIT function, since the FAQ says so; (6) the errors when APEX is not installed (article says ORA-00904 in SQL, PLS-00201 in PL/SQL); (6b) the ORA-01722 IN-list example assumes NLS_NUMERIC_CHARACTERS with '.' as decimal; with ',' as decimal '1,3' might convert to 1.3 instead, consider a footnote; (7) whether the CONNECT BY duplicate explanation matches what the editor sees on the 4-row table. Topic chosen because autocomplete shows many variants (split string by delimiter, into rows, get first/second element, by comma, by space, into columns), the site has no article on it, and ranking pages mostly show only [^,]+ on DUAL without the empty-value bug, the multi-row duplicate problem or the IN-list case. The Oracle SQL blog post on this topic returned 403 to the fetch tool, so it was not used as a source.",
+ "generatedAt": "2026-11-06T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To split a string by a delimiter in Oracle, use <code class=\"inline-code\">REGEXP_SUBSTR</code> to pick out each piece and <code class=\"inline-code\">CONNECT BY LEVEL</code> to generate one row per piece. Use <code class=\"inline-code\">REGEXP_COUNT</code> to work out how many pieces there are. This works in every supported Oracle release and needs no extra packages."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle SQL has no SPLIT function, so this question comes up all the time: a comma-separated list in a column, a CSV value passed from an application, or a list of IDs for an IN clause. In this tutorial you will split a single string, get the first or second element, keep empty values in the right position, split every row of a table without duplicate rows, and use APEX_STRING.SPLIT when APEX is installed."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How splitting a string works in Oracle",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The idea has two parts. First you need a way to make N rows, where N is the number of pieces in the string. Then on row number 1 you take piece 1, on row 2 you take piece 2, and so on."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">SELECT ... FROM dual CONNECT BY LEVEL &lt;= n</code> is the usual Oracle way to generate n rows. <code class=\"inline-code\">LEVEL</code> is a pseudocolumn that is 1 for the first row, 2 for the second, and so on. You then pass <code class=\"inline-code\">LEVEL</code> as the <b>occurrence</b> argument of <code class=\"inline-code\">REGEXP_SUBSTR</code>, which tells Oracle which match to return."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The syntax of the two regular expression functions, from the Oracle SQL Language Reference:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "REGEXP_SUBSTR(source_char, pattern [, position [, occurrence [, match_param [, subexpr ]]]])\n\nREGEXP_COUNT(source_char, pattern [, position [, match_param ]])",
+    "caption": "Function syntax"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">position</code>: where the search starts. Default 1.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">occurrence</code>: which match to return. Default 1. The search for the next match starts at the first character after the previous match.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">subexpr</code>: which group in parentheses to return (0 to 9). You will use this to keep empty values.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">REGEXP_COUNT</code> returns the number of matches, or 0 if there is none. Number of commas plus one gives the number of pieces.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample table",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create this small table of job applicants and their skills. It has the four cases you meet in real data: a clean list, a list with spaces after commas, a list with an empty value, and a NULL."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE applicants (\n  applicant_id NUMBER PRIMARY KEY,\n  name         VARCHAR2(30),\n  skills       VARCHAR2(200)\n);\n\nINSERT INTO applicants VALUES (1, 'Asha',  'SQL,PL/SQL,Unix');\nINSERT INTO applicants VALUES (2, 'Ravi',  'Java, Python');\nINSERT INTO applicants VALUES (3, 'Meena', 'Oracle,,AWS');\nINSERT INTO applicants VALUES (4, 'Kiran', NULL);\nCOMMIT;",
+    "caption": "Create and load the applicants table"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Split a single string into rows",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Start with one literal string. This is the pattern you will reuse in every other example."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT LEVEL AS pos,\n       REGEXP_SUBSTR('SQL,PL/SQL,Unix', '[^,]+', 1, LEVEL) AS skill\n  FROM dual\nCONNECT BY LEVEL <= REGEXP_COUNT('SQL,PL/SQL,Unix', ',') + 1;",
+    "caption": "Split a comma-separated string"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "POS",
+      "SKILL"
+     ],
+     [
+      "1",
+      "SQL"
+     ],
+     [
+      "2",
+      "PL/SQL"
+     ],
+     [
+      "3",
+      "Unix"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). The pattern <code class=\"inline-code\">[^,]+</code> means &quot;one or more characters that are not a comma&quot;, so each match is one value. <code class=\"inline-code\">REGEXP_COUNT</code> finds 2 commas, so <code class=\"inline-code\">CONNECT BY</code> makes 3 rows, and row n returns match n."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Use a bind variable instead of a literal",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In real code the string comes from the application. Use a bind variable so you do not repeat the string and do not build SQL by concatenation."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT LEVEL AS pos,\n       TRIM(REGEXP_SUBSTR(:csv, '[^,]+', 1, LEVEL)) AS item\n  FROM dual\nCONNECT BY LEVEL <= REGEXP_COUNT(:csv, ',') + 1;",
+    "caption": "Same query with a bind variable :csv"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">TRIM</code> removes spaces, so <code class=\"inline-code\">'Java, Python'</code> gives <code class=\"inline-code\">Python</code> instead of <code class=\"inline-code\">' Python'</code>. Leading spaces are easy to miss on screen and they break joins and comparisons later."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Other delimiters",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Change the character inside the brackets. For a space use <code class=\"inline-code\">'[^ ]+'</code>, for a semicolon <code class=\"inline-code\">'[^;]+'</code>, and for a pipe <code class=\"inline-code\">'[^|]+'</code>. Inside square brackets the pipe is a normal character, but in the <code class=\"inline-code\">REGEXP_COUNT</code> pattern it is not, so write <code class=\"inline-code\">REGEXP_COUNT(:csv, '\\|')</code>. The common mistakes section explains why."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Get the first, second or nth element",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Often you do not want rows at all. You want one value, such as the first skill, or the values in separate columns. Pass a fixed number as the occurrence instead of <code class=\"inline-code\">LEVEL</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT applicant_id,\n       TRIM(REGEXP_SUBSTR(skills, '[^,]+', 1, 1)) AS skill_1,\n       TRIM(REGEXP_SUBSTR(skills, '[^,]+', 1, 2)) AS skill_2,\n       TRIM(REGEXP_SUBSTR(skills, '[^,]+', 1, 3)) AS skill_3\n  FROM applicants\n ORDER BY applicant_id;",
+    "caption": "Split a string into columns"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "APPLICANT_ID",
+      "SKILL_1",
+      "SKILL_2",
+      "SKILL_3"
+     ],
+     [
+      "1",
+      "SQL",
+      "PL/SQL",
+      "Unix"
+     ],
+     [
+      "2",
+      "Java",
+      "Python",
+      "(null)"
+     ],
+     [
+      "3",
+      "Oracle",
+      "AWS",
+      "(null)"
+     ],
+     [
+      "4",
+      "(null)",
+      "(null)",
+      "(null)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output; SQL Developer shows NULL as (null), SQL*Plus shows a blank). When you ask for an occurrence that does not exist, such as the third skill for Ravi, you get NULL, not an error."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now look at Meena, applicant 3. Her string is <code class=\"inline-code\">'Oracle,,AWS'</code>: the second value is empty and AWS is the third value. But the query reports AWS as skill 2. The next section explains why and how to fix it."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "First element without regular expressions",
+    "text": "For only the first value, <code class=\"inline-code\">SUBSTR(skills, 1, INSTR(skills || ',', ',') - 1)</code> does the same job with plain string functions. Appending the comma handles strings that have no delimiter at all."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Keep empty values in the right position",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The pattern <code class=\"inline-code\">[^,]+</code> needs at least one character, so it cannot match the empty value between two commas. It skips it, and every value after it moves up one place. For a list of tags that may not matter. For positional data, such as a CSV line where column 2 is the phone number, it gives wrong results without any error."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The fix is to match &quot;zero or more non-comma characters, followed by a comma or the end of the string&quot;, and return only the first group:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT LEVEL AS pos,\n       REGEXP_SUBSTR('Oracle,,AWS', '([^,]*)(,|$)', 1, LEVEL, NULL, 1) AS skill\n  FROM dual\nCONNECT BY LEVEL <= REGEXP_COUNT('Oracle,,AWS', ',') + 1;",
+    "caption": "Keep empty values"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "POS",
+      "SKILL"
+     ],
+     [
+      "1",
+      "Oracle"
+     ],
+     [
+      "2",
+      "(null)"
+     ],
+     [
+      "3",
+      "AWS"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). How it works:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">([^,]*)</code> is group 1: any number of non-comma characters, including none.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">(,|$)</code> is group 2: the delimiter or the end of the string. It is part of the match, so the next search starts after the comma.",
+      "items": []
+     },
+     {
+      "content": "The last argument, <code class=\"inline-code\">1</code>, returns only group 1, so you never see the comma.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">match_param</code> is NULL, which means default matching.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The empty value comes back as NULL because Oracle treats a zero-length string as NULL. The documentation notes that this may change in a future release, so do not write code that depends on the difference."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Which pattern should you use?",
+    "text": "Use <code class=\"inline-code\">([^,]*)(,|$)</code> with subexpr 1 by default. It is correct for empty values and gives the same result as <code class=\"inline-code\">[^,]+</code> when there are none. Use the shorter <code class=\"inline-code\">[^,]+</code> only when you are sure no value can be empty."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Split every row of a table",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is where most people get stuck. Splitting a string from DUAL works, but the same query on a table returns far too many rows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why CONNECT BY on a table returns duplicates",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Do not use: returns repeated rows\nSELECT applicant_id,\n       REGEXP_SUBSTR(skills, '[^,]+', 1, LEVEL) AS skill\n  FROM applicants\nCONNECT BY LEVEL <= REGEXP_COUNT(skills, ',') + 1;",
+    "caption": "The common broken query"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">CONNECT BY</code> builds a hierarchy. With no <code class=\"inline-code\">PRIOR</code> condition linking a child row to its parent, every row on one level is treated as a child of every row on the level above. So Asha's level 2 row is joined under Ravi and Meena as well, and the result multiplies with each level. With four rows the output is already confusing; with thousands of rows the query can run for a very long time."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix for Oracle 12c and later: CROSS APPLY",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle 12c added <code class=\"inline-code\">CROSS APPLY</code>, <code class=\"inline-code\">OUTER APPLY</code> and <code class=\"inline-code\">LATERAL</code> inline views. They let a subquery on the right refer to columns of the table on its left. Now the row generator runs separately for each applicant, so the rows cannot mix."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT a.applicant_id,\n       a.name,\n       s.pos,\n       TRIM(s.skill) AS skill\n  FROM applicants a\n CROSS APPLY (\n        SELECT LEVEL AS pos,\n               REGEXP_SUBSTR(a.skills, '([^,]*)(,|$)', 1, LEVEL, NULL, 1) AS skill\n          FROM dual\n        CONNECT BY LEVEL <= REGEXP_COUNT(a.skills, ',') + 1\n       ) s\n ORDER BY a.applicant_id, s.pos;",
+    "caption": "Split every row with CROSS APPLY"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "APPLICANT_ID",
+      "NAME",
+      "POS",
+      "SKILL"
+     ],
+     [
+      "1",
+      "Asha",
+      "1",
+      "SQL"
+     ],
+     [
+      "1",
+      "Asha",
+      "2",
+      "PL/SQL"
+     ],
+     [
+      "1",
+      "Asha",
+      "3",
+      "Unix"
+     ],
+     [
+      "2",
+      "Ravi",
+      "1",
+      "Java"
+     ],
+     [
+      "2",
+      "Ravi",
+      "2",
+      "Python"
+     ],
+     [
+      "3",
+      "Meena",
+      "1",
+      "Oracle"
+     ],
+     [
+      "3",
+      "Meena",
+      "2",
+      "(null)"
+     ],
+     [
+      "3",
+      "Meena",
+      "3",
+      "AWS"
+     ],
+     [
+      "4",
+      "Kiran",
+      "1",
+      "(null)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Each applicant gets exactly one row per value. Kiran's NULL skills still produce one row: <code class=\"inline-code\">REGEXP_COUNT</code> of NULL is NULL, so no child rows are generated, but <code class=\"inline-code\">CONNECT BY</code> always returns the starting row. Add <code class=\"inline-code\">WHERE s.skill IS NOT NULL</code> to drop empty values and NULL lists if you do not want them."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can write the same thing with the standard syntax: <code class=\"inline-code\">FROM applicants a CROSS JOIN LATERAL (SELECT ...) s</code>. Both forms behave the same here."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix for Oracle 11g: PRIOR SYS_GUID()",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On older databases without CROSS APPLY you will often see this version. It is worth recognising in legacy code."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT applicant_id,\n       LEVEL AS pos,\n       TRIM(REGEXP_SUBSTR(skills, '([^,]*)(,|$)', 1, LEVEL, NULL, 1)) AS skill\n  FROM applicants\nCONNECT BY LEVEL <= REGEXP_COUNT(skills, ',') + 1\n       AND PRIOR applicant_id = applicant_id\n       AND PRIOR SYS_GUID() IS NOT NULL\n ORDER BY applicant_id, pos;",
+    "caption": "Legacy method for 11g"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">PRIOR applicant_id = applicant_id</code> keeps each child under its own row. But that alone makes a row its own parent, and Oracle raises <code class=\"inline-code\">ORA-01436: CONNECT BY loop in user data</code>. <code class=\"inline-code\">PRIOR SYS_GUID() IS NOT NULL</code> is always true, yet <code class=\"inline-code\">SYS_GUID</code> returns a new value for each row, so Oracle does not see a loop. It works, but it is a trick. On 12c and later prefer CROSS APPLY, which says what it means."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Use a comma-separated list in an IN clause",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A screen sends <code class=\"inline-code\">'1,3'</code> and you want those applicants. Writing <code class=\"inline-code\">WHERE applicant_id IN (:id_list)</code> does not work: the bind variable is one string value, not a list. Oracle compares the number <code class=\"inline-code\">applicant_id</code> with the string <code class=\"inline-code\">'1,3'</code>, tries to convert it to a number and fails with ORA-01722: invalid number."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Split the string inside a subquery instead:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT applicant_id, name\n  FROM applicants\n WHERE applicant_id IN (\n         SELECT TO_NUMBER(TRIM(REGEXP_SUBSTR(:id_list, '[^,]+', 1, LEVEL)))\n           FROM dual\n         CONNECT BY LEVEL <= REGEXP_COUNT(:id_list, ',') + 1\n       )\n ORDER BY applicant_id;",
+    "caption": "Filter by a CSV list of IDs (:id_list = '1,3')"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "APPLICANT_ID",
+      "NAME"
+     ],
+     [
+      "1",
+      "Asha"
+     ],
+     [
+      "3",
+      "Meena"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Here <code class=\"inline-code\">[^,]+</code> is the right pattern, because an empty ID is meaningless. The query text stays the same whatever list is passed, so Oracle can reuse the parsed statement."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "APEX_STRING.SPLIT: the shortest option",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If Oracle APEX is installed in your database (it is available on Autonomous Database, for example), the <code class=\"inline-code\">APEX_STRING</code> package has a <code class=\"inline-code\">SPLIT</code> function that returns a collection of type <code class=\"inline-code\">apex_t_varchar2</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "APEX_STRING.SPLIT (\n    p_str   IN VARCHAR2,\n    p_sep   IN VARCHAR2    DEFAULT apex_application.LF,\n    p_limit IN PLS_INTEGER DEFAULT NULL )\n    RETURN apex_t_varchar2;",
+    "caption": "Signature from the APEX API reference"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Note the default separator is a line feed, not a comma, so always pass <code class=\"inline-code\">p_sep</code>. A separator longer than one character is treated as a regular expression. You can query the result like a table:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT column_value AS skill\n  FROM TABLE(apex_string.split('SQL,PL/SQL,Unix', ','));",
+    "caption": "APEX_STRING.SPLIT in SQL"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "SKILL"
+     ],
+     [
+      "SQL"
+     ],
+     [
+      "PL/SQL"
+     ],
+     [
+      "Unix"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). In PL/SQL you can loop over the collection directly:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "SET SERVEROUTPUT ON\n\nDECLARE\n  l_skills apex_t_varchar2;\nBEGIN\n  l_skills := apex_string.split('SQL,PL/SQL,Unix', ',');\n  FOR i IN 1 .. l_skills.COUNT LOOP\n    DBMS_OUTPUT.PUT_LINE(i || ': ' || l_skills(i));\n  END LOOP;\nEND;\n/",
+    "caption": "Loop over split values in PL/SQL"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "1: SQL\n2: PL/SQL\n3: Unix",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If APEX is not installed, the package does not exist: SQL reports an invalid identifier (ORA-00904) and PL/SQL reports that the identifier must be declared (PLS-00201). Use the REGEXP_SUBSTR method instead."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Which method should you use?",
+    "level": 2
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Need",
+      "Method",
+      "Works from"
+     ],
+     [
+      "Split one string or bind value",
+      "REGEXP_SUBSTR + CONNECT BY on DUAL",
+      "10g (REGEXP_COUNT from 11g)"
+     ],
+     [
+      "Values may be empty",
+      "Pattern ([^,]*)(,|$) with subexpr 1",
+      "11g"
+     ],
+     [
+      "Split every row of a table",
+      "CROSS APPLY or LATERAL",
+      "12c"
+     ],
+     [
+      "Same on an old database",
+      "PRIOR SYS_GUID() trick",
+      "11g"
+     ],
+     [
+      "Shortest code, APEX installed",
+      "APEX_STRING.SPLIT",
+      "Any release with APEX"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Using <code class=\"inline-code\">[^,]+</code> on data with empty values.</b> Values shift position silently. Use <code class=\"inline-code\">([^,]*)(,|$)</code> with subexpr 1.",
+      "items": []
+     },
+     {
+      "content": "<b>Running CONNECT BY LEVEL directly on a multi-row table.</b> You get repeated rows or a very slow query. Use CROSS APPLY, or the PRIOR SYS_GUID() trick on 11g.",
+      "items": []
+     },
+     {
+      "content": "<b>Forgetting TRIM.</b> <code class=\"inline-code\">'Java, Python'</code> gives <code class=\"inline-code\">' Python'</code>, which will not match <code class=\"inline-code\">'Python'</code> in a join.",
+      "items": []
+     },
+     {
+      "content": "<b>Counting a special character with REGEXP_COUNT.</b> In a pattern, <code class=\"inline-code\">|</code> means OR, and <code class=\"inline-code\">.</code> means any character. <code class=\"inline-code\">REGEXP_COUNT(str, '.')</code> counts every character, not dots. Escape them: <code class=\"inline-code\">'\\|'</code>, <code class=\"inline-code\">'\\.'</code>.",
+      "items": []
+     },
+     {
+      "content": "<b>Treating a character class as a multi-character delimiter.</b> <code class=\"inline-code\">'[^; ]+'</code> splits on a semicolon <i>or</i> a space, not on the two-character string <code class=\"inline-code\">'; '</code>. For a real multi-character delimiter, split on the first character and TRIM, or use APEX_STRING.SPLIT with a regular expression.",
+      "items": []
+     },
+     {
+      "content": "<b>Passing a CSV string to IN (:list).</b> It is one value, not a list. Split it in a subquery.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Do not store lists in one column if you can avoid it",
+    "text": "A column like <code class=\"inline-code\">skills</code> breaks first normal form. You cannot index the individual values, and every query has to split the string again. If you control the design, use a child table such as <code class=\"inline-code\">applicant_skills(applicant_id, skill)</code> and build the comma-separated text with LISTAGG only for display."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Regular expression functions use more CPU than SUBSTR and INSTR. For a few thousand rows it does not matter. For a large batch job, test both and measure.",
+      "items": []
+     },
+     {
+      "content": "Filter rows before splitting. Put the WHERE conditions on the main table so the row generator runs for fewer rows.",
+      "items": []
+     },
+     {
+      "content": "A predicate on a split value cannot use an index on the original column. If you search by one value often, that is a strong sign the data should be in a child table.",
+      "items": []
+     },
+     {
+      "content": "If you split the same string many times inside PL/SQL, split it once into a collection and reuse it.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is there a SPLIT function in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Not in Oracle Database SQL. The standard way is <code class=\"inline-code\">REGEXP_SUBSTR</code> with <code class=\"inline-code\">CONNECT BY LEVEL</code>. If APEX is installed, <code class=\"inline-code\">APEX_STRING.SPLIT</code> gives you a ready-made function."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I split a string by delimiter and get the second element in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use occurrence 2: <code class=\"inline-code\">REGEXP_SUBSTR(str, '([^,]*)(,|$)', 1, 2, NULL, 1)</code>. This returns the real second value even when the first one is empty."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I split a string by space in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">'[^ ]+'</code> as the pattern and count spaces with <code class=\"inline-code\">REGEXP_COUNT(str, ' ')</code>. If words can be separated by more than one space, use <code class=\"inline-code\">'[^ ]+'</code> and count words with <code class=\"inline-code\">REGEXP_COUNT(str, '[^ ]+')</code> instead."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I split a CLOB?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes. <code class=\"inline-code\">REGEXP_SUBSTR</code> and <code class=\"inline-code\">REGEXP_COUNT</code> accept CLOB values, and <code class=\"inline-code\">REGEXP_SUBSTR</code> returns a CLOB when the source is a CLOB. Note that <code class=\"inline-code\">APEX_STRING.SPLIT</code> shown above takes a VARCHAR2."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I join the rows back into one string?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">LISTAGG</code>, for example <code class=\"inline-code\">LISTAGG(skill, ',') WITHIN GROUP (ORDER BY pos)</code>. It is the reverse of splitting."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Generate one row per value with <code class=\"inline-code\">CONNECT BY LEVEL &lt;= REGEXP_COUNT(str, delimiter) + 1</code>.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Pick each value with <code class=\"inline-code\">REGEXP_SUBSTR(..., LEVEL)</code>, and TRIM the result.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">([^,]*)(,|$)</code> with subexpr 1 when values can be empty.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "On a table, wrap the row generator in CROSS APPLY (12c and later), never plain CONNECT BY.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Split CSV bind variables inside an IN subquery to avoid ORA-01722.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use APEX_STRING.SPLIT when APEX is installed, and always pass the separator.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "If you split the same column often, move the values into a child table.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your query works on DUAL, then returns hundreds of repeated rows when you run it on the real table. Classic Oracle string split bug.\n\nOracle SQL has no SPLIT function. The standard method is REGEXP_SUBSTR plus CONNECT BY LEVEL. Five things that save hours:\n\n→ Count the pieces with REGEXP_COUNT(str, ',') + 1 and pass LEVEL as the occurrence\n→ The pattern [^,]+ skips empty values, so 'Oracle,,AWS' returns AWS as item 2. Use ([^,]*)(,|$) with subexpr 1 to keep positions right\n→ Never run CONNECT BY LEVEL directly on a multi-row table. Wrap it in CROSS APPLY (12c and later) so each row is split on its own\n→ WHERE id IN (:list) with '1,3' fails with ORA-01722. Split the bind variable in a subquery\n→ TRIM every value. ' Python' will not match 'Python'\n\nIf APEX is installed, APEX_STRING.SPLIT(str, ',') does it in one call. Pass the separator: the default is a line feed.\n\nDo you still see the PRIOR SYS_GUID() trick in your legacy code, or have you moved to CROSS APPLY?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #SQLInterview",
+  "slides": [
+   {
+    "title": "Split a string by delimiter in Oracle",
+    "body": "REGEXP_SUBSTR, CONNECT BY, empty values and whole tables"
+   },
+   {
+    "title": "The basic pattern",
+    "points": [
+     "LEVEL makes one row per value",
+     "REGEXP_SUBSTR picks value number LEVEL",
+     "Commas plus one is the number of values"
+    ],
+    "code": "SELECT LEVEL AS pos,\n  REGEXP_SUBSTR(:csv, '[^,]+',\n    1, LEVEL) AS item\nFROM dual\nCONNECT BY LEVEL <=\n  REGEXP_COUNT(:csv, ',') + 1;",
+    "lang": "sql"
+   },
+   {
+    "title": "Empty values shift position",
+    "body": "[^,]+ needs at least one character, so it skips the empty value in 'Oracle,,AWS' and reports AWS as item 2. Match zero or more characters and return group 1 instead.",
+    "code": "REGEXP_SUBSTR(str,\n  '([^,]*)(,|$)',\n  1, LEVEL, NULL, 1)",
+    "lang": "sql"
+   },
+   {
+    "title": "Split every row: CROSS APPLY",
+    "body": "Plain CONNECT BY on a table mixes rows and repeats them. CROSS APPLY (12c and later) runs the split once per row.",
+    "code": "SELECT a.applicant_id, s.skill\nFROM applicants a\nCROSS APPLY (\n  SELECT REGEXP_SUBSTR(a.skills,\n    '[^,]+', 1, LEVEL) AS skill\n  FROM dual\n  CONNECT BY LEVEL <=\n    REGEXP_COUNT(a.skills, ',') + 1\n) s;",
+    "lang": "sql"
+   },
+   {
+    "title": "CSV list in an IN clause",
+    "points": [
+     "IN (:list) with '1,3' is one string, not a list",
+     "Comparing it to a number raises ORA-01722",
+     "Split the bind variable inside the IN subquery"
+    ]
+   },
+   {
+    "title": "Quick traps",
+    "points": [
+     "TRIM values: ' Python' is not 'Python'",
+     "Escape | and . in REGEXP_COUNT patterns",
+     "APEX_STRING.SPLIT default separator is a line feed",
+     "Splitting often? Use a child table instead"
+    ]
+   }
+  ]
+ }
+}
