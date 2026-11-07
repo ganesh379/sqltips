@@ -42,3 +42,4 @@
 - 2026-11-05 [PostgreSQL] postgresql table bloat -> _drafts/2026-11-05-postgresql-postgresql-dba-part-13-table-index-bloat.json
 - 2026-11-06 [Oracle] oracle split string by delimiter -> _drafts/2026-11-06-oracle-oracle-split-string-by-delimiter.json
 - 2026-11-06 [PostgreSQL] postgres transaction id wraparound -> _drafts/2026-11-06-postgresql-postgresql-dba-part-14-transaction-id-wraparound-freezing.json
+- 2026-11-07 [Oracle] oracle tablespace usage query -> _drafts/2026-11-07-oracle-oracle-tablespace-usage-query.json

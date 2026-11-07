@@ -1,0 +1,967 @@
+{
+ "schemaVersion": 1,
+ "title": "Oracle Tablespace Usage Query: Free Space, Autoextend and TEMP",
+ "slug": "oracle-tablespace-usage-query",
+ "category": "plsql",
+ "description": "Oracle tablespace usage queries that handle autoextend and TEMP, with example output, the classic join mistake, and how to add space safely.",
+ "focusKeyword": "oracle tablespace usage query",
+ "tags": [
+  "oracle",
+  "dba",
+  "tablespace",
+  "monitoring"
+ ],
+ "related": [
+  "/posts/plsql/ora-01555-snapshot-too-old/",
+  "/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/",
+  "/posts/plsql/oracle-global-temporary-table/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle 19c Reference: DBA_TABLESPACE_USAGE_METRICS",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/DBA_TABLESPACE_USAGE_METRICS.html"
+  },
+  {
+   "title": "Oracle 19c Reference: DBA_DATA_FILES",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/DBA_DATA_FILES.html"
+  },
+  {
+   "title": "Oracle 19c Reference: DBA_FREE_SPACE",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/DBA_FREE_SPACE.html"
+  },
+  {
+   "title": "Oracle 19c Reference: DBA_TEMP_FREE_SPACE",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/DBA_TEMP_FREE_SPACE.html"
+  },
+  {
+   "title": "Oracle 19c Reference: DBA_TEMP_FILES",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/DBA_TEMP_FILES.html"
+  },
+  {
+   "title": "Oracle 19c Reference: V$TEMPSEG_USAGE",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/V-TEMPSEG_USAGE.html"
+  },
+  {
+   "title": "Oracle 19c Administrator's Guide: Managing Tablespaces",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/admin/managing-tablespaces.html"
+  },
+  {
+   "title": "Oracle 19c Administrator's Guide: Managing Data Files and Temp Files",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/admin/managing-data-files-and-temp-files.html"
+  },
+  {
+   "title": "Oracle 10g Backup and Recovery: Flashback Drop and the Recycle Bin",
+   "url": "https://docs.oracle.com/cd/B19306_01/backup.102/b14192/flashptr004.htm"
+  }
+ ],
+ "reviewNotes": "Queries written from the Oracle 19c Reference and Administrator's Guide; none were run here, so all need a test run (ideally 19c and 23ai). All output tables are illustrative, hand-built to be internally consistent (8 KB blocks), and captioned as expected output; SQL_IDs and SIDs are made up. Please verify: (1) the 32768 MB max shown for MAXSIZE UNLIMITED smallfile 8K files (I could not confirm the exact block limit in the docs I read); (2) the 11gR2 availability of DBA_TABLESPACE_USAGE_METRICS and that MAXBYTES is 0 when autoextend is off; (3) the recycle bin statement relies on the 10g Flashback doc, confirm it still holds in 19c; (4) ORA-01653/ORA-01654 wording; (5) ORA-30036 mention for undo.",
+ "generatedAt": "2026-11-07T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The fastest Oracle tablespace usage query is a select on <code class=\"inline-code\">DBA_TABLESPACE_USAGE_METRICS</code>: it gives used space and percent used for every tablespace, already measured against the size the tablespace can grow to with autoextend. If you want megabytes instead of blocks, or a per-file breakdown, you build the numbers yourself from <code class=\"inline-code\">DBA_DATA_FILES</code> and <code class=\"inline-code\">DBA_FREE_SPACE</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial gives you both queries, plus the temp tablespace version, a query to find which session is filling TEMP, and the commands to add space. Each query comes with example output and an explanation of what the numbers mean, because the most common tablespace alert is a tablespace that only looks full."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How Oracle measures tablespace space",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A tablespace is a logical container. Its storage lives in one or more datafiles (or tempfiles for a temporary tablespace). Space inside a file is handed out to segments, such as tables and indexes, in chunks called extents. Whatever has not been handed out is a free extent."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "That gives you three different numbers, and most confusion comes from mixing them up:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Allocated size</b>: how big the datafiles are on disk right now. This is the sum of <code class=\"inline-code\">BYTES</code> in <code class=\"inline-code\">DBA_DATA_FILES</code>.",
+      "items": []
+     },
+     {
+      "content": "<b>Used space</b>: space given to segments. Allocated size minus free extents from <code class=\"inline-code\">DBA_FREE_SPACE</code>.",
+      "items": []
+     },
+     {
+      "content": "<b>Maximum size</b>: how big the files can grow if autoextend is on. This comes from <code class=\"inline-code\">MAXBYTES</code> for files where <code class=\"inline-code\">AUTOEXTENSIBLE = 'YES'</code>.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A tablespace can be 99% used against its allocated size and still have plenty of room, because its files will grow. It can also be 60% used and about to fail, because autoextend is off and a big load is coming. You need to know which percentage you are looking at."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see the numbers move, create a small tablespace with one autoextending datafile and load an <code class=\"inline-code\">orders</code> table into it. You need a DBA account (or the <code class=\"inline-code\">CREATE TABLESPACE</code> privilege) and you should do this on a test database. Change the file path to a directory that exists on your server."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLESPACE demo_ts\n  DATAFILE '/u01/oradata/ORCL/demo_ts01.dbf' SIZE 100M\n  AUTOEXTEND ON NEXT 10M MAXSIZE 500M;\n\nCREATE TABLE orders (\n  order_id     NUMBER        CONSTRAINT orders_pk PRIMARY KEY\n                             USING INDEX TABLESPACE demo_ts,\n  customer_id  NUMBER        NOT NULL,\n  order_date   DATE          NOT NULL,\n  amount       NUMBER(10,2)  NOT NULL,\n  notes        VARCHAR2(200)\n) TABLESPACE demo_ts;\n\nINSERT INTO orders\nSELECT level,\n       MOD(level, 500) + 1,\n       DATE '2026-01-01' + MOD(level, 300),\n       ROUND(DBMS_RANDOM.VALUE(100, 50000), 2),\n       RPAD('order note ', 150, 'x')\n  FROM dual\nCONNECT BY level <= 200000;\n\nCOMMIT;",
+    "caption": "Create a demo tablespace and fill it"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">USING INDEX TABLESPACE</code> puts the primary key index in <code class=\"inline-code\">DEMO_TS</code> as well; without it the index goes to the user's default tablespace. The table owner needs a quota on <code class=\"inline-code\">DEMO_TS</code>, for example <code class=\"inline-code\">ALTER USER app QUOTA UNLIMITED ON demo_ts</code>. Your exact sizes will differ from the examples below, which is fine: the point is how to read them."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Query 1: quick usage with DBA_TABLESPACE_USAGE_METRICS",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">DBA_TABLESPACE_USAGE_METRICS</code> covers permanent, temporary and undo tablespaces. Its <code class=\"inline-code\">USED_SPACE</code> and <code class=\"inline-code\">TABLESPACE_SIZE</code> columns are in <b>data blocks</b>, not bytes, so join to <code class=\"inline-code\">DBA_TABLESPACES</code> to get the block size and convert to MB."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT m.tablespace_name,\n       ROUND(m.used_space * t.block_size / 1024 / 1024)      AS used_mb,\n       ROUND(m.tablespace_size * t.block_size / 1024 / 1024) AS max_mb,\n       ROUND(m.used_percent, 1)                              AS pct_used\n  FROM dba_tablespace_usage_metrics m\n  JOIN dba_tablespaces t\n    ON t.tablespace_name = m.tablespace_name\n ORDER BY m.used_percent DESC;",
+    "caption": "Tablespace usage against maximum size"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Output (expected output)</b>, illustrative values for a small 8 KB block database:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "TABLESPACE_NAME",
+      "USED_MB",
+      "MAX_MB",
+      "PCT_USED"
+     ],
+     [
+      "DEMO_TS",
+      "50",
+      "500",
+      "10"
+     ],
+     [
+      "SYSTEM",
+      "893",
+      "32768",
+      "2.7"
+     ],
+     [
+      "SYSAUX",
+      "562",
+      "32768",
+      "1.7"
+     ],
+     [
+      "TEMP",
+      "0",
+      "32768",
+      "0"
+     ],
+     [
+      "UNDOTBS1",
+      "25",
+      "32768",
+      "0.1"
+     ],
+     [
+      "USERS",
+      "2",
+      "32768",
+      "0"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">DEMO_TS</code> shows 10% used because Oracle measures it against the 500 MB <code class=\"inline-code\">MAXSIZE</code>, not the 100 MB file that exists today. When autoextend is on, the documentation says <code class=\"inline-code\">TABLESPACE_SIZE</code> also takes the free space on the underlying file system or ASM disk group into account. So if the disk only has 200 MB free, the maximum shown will be lower than <code class=\"inline-code\">MAXSIZE</code>. That makes this view the most honest answer to \"how close am I to running out?\""
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "<code class=\"inline-code\">DBA_TABLESPACE_USAGE_METRICS</code> is available from Oracle 11g Release 2 onward. In a multitenant database, if <code class=\"inline-code\">MAX_PDB_STORAGE</code> is set for the PDB, that limit is also taken into account when Oracle calculates the maximum size."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Query 2: allocated, used and free in MB (the classic query)",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Sometimes you need to know how much space is free inside the files that already exist, for example before a large insert when autoextend is off. For that, add up <code class=\"inline-code\">DBA_DATA_FILES</code> and <code class=\"inline-code\">DBA_FREE_SPACE</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: aggregate each view separately",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The key detail is to group each view by tablespace first and only then join them. If you join the raw views, every datafile row is repeated once for every free extent, and the totals come out many times too large."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT df.tablespace_name,\n       ROUND(df.alloc_mb)                         AS alloc_mb,\n       ROUND(df.alloc_mb - NVL(fs.free_mb, 0))    AS used_mb,\n       ROUND(NVL(fs.free_mb, 0))                  AS free_mb,\n       ROUND((df.alloc_mb - NVL(fs.free_mb, 0))\n             / df.alloc_mb * 100, 1)              AS pct_used\n  FROM (SELECT tablespace_name,\n               SUM(bytes) / 1024 / 1024 AS alloc_mb\n          FROM dba_data_files\n         GROUP BY tablespace_name) df\n  LEFT JOIN\n       (SELECT tablespace_name,\n               SUM(bytes) / 1024 / 1024 AS free_mb\n          FROM dba_free_space\n         GROUP BY tablespace_name) fs\n    ON fs.tablespace_name = df.tablespace_name\n ORDER BY pct_used DESC;",
+    "caption": "Allocated vs free space per tablespace"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: read the result",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Output (expected output)</b>, illustrative values:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "TABLESPACE_NAME",
+      "ALLOC_MB",
+      "USED_MB",
+      "FREE_MB",
+      "PCT_USED"
+     ],
+     [
+      "SYSTEM",
+      "900",
+      "893",
+      "7",
+      "99.2"
+     ],
+     [
+      "SYSAUX",
+      "600",
+      "562",
+      "38",
+      "93.7"
+     ],
+     [
+      "DEMO_TS",
+      "100",
+      "51",
+      "49",
+      "51"
+     ],
+     [
+      "USERS",
+      "5",
+      "2",
+      "3",
+      "40"
+     ],
+     [
+      "UNDOTBS1",
+      "340",
+      "25",
+      "315",
+      "7.4"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">SYSTEM</code> at 99.2% looks alarming, but compare it with Query 1: its files autoextend, so it is only 2.7% of its maximum. This is the classic false alarm. The percentage here is against the current file size only."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Why the <code class=\"inline-code\">LEFT JOIN</code> and <code class=\"inline-code\">NVL</code>? The documentation notes that a datafile with no free space has no row in <code class=\"inline-code\">DBA_FREE_SPACE</code>. A completely full tablespace would vanish from an inner join, which is exactly the tablespace you most need to see."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You may also notice <code class=\"inline-code\">DEMO_TS</code> shows 51 MB used here and 50 MB in Query 1. <code class=\"inline-code\">BYTES</code> is the full file size, while <code class=\"inline-code\">USER_BYTES</code> excludes the part of the file Oracle keeps for file metadata. This query counts that overhead as used, so a small difference is normal."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "Temporary tablespaces do not appear in this query. Their files are in <code class=\"inline-code\">DBA_TEMP_FILES</code>, not <code class=\"inline-code\">DBA_DATA_FILES</code>. Use Query 4 for TEMP."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Query 3: usage with autoextend and MAXSIZE",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To get MB values and the autoextend view in one report, calculate the maximum size per file. When <code class=\"inline-code\">AUTOEXTENSIBLE</code> is <code class=\"inline-code\">YES</code>, the file can grow to <code class=\"inline-code\">MAXBYTES</code>. When it is <code class=\"inline-code\">NO</code>, the file stays at <code class=\"inline-code\">BYTES</code>. <code class=\"inline-code\">GREATEST</code> covers the case where someone resized a file manually beyond its old <code class=\"inline-code\">MAXSIZE</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT df.tablespace_name,\n       ROUND(df.alloc_mb)                         AS alloc_mb,\n       ROUND(df.max_mb)                           AS max_mb,\n       ROUND(df.alloc_mb - NVL(fs.free_mb, 0))    AS used_mb,\n       ROUND((df.alloc_mb - NVL(fs.free_mb, 0))\n             / df.max_mb * 100, 1)                AS pct_of_max\n  FROM (SELECT tablespace_name,\n               SUM(bytes) / 1024 / 1024 AS alloc_mb,\n               SUM(CASE autoextensible\n                     WHEN 'YES' THEN GREATEST(maxbytes, bytes)\n                     ELSE bytes\n                   END) / 1024 / 1024   AS max_mb\n          FROM dba_data_files\n         GROUP BY tablespace_name) df\n  LEFT JOIN\n       (SELECT tablespace_name,\n               SUM(bytes) / 1024 / 1024 AS free_mb\n          FROM dba_free_space\n         GROUP BY tablespace_name) fs\n    ON fs.tablespace_name = df.tablespace_name\n ORDER BY pct_of_max DESC;",
+    "caption": "Usage as a percentage of maximum size"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Output (expected output)</b>, illustrative values:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "TABLESPACE_NAME",
+      "ALLOC_MB",
+      "MAX_MB",
+      "USED_MB",
+      "PCT_OF_MAX"
+     ],
+     [
+      "DEMO_TS",
+      "100",
+      "500",
+      "51",
+      "10.2"
+     ],
+     [
+      "SYSTEM",
+      "900",
+      "32768",
+      "893",
+      "2.7"
+     ],
+     [
+      "SYSAUX",
+      "600",
+      "32768",
+      "562",
+      "1.7"
+     ],
+     [
+      "UNDOTBS1",
+      "340",
+      "32768",
+      "25",
+      "0.1"
+     ],
+     [
+      "USERS",
+      "5",
+      "32768",
+      "2",
+      "0"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now <code class=\"inline-code\">SYSTEM</code> is correctly at 2.7%. The 32768 MB maximum is what a smallfile datafile with 8 KB blocks shows when it was created with <code class=\"inline-code\">MAXSIZE UNLIMITED</code>. Unlike Query 1, this query does not know how much free disk you have. If five files each claim they can grow to 32 GB on a 50 GB disk, this report is too optimistic, so check the file system too."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Per-datafile detail",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a tablespace is filling up, the next question is which file can still grow. List the files with their growth settings:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT f.file_name,\n       ROUND(f.bytes / 1024 / 1024)                   AS size_mb,\n       f.autoextensible                               AS autoext,\n       ROUND(f.maxbytes / 1024 / 1024)                AS max_mb,\n       ROUND(f.increment_by * t.block_size / 1024 / 1024) AS next_mb\n  FROM dba_data_files f\n  JOIN dba_tablespaces t\n    ON t.tablespace_name = f.tablespace_name\n WHERE f.tablespace_name = 'DEMO_TS';",
+    "caption": "Datafiles of one tablespace"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Output (expected output)</b>:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "FILE_NAME",
+      "SIZE_MB",
+      "AUTOEXT",
+      "MAX_MB",
+      "NEXT_MB"
+     ],
+     [
+      "/u01/oradata/ORCL/demo_ts01.dbf",
+      "100",
+      "YES",
+      "500",
+      "10"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">INCREMENT_BY</code> is stored in Oracle blocks, which is why it is multiplied by the block size. Here the file grows 10 MB at a time, matching the <code class=\"inline-code\">NEXT 10M</code> we set. A file with <code class=\"inline-code\">AUTOEXT = NO</code> shows <code class=\"inline-code\">MAX_MB</code> as 0."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Query 4: temp tablespace usage",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Temporary tablespaces hold sort and hash work areas that do not fit in memory. Use <code class=\"inline-code\">DBA_TEMP_FREE_SPACE</code>. All its size columns are already in bytes."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT tablespace_name,\n       ROUND(tablespace_size / 1024 / 1024)  AS size_mb,\n       ROUND(allocated_space / 1024 / 1024)  AS allocated_mb,\n       ROUND(free_space / 1024 / 1024)       AS free_mb\n  FROM dba_temp_free_space;",
+    "caption": "Temp tablespace size and free space"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Output (expected output)</b>, illustrative values:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "TABLESPACE_NAME",
+      "SIZE_MB",
+      "ALLOCATED_MB",
+      "FREE_MB"
+     ],
+     [
+      "TEMP",
+      "1024",
+      "1024",
+      "700"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">ALLOCATED_MB</code> equal to the full size often worries people, but it is normal. Oracle does not give sort extents back after a query finishes. They are marked free and reused. <code class=\"inline-code\">FREE_SPACE</code> counts both those reusable extents and unallocated space, so the number to watch is <code class=\"inline-code\">FREE_MB</code>: about 324 MB is in use right now."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find which session is using TEMP",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">V$TEMPSEG_USAGE</code> shows the temp segments currently held by each session. Join it to <code class=\"inline-code\">V$SESSION</code> on the session address to get the SID and the SQL."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT s.sid,\n       s.serial#,\n       s.username,\n       u.sql_id,\n       u.segtype,\n       ROUND(u.blocks * t.block_size / 1024 / 1024) AS used_mb\n  FROM v$tempseg_usage u\n  JOIN v$session s\n    ON s.saddr = u.session_addr\n  JOIN dba_tablespaces t\n    ON t.tablespace_name = u.tablespace\n ORDER BY u.blocks DESC;",
+    "caption": "Sessions currently using temp space"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Output (expected output)</b>, illustrative values:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "SID",
+      "SERIAL#",
+      "USERNAME",
+      "SQL_ID",
+      "SEGTYPE",
+      "USED_MB"
+     ],
+     [
+      "143",
+      "51877",
+      "APP_USER",
+      "7h35uxf5uhmm1",
+      "SORT",
+      "312"
+     ],
+     [
+      "87",
+      "20311",
+      "REPORTS",
+      "0w2qpuc6u2zsp",
+      "HASH",
+      "12"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Session 143 holds 312 MB for a sort. Take its <code class=\"inline-code\">SQL_ID</code> and look at the plan: a big sort usually means an <code class=\"inline-code\">ORDER BY</code>, <code class=\"inline-code\">GROUP BY</code> or <code class=\"inline-code\">DISTINCT</code> over far more rows than the query needed. Fixing the query is better than endlessly growing TEMP."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Query 5: what is taking the space",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Once you know a tablespace is filling up, find the largest segments in it with <code class=\"inline-code\">DBA_SEGMENTS</code>. <code class=\"inline-code\">FETCH FIRST</code> needs Oracle 12c or later."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT owner,\n       segment_name,\n       segment_type,\n       ROUND(bytes / 1024 / 1024) AS size_mb\n  FROM dba_segments\n WHERE tablespace_name = 'DEMO_TS'\n ORDER BY bytes DESC\n FETCH FIRST 10 ROWS ONLY;",
+    "caption": "Largest segments in a tablespace"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Output (expected output)</b>, illustrative values:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "OWNER",
+      "SEGMENT_NAME",
+      "SEGMENT_TYPE",
+      "SIZE_MB"
+     ],
+     [
+      "APP",
+      "ORDERS",
+      "TABLE",
+      "47"
+     ],
+     [
+      "APP",
+      "ORDERS_PK",
+      "INDEX",
+      "3"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The two segments add up to the 50 MB that Query 1 reported. If you see segment names starting with <code class=\"inline-code\">BIN$</code>, those are dropped tables sitting in the recycle bin."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How to add space when a tablespace is full",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a segment cannot get a new extent and the files cannot grow, the statement fails with an error such as ORA-01653 (unable to extend table) or ORA-01654 (unable to extend index). You have three options, all run as a DBA:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- 1. Make an existing file bigger\nALTER DATABASE DATAFILE '/u01/oradata/ORCL/demo_ts01.dbf'\n  RESIZE 300M;\n\n-- 2. Let the file grow on its own, with a ceiling\nALTER DATABASE DATAFILE '/u01/oradata/ORCL/demo_ts01.dbf'\n  AUTOEXTEND ON NEXT 50M MAXSIZE 2G;\n\n-- 3. Add another file to the tablespace\nALTER TABLESPACE demo_ts\n  ADD DATAFILE '/u01/oradata/ORCL/demo_ts02.dbf' SIZE 500M\n  AUTOEXTEND ON NEXT 50M MAXSIZE 2G;",
+    "caption": "Three ways to add space"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For a bigfile tablespace you cannot add a datafile. Resize the tablespace itself, for example <code class=\"inline-code\">ALTER TABLESPACE bigtbs RESIZE 80G</code>. For TEMP, use <code class=\"inline-code\">ALTER DATABASE TEMPFILE ... RESIZE</code> or <code class=\"inline-code\">ALTER TABLESPACE temp ADD TEMPFILE ...</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Shrinking works the other way with RESIZE, but only down to the highest used extent in the file. If data sits beyond the size you ask for, Oracle returns an error and the file keeps its size."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Joining DBA_DATA_FILES and DBA_FREE_SPACE without aggregating first.</b> The join multiplies rows and inflates the totals. Group each view by tablespace in its own subquery, then join.",
+      "items": []
+     },
+     {
+      "content": "<b>Using an inner join to DBA_FREE_SPACE.</b> A full tablespace has no free-space rows and disappears from the report. Use a LEFT JOIN with NVL.",
+      "items": []
+     },
+     {
+      "content": "<b>Alerting on percent of allocated size.</b> Autoextending tablespaces such as SYSTEM and SYSAUX will always look nearly full. Alert on percent of maximum (Query 1 or Query 3).",
+      "items": []
+     },
+     {
+      "content": "<b>Forgetting blocks vs bytes.</b> DBA_TABLESPACE_USAGE_METRICS and V$TEMPSEG_USAGE report blocks, DBA_DATA_FILES and DBA_TEMP_FREE_SPACE report bytes. Multiply blocks by the tablespace block size, not a hard-coded 8192, because tablespaces can use different block sizes.",
+      "items": []
+     },
+     {
+      "content": "<b>Panicking about a full undo tablespace.</b> For undo, USED_SPACE in the metrics view includes expired undo, which Oracle can reuse. A high undo percentage on its own is not a problem. Look for ORA-01555 or ORA-30036 errors before adding space.",
+      "items": []
+     },
+     {
+      "content": "<b>Trusting MAXSIZE UNLIMITED.</b> Unlimited still means the per-file limit, and the disk can fill long before that. Check free space on the file system or ASM disk group.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "Space held by tables in the recycle bin is reported as free by the space views, and Oracle reclaims it automatically under space pressure. To release it yourself, run <code class=\"inline-code\">PURGE TABLESPACE demo_ts</code> or <code class=\"inline-code\">PURGE RECYCLEBIN</code>. Purged tables can no longer be restored with FLASHBACK TABLE ... TO BEFORE DROP."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Best practices for monitoring tablespace space",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Schedule Query 1 (or Query 3 if you prefer MB) and alert when percent of maximum passes a threshold you choose, for example 85%.",
+      "items": []
+     },
+     {
+      "content": "Always set a MAXSIZE on autoextending files so one runaway load cannot fill the whole disk.",
+      "items": []
+     },
+     {
+      "content": "Keep TEMP and UNDO on separate checks. Their \"used\" numbers behave differently from permanent tablespaces.",
+      "items": []
+     },
+     {
+      "content": "In a multitenant database, run these queries inside each PDB. DBA_ views show the current container only; CDB_ views from the root show all containers with a CON_ID column.",
+      "items": []
+     },
+     {
+      "content": "When space grows faster than expected, use Query 5 to find the segment, then fix the cause (missing purge job, logging table without cleanup) instead of only adding files.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I check tablespace usage percentage in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run <code class=\"inline-code\">SELECT tablespace_name, used_percent FROM dba_tablespace_usage_metrics;</code> The percentage is calculated against the maximum size the tablespace can grow to, which includes autoextend."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I check free space in a tablespace in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Sum <code class=\"inline-code\">BYTES</code> from <code class=\"inline-code\">DBA_FREE_SPACE</code> grouped by tablespace, as in Query 2. That is free space inside the current files. Add the room left to grow from <code class=\"inline-code\">MAXBYTES</code> if the files autoextend."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I check temp tablespace usage in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">DBA_TEMP_FREE_SPACE</code> for the totals and <code class=\"inline-code\">V$TEMPSEG_USAGE</code> joined to <code class=\"inline-code\">V$SESSION</code> to see which sessions and SQL IDs are using it right now."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why does my tablespace show 99% used when autoextend is on?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Your query is dividing by the current file size. The files will grow until MAXSIZE, so divide by the maximum size instead, as Query 1 and Query 3 do."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between DBA_FREE_SPACE and DBA_TABLESPACE_USAGE_METRICS?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "DBA_FREE_SPACE lists every free extent in the current files, in bytes, for permanent and undo tablespaces. DBA_TABLESPACE_USAGE_METRICS gives one summary row per tablespace in blocks, includes TEMP, and measures against the maximum possible size including disk free space."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "For a quick, autoextend-aware answer, query DBA_TABLESPACE_USAGE_METRICS and convert blocks to MB with DBA_TABLESPACES.BLOCK_SIZE.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "For MB detail, aggregate DBA_DATA_FILES and DBA_FREE_SPACE separately, then LEFT JOIN them.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Measure against MAXBYTES for autoextending files, or you will chase false alarms.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Check TEMP with DBA_TEMP_FREE_SPACE and find heavy sessions with V$TEMPSEG_USAGE.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Find what is using the space with DBA_SEGMENTS before adding more.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Add space with RESIZE, AUTOEXTEND ON ... MAXSIZE, or ADD DATAFILE, and always keep a MAXSIZE.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your tablespace alert says SYSTEM is 99% full. It is probably wrong.\n\nMost tablespace queries divide used space by the current datafile size. With autoextend on, the files will grow, so the real number can be under 5%.\n\nWhat to use instead:\n\n→ DBA_TABLESPACE_USAGE_METRICS gives percent used against the maximum size, including autoextend and free disk space. Its sizes are in blocks, so multiply by block_size.\n→ When joining DBA_DATA_FILES and DBA_FREE_SPACE, GROUP BY tablespace in each subquery first. Joining the raw views multiplies rows and inflates totals.\n→ Use a LEFT JOIN to DBA_FREE_SPACE. A completely full tablespace has no free-space rows and disappears from an inner join.\n→ TEMP is not in DBA_DATA_FILES. Check DBA_TEMP_FREE_SPACE, and V$TEMPSEG_USAGE to see which session holds the space.\n→ A high undo percentage is often expired undo that Oracle reuses. Look for actual errors before adding space.\n\nWhich number does your monitoring alert on: percent of current size or percent of max size?\n\nFull tutorial with examples: link in the first comment.\n\n#Oracle #OracleDBA #OracleSQL #SQL",
+  "slides": [
+   {
+    "title": "Oracle Tablespace Usage: Query It Right",
+    "body": "Free space, autoextend and TEMP without false alarms"
+   },
+   {
+    "title": "Three numbers, not one",
+    "points": [
+     "Allocated: current datafile size",
+     "Used: allocated minus free extents",
+     "Max: how far autoextend files can grow",
+     "Alert on used vs max, not used vs allocated"
+    ]
+   },
+   {
+    "title": "Quickest query",
+    "code": "SELECT m.tablespace_name,\n       ROUND(m.used_percent, 1) pct\n  FROM dba_tablespace_usage_metrics m\n ORDER BY m.used_percent DESC;",
+    "lang": "sql",
+    "body": "Percent is measured against max size, autoextend included. Sizes here are in blocks."
+   },
+   {
+    "title": "Aggregate before you join",
+    "code": "SELECT tablespace_name,\n       SUM(bytes)/1024/1024 free_mb\n  FROM dba_free_space\n GROUP BY tablespace_name",
+    "lang": "sql",
+    "points": [
+     "Do the same for dba_data_files",
+     "Then LEFT JOIN on tablespace_name",
+     "A full tablespace has no free rows"
+    ]
+   },
+   {
+    "title": "TEMP lives elsewhere",
+    "code": "SELECT tablespace_name,\n       ROUND(free_space/1024/1024) free_mb\n  FROM dba_temp_free_space;",
+    "lang": "sql",
+    "body": "Use V$TEMPSEG_USAGE joined to V$SESSION to see which session and SQL_ID holds temp space."
+   },
+   {
+    "title": "Adding space safely",
+    "points": [
+     "ALTER DATABASE DATAFILE ... RESIZE",
+     "AUTOEXTEND ON NEXT 50M MAXSIZE 2G",
+     "ALTER TABLESPACE ... ADD DATAFILE",
+     "Always set a MAXSIZE on autoextend files"
+    ]
+   }
+  ]
+ }
+}
