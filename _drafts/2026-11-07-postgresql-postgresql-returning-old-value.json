@@ -1,0 +1,964 @@
+{
+  "schemaVersion": 1,
+  "title": "PostgreSQL RETURNING Old Value: UPDATE Before and After (PG 18)",
+  "slug": "postgresql-returning-old-value",
+  "category": "postgresql",
+  "description": "Get the old value in a PostgreSQL UPDATE with RETURNING old and new (PostgreSQL 18). Examples for UPDATE, upsert, DELETE and MERGE with real output.",
+  "focusKeyword": "postgresql returning old value",
+  "tags": [
+    "postgresql",
+    "returning",
+    "postgresql-18",
+    "update",
+    "merge"
+  ],
+  "related": [
+    "/posts/postgresql/postgresql-upsert-on-conflict/",
+    "/posts/postgresql/postgresql-for-update-skip-locked-job-queue/",
+    "/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/"
+  ],
+  "sources": [
+    {
+      "title": "PostgreSQL 18 docs: 6.4 Returning Data from Modified Rows",
+      "url": "https://www.postgresql.org/docs/current/dml-returning.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: UPDATE",
+      "url": "https://www.postgresql.org/docs/current/sql-update.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: INSERT",
+      "url": "https://www.postgresql.org/docs/current/sql-insert.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: DELETE",
+      "url": "https://www.postgresql.org/docs/current/sql-delete.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: MERGE",
+      "url": "https://www.postgresql.org/docs/current/sql-merge.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Merge Support Functions (merge_action)",
+      "url": "https://www.postgresql.org/docs/current/functions-merge-support.html"
+    },
+    {
+      "title": "PostgreSQL 18 docs: Transaction Isolation (Read Committed)",
+      "url": "https://www.postgresql.org/docs/current/transaction-iso.html"
+    },
+    {
+      "title": "PostgreSQL 18 release notes",
+      "url": "https://www.postgresql.org/docs/current/release-18.html"
+    },
+    {
+      "title": "PostgreSQL 17 release notes (MERGE RETURNING, merge_action)",
+      "url": "https://www.postgresql.org/docs/release/17.0/"
+    }
+  ],
+  "reviewNotes": "Regular (Saturday) article, not a series part. Tested on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) from the PGDG repository on Ubuntu 24.04.5 LTS; followed the PostgreSQL 18 documentation (docs/current pages in sources) and the 17/18 release notes. All outputs are real and come from one run in article order on a fresh scratch database. Timestamps in the trigger example will differ for readers. SANDBOX CAVEATS: (1) As in earlier runs, postgresql-18 needs liburing2 from archive.ubuntu.com, which is blocked here; I installed a stub liburing.so.2 (only io_method=io_uring would use it; the default is worker). (2) The 'missing FROM-clause entry for table \"old\"' error for older versions was captured on PostgreSQL 16.15 (the image's distribution package), not 17; the article says '17 or older' and shows it as 'the real error from PostgreSQL 16'. EDITOR CHECKS: (a) The claim that an existing FROM alias named old keeps precedence over the special old row is from my test on 18.6 (shown in the article); the docs only say the aliases can be renamed to avoid conflicts. (b) The table of NULL old/new values for MERGE comes from the tested output; the MERGE page states the unqualified defaults but not NULLs explicitly. (c) The two-session concurrency example was run with two real psql sessions; the explanation follows the Read Committed section of transaction-iso.html. Related links point to the live upsert, SKIP LOCKED and DBA Part 11 articles. Overlap note: the upsert draft mentions RETURNING old/new in one line only; this article covers it fully and links there.",
+  "generatedAt": "2026-11-07T13:00:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In PostgreSQL 18 you can get the old value of a row straight from an <code class=\"inline-code\">UPDATE</code>: write <code class=\"inline-code\">RETURNING old.price, new.price</code> and the statement returns the value before the change and the value after it, in one round trip. Before PostgreSQL 18, <code class=\"inline-code\">RETURNING</code> in an <code class=\"inline-code\">UPDATE</code> could only show the new values, so you needed a self-join, a trigger or a separate <code class=\"inline-code\">SELECT</code> to see what was there before."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The same <code class=\"inline-code\">old</code> and <code class=\"inline-code\">new</code> names work in <code class=\"inline-code\">INSERT</code>, <code class=\"inline-code\">DELETE</code> and <code class=\"inline-code\">MERGE</code>. This tutorial shows each one on a small products table, with the real output from PostgreSQL 18, and covers the mistakes that catch people the first time: NULLs where they did not expect them, alias clashes and permissions."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How RETURNING old and new works",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">RETURNING</code> turns a data-changing statement into something that also returns rows, like a <code class=\"inline-code\">SELECT</code>. Its list accepts the same things a <code class=\"inline-code\">SELECT</code> list does: column names, expressions, <code class=\"inline-code\">*</code> and aliases. It returns one row for each row the statement actually changed."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "PostgreSQL 18 adds two special names inside that list. <code class=\"inline-code\">old</code> is the row as it was before the statement changed it, and <code class=\"inline-code\">new</code> is the row after the change. You can write <code class=\"inline-code\">old.column_name</code>, <code class=\"inline-code\">new.column_name</code>, <code class=\"inline-code\">old.*</code> or <code class=\"inline-code\">new.*</code>, and mix them with any expression."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "What you get without a prefix did not change. The table below shows the default for each statement and when old or new is NULL."
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Statement",
+            "Unqualified column returns",
+            "old values",
+            "new values"
+          ],
+          [
+            "INSERT",
+            "new row",
+            "NULL (except rows updated by ON CONFLICT DO UPDATE)",
+            "inserted row"
+          ],
+          [
+            "UPDATE",
+            "new row",
+            "row before the update",
+            "row after the update"
+          ],
+          [
+            "DELETE",
+            "deleted (old) row",
+            "deleted row",
+            "NULL (except when an ON DELETE rule runs an INSERT or UPDATE instead)"
+          ],
+          [
+            "MERGE",
+            "new row for INSERT/UPDATE, old row for DELETE",
+            "NULL for INSERT actions",
+            "NULL for DELETE actions"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Think of <code class=\"inline-code\">old</code> and <code class=\"inline-code\">new</code> as the before and after photos of each changed row. PostgreSQL already has both photos while it runs the statement, so returning them costs nothing extra."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "",
+        "text": "This is new in PostgreSQL 18. On PostgreSQL 17 and older, <code class=\"inline-code\">old</code> and <code class=\"inline-code\">new</code> are not special inside <code class=\"inline-code\">RETURNING</code>, so a query using them fails. The section on common mistakes shows the error."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Create a scratch database and a small products table. Every example below runs against this table in order, so the outputs build on each other."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE TABLE products (\n    product_id  integer PRIMARY KEY,\n    name        text          NOT NULL,\n    price       numeric(10,2) NOT NULL,\n    stock       integer       NOT NULL CHECK (stock >= 0)\n);\n\nINSERT INTO products (product_id, name, price, stock) VALUES\n    (1, 'USB-C cable',          299.00, 40),\n    (2, 'Wireless mouse',       799.00, 15),\n    (3, 'Laptop stand',        1499.00,  3),\n    (4, 'Mechanical keyboard', 3499.00,  0);\n\nSELECT * FROM products ORDER BY product_id;",
+        "caption": "Create and fill the products table"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id |        name         |  price  | stock\n------------+---------------------+---------+-------\n          1 | USB-C cable         |  299.00 |    40\n          2 | Wireless mouse      |  799.00 |    15\n          3 | Laptop stand        | 1499.00 |     3\n          4 | Mechanical keyboard | 3499.00 |     0\n(4 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "UPDATE RETURNING before PostgreSQL 18",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Say you want to raise every price under 1,000 by 10% and report what changed. A plain <code class=\"inline-code\">RETURNING</code> only gives you the new price. The <code class=\"inline-code\">BEGIN</code> and <code class=\"inline-code\">ROLLBACK</code> here undo the change so the table stays as it was."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "BEGIN;\nUPDATE products\n   SET price = round(price * 1.10, 2)\n WHERE price < 1000\nRETURNING product_id, price;\nROLLBACK;",
+        "caption": "Unqualified columns return the new values"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id | price\n------------+--------\n          1 | 328.90\n          2 | 878.90\n(2 rows)\n\nUPDATE 2",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The old prices (299.00 and 799.00) are gone. The usual workaround on older versions was to join the table to a locked copy of itself and return the copy's column:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "BEGIN;\nUPDATE products AS p\n   SET price = round(p.price * 1.10, 2)\n  FROM (SELECT product_id, price\n          FROM products\n         WHERE price < 1000\n           FOR UPDATE) AS before\n WHERE p.product_id = before.product_id\nRETURNING p.product_id, before.price AS old_price, p.price AS new_price;\nROLLBACK;",
+        "caption": "The pre-18 workaround: a self-join with FOR UPDATE"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id | old_price | new_price\n------------+-----------+-----------\n          1 |    299.00 |    328.90\n          2 |    799.00 |    878.90\n(2 rows)\n\nUPDATE 2",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "It works, but it reads the table twice, needs <code class=\"inline-code\">FOR UPDATE</code> so another session cannot change the row between the read and the write, and is easy to get wrong. PostgreSQL 18 removes the need for it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "UPDATE RETURNING old and new values in PostgreSQL 18",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Return the price before and after",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now the same price rise, written with <code class=\"inline-code\">old</code> and <code class=\"inline-code\">new</code>. You can also compute with both, here the size of the increase."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "UPDATE products\n   SET price = round(price * 1.10, 2)\n WHERE price < 1000\nRETURNING product_id, name,\n          old.price AS old_price,\n          new.price AS new_price,\n          new.price - old.price AS increase;",
+        "caption": "Old value, new value and the difference in one statement"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id |      name      | old_price | new_price | increase\n------------+----------------+-----------+-----------+----------\n          1 | USB-C cable    |    299.00 |    328.90 |    29.90\n          2 | Wireless mouse |    799.00 |    878.90 |    79.90\n(2 rows)\n\nUPDATE 2",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "One statement, one pass over the table, and both values per row. <code class=\"inline-code\">new.price</code> gives the same result as plain <code class=\"inline-code\">price</code>, but writing it out makes the intent obvious to the next person who reads the query."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Decrease stock safely and see what it was",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A common job is taking items out of stock only if enough are left. Put the check in the <code class=\"inline-code\">WHERE</code> clause and return both stock levels:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "UPDATE products\n   SET stock = stock - 2\n WHERE product_id = 3\n   AND stock >= 2\nRETURNING product_id,\n          old.stock AS stock_before,\n          new.stock AS stock_after;",
+        "caption": "Take 2 laptop stands out of stock"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id | stock_before | stock_after\n------------+--------------+-------------\n          3 |            3 |           1\n(1 row)\n\nUPDATE 1",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Run exactly the same statement a second time. Only 1 is left, so the WHERE clause matches nothing:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id | stock_before | stock_after\n------------+--------------+-------------\n(0 rows)\n\nUPDATE 0",
+        "caption": "Output (second run)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Zero rows back means the order could not be filled. Your application gets the answer and the before and after numbers from the same atomic statement, with no window for another session to sneak in between a read and a write."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What old means when two sessions update the same row",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This is the detail that matters most in production. <code class=\"inline-code\">old</code> is the row version your <code class=\"inline-code\">UPDATE</code> actually changed, not the value your session saw when the statement started. To show it, two psql sessions each take 5 USB-C cables (stock 40) at the same time:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "-- Session A\nBEGIN;\nUPDATE products SET stock = stock - 5 WHERE product_id = 1\nRETURNING old.stock AS stock_before, new.stock AS stock_after;\n-- (do not commit yet)\n\n-- Session B, while A is still open\nUPDATE products SET stock = stock - 5 WHERE product_id = 1\nRETURNING old.stock AS stock_before, new.stock AS stock_after;\n\n-- Session A\nCOMMIT;",
+        "caption": "Two sessions update the same row"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " stock_before | stock_after\n--------------+-------------\n           40 |          35\n(1 row)",
+        "caption": "Output (Session A)"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " stock_before | stock_after\n--------------+-------------\n           35 |          30\n(1 row)",
+        "caption": "Output (Session B, returned after A committed)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Session B waited for A's row lock. Under the default Read Committed isolation level, once A committed, B checked its <code class=\"inline-code\">WHERE</code> clause again on the updated version of the row and applied its change to that version. So B's <code class=\"inline-code\">old.stock</code> is 35, not 40, and no stock was lost. If you want the background on row versions, see <a href=\"/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/\">PostgreSQL DBA Part 11: MVCC, xmin/xmax and row visibility</a>."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "",
+        "text": "This is why <code class=\"inline-code\">RETURNING old</code> is safer than a <code class=\"inline-code\">SELECT</code> before the <code class=\"inline-code\">UPDATE</code>. A separate <code class=\"inline-code\">SELECT</code> without <code class=\"inline-code\">FOR UPDATE</code> can return 40 to both sessions, and your log would then say the stock went from 40 to 35 twice."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Write an audit trail with a CTE",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Because <code class=\"inline-code\">RETURNING</code> produces rows, you can put the <code class=\"inline-code\">UPDATE</code> in a <code class=\"inline-code\">WITH</code> clause (a common table expression, or CTE) and insert its output into a history table in the same statement."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE TABLE price_history (\n    history_id  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    product_id  integer       NOT NULL,\n    old_price   numeric(10,2) NOT NULL,\n    new_price   numeric(10,2) NOT NULL,\n    changed_at  timestamptz   NOT NULL DEFAULT now()\n);\n\nWITH changed AS (\n    UPDATE products\n       SET price = price - 100\n     WHERE product_id IN (3, 4)\n    RETURNING product_id,\n              old.price AS old_price,\n              new.price AS new_price\n)\nINSERT INTO price_history (product_id, old_price, new_price)\nSELECT product_id, old_price, new_price\n  FROM changed;\n\nSELECT history_id, product_id, old_price, new_price\n  FROM price_history\n ORDER BY history_id;",
+        "caption": "Change prices and log every change in one statement"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " history_id | product_id | old_price | new_price\n------------+------------+-----------+-----------\n          1 |          3 |   1499.00 |   1399.00\n          2 |          4 |   3499.00 |   3399.00\n(2 rows)",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The update and the log insert are one statement, so they succeed or fail together. For one-off changes like a price list import this is simpler than an audit trigger. Use a trigger instead when every change from every application must be logged, because a CTE only logs the statements that include it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "INSERT ON CONFLICT: was the row inserted or updated?",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "With an upsert (<code class=\"inline-code\">INSERT ... ON CONFLICT DO UPDATE</code>), <code class=\"inline-code\">old</code> is NULL for rows that were newly inserted and holds the previous values for rows that hit a conflict and were updated. That gives you a clean way to tell the two apart. The full upsert syntax is covered in <a href=\"/posts/postgresql/postgresql-upsert-on-conflict/\">PostgreSQL Upsert with ON CONFLICT</a>."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "INSERT INTO products (product_id, name, price, stock) VALUES\n    (2, 'Wireless mouse', 849.00, 25),\n    (5, 'HDMI adapter',   599.00, 30)\nON CONFLICT (product_id) DO UPDATE\n   SET price = EXCLUDED.price,\n       stock = EXCLUDED.stock\nRETURNING product_id,\n          (old.product_id IS NULL) AS inserted,\n          old.price AS old_price, new.price AS new_price,\n          old.stock AS old_stock, new.stock AS new_stock;",
+        "caption": "Upsert and report what happened to each row"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id | inserted | old_price | new_price | old_stock | new_stock\n------------+----------+-----------+-----------+-----------+-----------\n          2 | f        |    878.90 |    849.00 |        15 |        25\n          5 | t        |           |    599.00 |           |        30\n(2 rows)\n\nINSERT 0 2",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Product 2 already existed, so it was updated and <code class=\"inline-code\">old</code> shows its earlier price and stock. Product 5 is new, so every <code class=\"inline-code\">old</code> column is NULL. Test <code class=\"inline-code\">old</code> on a NOT NULL column such as the primary key, so a NULL can only mean \"no old row\". Before PostgreSQL 18 people often checked the system column <code class=\"inline-code\">xmax</code> for this, which relies on internal behaviour; <code class=\"inline-code\">old</code> is the documented way."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "With <code class=\"inline-code\">ON CONFLICT DO NOTHING</code>, rows that were skipped are not returned at all, because <code class=\"inline-code\">RETURNING</code> only covers rows actually inserted or updated:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "INSERT INTO products (product_id, name, price, stock) VALUES\n    (5, 'HDMI adapter', 650.00, 10),\n    (6, 'Webcam',      2199.00,  8)\nON CONFLICT (product_id) DO NOTHING\nRETURNING product_id, old.price AS old_price, new.price AS new_price;",
+        "caption": "DO NOTHING returns only the inserted rows"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id | old_price | new_price\n------------+-----------+-----------\n          6 |           |   2199.00\n(1 row)\n\nINSERT 0 1",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Product 5 was skipped and does not appear. Product 6 was inserted, so its old price is NULL."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "DELETE RETURNING old values",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "For <code class=\"inline-code\">DELETE</code>, unqualified columns already return the deleted row, so <code class=\"inline-code\">old.name</code> and <code class=\"inline-code\">name</code> give the same thing. <code class=\"inline-code\">new</code> is NULL for a plain delete:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "DELETE FROM products\n WHERE product_id = 6\nRETURNING old.product_id, old.name, old.price, new.name AS new_name;",
+        "caption": "Delete a row and return what was removed"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id |  name  |  price  | new_name\n------------+--------+---------+----------\n          6 | Webcam | 2199.00 |\n(1 row)\n\nDELETE 1",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Writing <code class=\"inline-code\">old.</code> on a <code class=\"inline-code\">DELETE</code> is optional, but it keeps queries consistent when you copy the same <code class=\"inline-code\">RETURNING</code> list between statements."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "MERGE RETURNING with merge_action()",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">MERGE</code> can insert, update and delete in one statement, so this is where <code class=\"inline-code\">old</code> and <code class=\"inline-code\">new</code> help most. <code class=\"inline-code\">RETURNING</code> on <code class=\"inline-code\">MERGE</code> arrived in PostgreSQL 17, and <code class=\"inline-code\">old</code>/<code class=\"inline-code\">new</code> in 18. The function <code class=\"inline-code\">merge_action()</code> returns 'INSERT', 'UPDATE' or 'DELETE' for each row and can only be used in the <code class=\"inline-code\">RETURNING</code> list of a <code class=\"inline-code\">MERGE</code>."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "CREATE TABLE stock_feed (\n    product_id  integer PRIMARY KEY,\n    name        text,\n    price       numeric(10,2),\n    stock       integer\n);\n\nINSERT INTO stock_feed VALUES\n    (1, 'USB-C cable',          349.00, 60),\n    (4, 'Mechanical keyboard', 3399.00,  0),\n    (7, 'Laptop sleeve',        899.00, 12);\n\nMERGE INTO products AS p\nUSING stock_feed AS f\n   ON p.product_id = f.product_id\nWHEN MATCHED AND f.stock = 0 THEN\n    DELETE\nWHEN MATCHED THEN\n    UPDATE SET price = f.price, stock = f.stock\nWHEN NOT MATCHED THEN\n    INSERT (product_id, name, price, stock)\n    VALUES (f.product_id, f.name, f.price, f.stock)\nRETURNING merge_action() AS action, f.product_id,\n          old.price AS old_price, new.price AS new_price,\n          old.stock AS old_stock, new.stock AS new_stock;",
+        "caption": "Sync products from a supplier feed and report each action"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " action | product_id | old_price | new_price | old_stock | new_stock\n--------+------------+-----------+-----------+-----------+-----------\n UPDATE |          1 |    328.90 |    349.00 |        30 |        60\n DELETE |          4 |   3399.00 |           |         0 |\n INSERT |          7 |           |    899.00 |           |        12\n(3 rows)\n\nMERGE 3",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Each row tells its own story: product 1 was updated (stock 30 after the two sessions earlier, now 60), product 4 was deleted because the feed says 0 in stock, so it has no new values, and product 7 was inserted, so it has no old values."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Renaming old and new with WITH (OLD AS ..., NEW AS ...)",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If <code class=\"inline-code\">old</code> or <code class=\"inline-code\">new</code> would clash with a name already in your query, rename them with <code class=\"inline-code\">RETURNING WITH (OLD AS o, NEW AS n)</code>. Short aliases are also handy for <code class=\"inline-code\">o.*, n.*</code>:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "UPDATE products\n   SET stock = stock + 5\n WHERE product_id = 7\nRETURNING WITH (OLD AS o, NEW AS n) o.*, n.*;",
+        "caption": "Return the whole row before and after"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id |     name      | price  | stock | product_id |     name      | price  | stock\n------------+---------------+--------+-------+------------+---------------+--------+-------\n          7 | Laptop sleeve | 899.00 |    12 |          7 | Laptop sleeve | 899.00 |    17\n(1 row)\n\nUPDATE 1",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Once you give an alias, the names <code class=\"inline-code\">old</code> and <code class=\"inline-code\">new</code> are hidden for that statement. Using them anyway fails:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "UPDATE products\n   SET stock = stock + 5\n WHERE product_id = 7\nRETURNING WITH (OLD AS o, NEW AS n) old.stock;",
+        "caption": "old is hidden after it is renamed"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ERROR:  missing FROM-clause entry for table \"old\"\nLINE 4: RETURNING WITH (OLD AS o, NEW AS n) old.stock;\n                                            ^",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "What about queries written before PostgreSQL 18 that already use a table or subquery alias called <code class=\"inline-code\">old</code>, like the self-join workaround with <code class=\"inline-code\">AS old</code> instead of <code class=\"inline-code\">AS before</code>? In our test on PostgreSQL 18.6, that alias still won: <code class=\"inline-code\">old.price</code> kept referring to the subquery, so existing queries did not change meaning. To use the new feature in such a query, rename the special rows:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "BEGIN;\nUPDATE products AS p\n   SET price = round(p.price * 1.10, 2)\n  FROM (SELECT product_id, price\n          FROM products\n         WHERE product_id = 1\n           FOR UPDATE) AS old\n WHERE p.product_id = old.product_id\nRETURNING WITH (OLD AS o, NEW AS n)\n          p.product_id,\n          old.price AS from_subquery,\n          o.price   AS old_price,\n          n.price   AS new_price;\nROLLBACK;",
+        "caption": "An existing alias named old, plus the renamed old row"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id | from_subquery | old_price | new_price\n------------+---------------+-----------+-----------\n          1 |        349.00 |    349.00 |    383.90\n(1 row)\n\nUPDATE 1",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "RETURNING old and new with triggers",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If a <code class=\"inline-code\">BEFORE</code> trigger changes the row, <code class=\"inline-code\">new</code> shows the row as the trigger left it. A typical example is an <code class=\"inline-code\">updated_at</code> column set by a trigger:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "postgresql",
+        "code": "ALTER TABLE products\n    ADD COLUMN updated_at timestamptz NOT NULL DEFAULT now();\n\nCREATE FUNCTION set_updated_at() RETURNS trigger\nLANGUAGE plpgsql AS $$\nBEGIN\n    NEW.updated_at := clock_timestamp();\n    RETURN NEW;\nEND;\n$$;\n\nCREATE TRIGGER products_set_updated_at\n    BEFORE UPDATE ON products\n    FOR EACH ROW EXECUTE FUNCTION set_updated_at();\n\nUPDATE products\n   SET stock = stock + 10\n WHERE product_id = 2\nRETURNING product_id,\n          old.updated_at AS old_updated_at,\n          new.updated_at AS new_updated_at;",
+        "caption": "new includes the value written by the trigger"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": " product_id |        old_updated_at        |        new_updated_at\n------------+------------------------------+-------------------------------\n          2 | 2026-11-07 12:49:37.40766+00 | 2026-11-07 12:49:44.447293+00\n(1 row)\n\nUPDATE 1",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The <code class=\"inline-code\">UPDATE</code> never mentioned <code class=\"inline-code\">updated_at</code>, yet <code class=\"inline-code\">new.updated_at</code> holds the trigger's value, and <code class=\"inline-code\">old.updated_at</code> shows when the row was last touched. Your timestamps will differ."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Running it on PostgreSQL 17 or older",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Before PostgreSQL 18, <code class=\"inline-code\">old</code> inside <code class=\"inline-code\">RETURNING</code> is just an unknown table name. This is the real error from PostgreSQL 16:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ERROR:  missing FROM-clause entry for table \"old\"\nLINE 1: ...PDATE t SET price = 328.90 WHERE id = 1 RETURNING old.price,...\n                                                             ^",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Fix: check <code class=\"inline-code\">SELECT version();</code> on every server the code runs on, including replicas and test databases. Until all of them are on 18, use the self-join with <code class=\"inline-code\">FOR UPDATE</code> shown earlier."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Expecting old values from a plain INSERT",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">old.*</code> is always NULL for rows a plain <code class=\"inline-code\">INSERT</code> creates, and <code class=\"inline-code\">new.*</code> is always NULL for a plain <code class=\"inline-code\">DELETE</code>. That is by design, not a bug. Use <code class=\"inline-code\">old</code> on <code class=\"inline-code\">INSERT</code> only with <code class=\"inline-code\">ON CONFLICT DO UPDATE</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Expecting skipped rows from ON CONFLICT DO NOTHING",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Rows skipped by <code class=\"inline-code\">DO NOTHING</code>, or by a <code class=\"inline-code\">DO UPDATE ... WHERE</code> condition that is false, are not returned. If you need to know which input rows were skipped, compare the returned keys with your input list."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Testing a nullable column to detect inserts",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">old.discount IS NULL</code> is true both for a new row and for an existing row whose discount was NULL. Test a NOT NULL column, ideally the primary key."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "permission denied for table",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">RETURNING</code> needs <code class=\"inline-code\">SELECT</code> privilege on every column it mentions, through <code class=\"inline-code\">old</code> or <code class=\"inline-code\">new</code>. A role that has <code class=\"inline-code\">UPDATE (stock)</code> and <code class=\"inline-code\">SELECT (product_id, stock)</code> can return <code class=\"inline-code\">old.stock</code>, but adding <code class=\"inline-code\">old.price</code> fails:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ERROR:  permission denied for table products",
+        "caption": "Output"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Fix: grant <code class=\"inline-code\">SELECT</code> on the extra columns, or return only the columns the role may read."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Performance and best practices",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Prefer <code class=\"inline-code\">RETURNING old</code> over a <code class=\"inline-code\">SELECT</code> followed by an <code class=\"inline-code\">UPDATE</code>: one statement, one round trip, and the old value is the exact row version you changed.",
+            "items": []
+          },
+          {
+            "content": "Return only the columns you need. <code class=\"inline-code\">o.*, n.*</code> is fine in psql, but for wide tables with large text or JSON columns it sends a lot of data back to the application.",
+            "items": []
+          },
+          {
+            "content": "Remember <code class=\"inline-code\">RETURNING</code> returns a row for every changed row. An unbounded <code class=\"inline-code\">UPDATE ... RETURNING</code> on millions of rows sends millions of rows to the client; batch large changes.",
+            "items": []
+          },
+          {
+            "content": "Name your output columns (<code class=\"inline-code\">AS old_price</code>, <code class=\"inline-code\">AS new_price</code>). Without aliases, <code class=\"inline-code\">old.price</code> and <code class=\"inline-code\">new.price</code> both come back as a column called price, which is confusing in application code.",
+            "items": []
+          },
+          {
+            "content": "For queue-style work that claims rows, combine this with the pattern in <a href=\"/posts/postgresql/postgresql-for-update-skip-locked-job-queue/\">PostgreSQL FOR UPDATE SKIP LOCKED</a> so workers do not wait on each other.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I get the old value in a PostgreSQL UPDATE?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On PostgreSQL 18, add <code class=\"inline-code\">RETURNING old.column_name</code> to the <code class=\"inline-code\">UPDATE</code>. On older versions, join the table to a subquery that selects the old values with <code class=\"inline-code\">FOR UPDATE</code> and return the subquery's columns, or capture <code class=\"inline-code\">OLD</code> in a row-level trigger."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Does PostgreSQL 17 support RETURNING old and new?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "No. PostgreSQL 17 added <code class=\"inline-code\">RETURNING</code> to <code class=\"inline-code\">MERGE</code>, but the <code class=\"inline-code\">old</code> and <code class=\"inline-code\">new</code> names in <code class=\"inline-code\">RETURNING</code> are new in PostgreSQL 18 and work in <code class=\"inline-code\">INSERT</code>, <code class=\"inline-code\">UPDATE</code>, <code class=\"inline-code\">DELETE</code> and <code class=\"inline-code\">MERGE</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How can I tell if an upsert inserted or updated a row?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On PostgreSQL 18, return <code class=\"inline-code\">(old.primary_key_column IS NULL) AS inserted</code>. It is true for new rows and false for rows updated through <code class=\"inline-code\">ON CONFLICT DO UPDATE</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Is the old value the one my transaction saw at the start?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Not always. Under Read Committed, if another session updated and committed the row first, your <code class=\"inline-code\">UPDATE</code> applies to that newer version, and <code class=\"inline-code\">old</code> shows the newer version. That is what you want for logging, because it is what your statement actually replaced."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "<code class=\"inline-code\">RETURNING old.col, new.col</code> returns before and after values; new in PostgreSQL 18.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Works in <code class=\"inline-code\">INSERT</code>, <code class=\"inline-code\">UPDATE</code>, <code class=\"inline-code\">DELETE</code> and <code class=\"inline-code\">MERGE</code>; unqualified columns keep their old meaning.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "<code class=\"inline-code\">old</code> is NULL for inserted rows, <code class=\"inline-code\">new</code> is NULL for deleted rows.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use <code class=\"inline-code\">old.primary_key IS NULL</code> to tell inserts from updates in an upsert.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "<code class=\"inline-code\">old</code> is the row version actually updated, even after waiting for another session.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Rename with <code class=\"inline-code\">RETURNING WITH (OLD AS o, NEW AS n)</code> when names clash; then <code class=\"inline-code\">old</code> and <code class=\"inline-code\">new</code> are hidden.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Combine with a CTE to write audit rows in the same statement.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "<code class=\"inline-code\">RETURNING</code> needs <code class=\"inline-code\">SELECT</code> privilege on every column it returns.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your UPDATE changed the stock. Now someone asks what it was before, and the old value is gone.\n\nPostgreSQL 18 fixes this with old and new inside RETURNING:\n\n→ UPDATE products SET stock = stock - 2 RETURNING old.stock, new.stock\n→ One statement, one round trip, no self-join or extra SELECT\n→ In an upsert, old is NULL for inserted rows, so (old.product_id IS NULL) tells you inserted vs updated\n→ In MERGE, combine it with merge_action() to see INSERT, UPDATE or DELETE plus both values per row\n→ old is the row version your statement actually replaced, even if it waited for another session first\n\nTwo traps: on PostgreSQL 17 or older it fails with \"missing FROM-clause entry for table old\", and after RETURNING WITH (OLD AS o, NEW AS n) the names old and new are hidden.\n\nHow do you capture before and after values today: triggers, a SELECT first, or a self-join?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #Database #DBA",
+    "slides": [
+      {
+        "title": "RETURNING old and new in PostgreSQL 18",
+        "body": "Get before and after values from INSERT, UPDATE, DELETE and MERGE"
+      },
+      {
+        "title": "The problem before PostgreSQL 18",
+        "points": [
+          "UPDATE ... RETURNING only showed new values",
+          "Old values needed a self-join with FOR UPDATE",
+          "Or a trigger, or a separate SELECT first"
+        ]
+      },
+      {
+        "title": "UPDATE with old and new",
+        "code": "UPDATE products\n   SET price = price * 1.10\n WHERE price < 1000\nRETURNING product_id,\n  old.price AS old_price,\n  new.price AS new_price;",
+        "lang": "postgresql"
+      },
+      {
+        "title": "Upsert: inserted or updated?",
+        "code": "INSERT INTO products VALUES\n  (5, 'HDMI adapter', 599, 30)\nON CONFLICT (product_id) DO UPDATE\n  SET price = EXCLUDED.price\nRETURNING product_id,\n  (old.product_id IS NULL) AS inserted;",
+        "lang": "postgresql"
+      },
+      {
+        "title": "Where old or new is NULL",
+        "points": [
+          "INSERT: old is NULL (except ON CONFLICT DO UPDATE)",
+          "DELETE: new is NULL",
+          "MERGE: old NULL on INSERT, new NULL on DELETE",
+          "DO NOTHING: skipped rows are not returned at all"
+        ]
+      },
+      {
+        "title": "Traps to avoid",
+        "points": [
+          "PostgreSQL 17 and older: missing FROM-clause entry for table old",
+          "After WITH (OLD AS o, NEW AS n), old and new are hidden",
+          "RETURNING needs SELECT privilege on every column it returns"
+        ]
+      }
+    ]
+  }
+}
