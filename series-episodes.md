@@ -32,7 +32,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Clarify PostgreSQL cluster terminology and hierarchy; explain that one server instance can host multiple databases.
   - Format: Layered diagram · Level: Beginner
   - Hook: Cluster vs database vs schema — don't confuse these.
-- [ ] Ep 007 | 2026-11-10 | PostgreSQL Data Directory: What Lives Inside PGDATA?
+- [x] Ep 007 | 2026-11-10 | PostgreSQL Data Directory: What Lives Inside PGDATA? (posted 2026-11-09 13:00, Buffer 6af00a2151492b796e1be2d0)
   - Objective: Introduce base, global, pg_wal, pg_tblspc and configuration files; caution against manual file edits.
   - Format: Directory tour · Level: Beginner
   - Hook: What is actually stored inside PGDATA?
