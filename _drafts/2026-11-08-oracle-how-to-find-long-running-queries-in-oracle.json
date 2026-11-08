@@ -1,0 +1,875 @@
+{
+  "schemaVersion": 1,
+  "title": "How to Find Long Running Queries in Oracle (5 Methods)",
+  "slug": "how-to-find-long-running-queries-in-oracle",
+  "category": "plsql",
+  "description": "Find long running queries in Oracle with V$SESSION, V$SQL and V$SESSION_LONGOPS. Includes ready queries, example output and how to cancel safely.",
+  "focusKeyword": "how to find long running queries in oracle",
+  "tags": [
+    "oracle",
+    "performance",
+    "tuning",
+    "v$session",
+    "dba"
+  ],
+  "related": [
+    "/posts/plsql/oracle-blocking-sessions-query/",
+    "/posts/plsql/how-to-read-explain-plan-in-oracle/",
+    "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle 19c Reference: V$SESSION",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/V-SESSION.html"
+    },
+    {
+      "title": "Oracle 19c Reference: V$SQL",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/V-SQL.html"
+    },
+    {
+      "title": "Oracle 19c Reference: V$SESSION_LONGOPS",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/V-SESSION_LONGOPS.html"
+    },
+    {
+      "title": "Oracle 19c Reference: V$SQL_MONITOR",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/V-SQL_MONITOR.html"
+    },
+    {
+      "title": "Oracle 19c SQL Tuning Guide: Monitoring Database Operations",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/tgsql/monitoring-database-operations.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Packages: DBMS_XPLAN",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_XPLAN.html"
+    },
+    {
+      "title": "Oracle 19c Administrator's Guide: Terminating Sessions and Cancelling SQL",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/admin/managing-processes.html"
+    },
+    {
+      "title": "Oracle 19c Licensing Information: Diagnostics and Tuning Packs",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/dblic/Licensing-Information.html"
+    }
+  ],
+  "reviewNotes": "All examples written from the Oracle 19c docs and not executed; they need a test run. All output tables (SIDs, SQL_IDs, timings, the Hash Join longops row) are illustrative placeholders: replace them with real output from the test run. Please verify: (1) the slow self-join actually runs long enough (several minutes) on a 1M-row table; adjust row count if not, and confirm CONNECT BY LEVEL <= 1000000 does not hit memory limits on the test box; (2) the expected plan shape in Method 5 (HASH JOIN + HASH GROUP BY); (3) ALTER SYSTEM CANCEL SQL is stated as 18c and later from general knowledge, the 19c admin guide does not give the version; (4) SQL Developer menu names (Tools > Monitor Sessions, Tools > Real Time SQL Monitor) are from general knowledge; (5) DBMS_SQLTUNE.REPORT_SQL_MONITOR used per the tuning guide command-line example (DBMS_SQL_MONITOR.REPORT_SQL_MONITOR is the newer equivalent). Licensing notes follow the 19c Licensing Information guide.",
+  "generatedAt": "2026-11-08T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To find long running queries in Oracle, query <code class=\"inline-code\">V$SESSION</code> for sessions with <code class=\"inline-code\">STATUS = 'ACTIVE'</code> and compare <code class=\"inline-code\">SQL_EXEC_START</code> with <code class=\"inline-code\">SYSDATE</code>. That tells you which statement each session is running right now and for how many seconds. Join to <code class=\"inline-code\">V$SQL</code> to see the SQL text, then use <code class=\"inline-code\">V$SESSION_LONGOPS</code> to check progress on big scans and sorts."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Those three views answer the question for queries that are running now. For queries that already finished, you look at the statistics kept in the shared pool, or at Active Session History if your database is licensed for it. This tutorial walks through each method with a small test table, shows what the output looks like, and explains when each view tells the truth and when it misleads."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How Oracle tracks running SQL",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Every connected session has one row in <code class=\"inline-code\">V$SESSION</code>. When a session is executing a call, its status is <code class=\"inline-code\">ACTIVE</code>, its <code class=\"inline-code\">SQL_ID</code> column holds the statement it is running, and <code class=\"inline-code\">SQL_EXEC_START</code> holds the time that execution began. Subtract that from the current time and you have the runtime of the current execution."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">V$SQL</code> holds one row per child cursor in the shared pool, with totals such as elapsed time, CPU time and executions. The Oracle reference says these statistics are normally updated at the end of execution, but for long-running queries they are refreshed every 5 seconds, so you can watch a slow query while it runs."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Here is what each view is good for:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "View",
+            "Shows",
+            "Licence needed"
+          ],
+          [
+            "V$SESSION",
+            "What each session is running now and since when",
+            "No"
+          ],
+          [
+            "V$SQL",
+            "Totals per statement since it entered the shared pool",
+            "No"
+          ],
+          [
+            "V$SESSION_LONGOPS",
+            "Progress of single operations running over 6 seconds",
+            "No"
+          ],
+          [
+            "V$SQL_MONITOR",
+            "Live and recent monitored executions, one row each",
+            "Tuning Pack"
+          ],
+          [
+            "V$ACTIVE_SESSION_HISTORY, DBA_HIST_*",
+            "Sampled history of active sessions",
+            "Diagnostics Pack"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "Licensing",
+        "text": "<code class=\"inline-code\">V$SQL_MONITOR</code> and the SQL Monitor report belong to the Oracle Tuning Pack. <code class=\"inline-code\">V$ACTIVE_SESSION_HISTORY</code> and most <code class=\"inline-code\">DBA_HIST_</code> views belong to the Diagnostics Pack. Both packs need Enterprise Edition and a separate licence. The parameter <code class=\"inline-code\">CONTROL_MANAGEMENT_PACK_ACCESS</code> can switch them on or off, but it does not grant a licence. Check with your DBA before you use them."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To query the <code class=\"inline-code\">V$</code> views you need privileges such as <code class=\"inline-code\">SELECT_CATALOG_ROLE</code> or <code class=\"inline-code\">SELECT ANY DICTIONARY</code>. A normal application user usually cannot see them."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To follow along, create an orders table with one million rows. You need two sessions: session 1 runs a deliberately slow query, and session 2 runs the monitoring queries."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE orders (\n  order_id     NUMBER PRIMARY KEY,\n  customer_id  NUMBER NOT NULL,\n  order_date   DATE   NOT NULL,\n  amount       NUMBER(10,2),\n  status       VARCHAR2(10)\n);\n\nINSERT INTO orders\nSELECT level,\n       MOD(level, 5000) + 1,\n       DATE '2026-01-01' + MOD(level, 300),\n       ROUND(DBMS_RANDOM.VALUE(100, 5000), 2),\n       CASE MOD(level, 4) WHEN 0 THEN 'CANCELLED' ELSE 'SHIPPED' END\n  FROM dual\nCONNECT BY level <= 1000000;\n\nCOMMIT;\n\nEXEC DBMS_STATS.GATHER_TABLE_STATS(USER, 'ORDERS')",
+        "caption": "Create and load the sample table"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now start the slow query in session 1. It joins the table to itself on <code class=\"inline-code\">customer_id</code>, which has no index, so each customer's 200 rows are matched against each other. The comment <code class=\"inline-code\">/* slow_report */</code> makes the statement easy to spot later."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "-- Session 1: leave this running\nSELECT /* slow_report */ o1.customer_id, COUNT(*) AS later_orders\n  FROM orders o1\n  JOIN orders o2\n    ON o2.customer_id = o1.customer_id\n   AND o2.order_date  > o1.order_date\n GROUP BY o1.customer_id;",
+        "caption": "A deliberately slow query"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Method 1: find queries running right now with V$SESSION",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: list active sessions and their runtime",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In session 2, run this query. It lists user sessions that have been running their current statement for more than 60 seconds, longest first."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT s.sid,\n       s.serial#,\n       s.username,\n       s.sql_id,\n       ROUND((SYSDATE - s.sql_exec_start) * 86400) AS running_secs,\n       s.state,\n       s.event,\n       SUBSTR(q.sql_text, 1, 50) AS sql_text\n  FROM v$session s\n  JOIN v$sql q\n    ON q.sql_id       = s.sql_id\n   AND q.child_number = s.sql_child_number\n WHERE s.status = 'ACTIVE'\n   AND s.type   = 'USER'\n   AND s.sid   <> SYS_CONTEXT('USERENV', 'SID')\n   AND s.sql_exec_start < SYSDATE - 60/86400\n ORDER BY running_secs DESC;",
+        "caption": "Long running queries right now"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "SID",
+            "SERIAL#",
+            "USERNAME",
+            "SQL_ID",
+            "RUNNING_SECS",
+            "STATE",
+            "EVENT",
+            "SQL_TEXT"
+          ],
+          [
+            "142",
+            "31877",
+            "SCOTT",
+            "4k8q2xr1u7c9m",
+            "184",
+            "WAITED SHORT TIME",
+            "direct path read",
+            "SELECT /* slow_report */ o1.customer_id, COUNT(*)"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<i>Output (expected output). Your SID, SQL_ID and timings will differ.</i>"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Subtracting two <code class=\"inline-code\">DATE</code> values gives days, so multiplying by 86400 turns it into seconds. The filter on <code class=\"inline-code\">SYS_CONTEXT</code> removes your own monitoring session, and <code class=\"inline-code\">TYPE = 'USER'</code> hides background processes."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Read <code class=\"inline-code\">STATE</code> before <code class=\"inline-code\">EVENT</code>. Only when <code class=\"inline-code\">STATE</code> is <code class=\"inline-code\">WAITING</code> is the session waiting on that event right now. Any other value, as in this output, means the session is on CPU and <code class=\"inline-code\">EVENT</code> only shows the last thing it waited for. Here the query is busy on CPU working through the join."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "When the session is waiting, the event tells you why. A wait like <code class=\"inline-code\">direct path read temp</code> suggests a sort or hash join that spilled to temporary space. A row lock wait such as <code class=\"inline-code\">enq: TX - row lock contention</code> points to a blocking problem, not a slow plan."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: SQL_EXEC_START or LAST_CALL_ET?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Many scripts online use <code class=\"inline-code\">LAST_CALL_ET</code>. For an active session it is the number of seconds since the session became active, which is the start of the current call. That is not always the start of the current statement."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If an application calls a PL/SQL procedure that runs 50 statements, <code class=\"inline-code\">LAST_CALL_ET</code> counts from the start of the procedure call, while <code class=\"inline-code\">SQL_EXEC_START</code> resets for each statement. Use <code class=\"inline-code\">LAST_CALL_ET</code> to find long calls and <code class=\"inline-code\">SQL_EXEC_START</code> to find the slow statement inside them."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "",
+        "text": "On Oracle RAC, use <code class=\"inline-code\">GV$SESSION</code> and <code class=\"inline-code\">GV$SQL</code>, add <code class=\"inline-code\">inst_id</code> to the select list, and join on <code class=\"inline-code\">inst_id</code> as well. The plain <code class=\"inline-code\">V$</code> views only show the instance you are connected to."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Method 2: check progress with V$SESSION_LONGOPS",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">V$SESSION_LONGOPS</code> shows operations that have run for more than 6 seconds, such as full table scans, hash joins, sorts, statistics gathering and RMAN backups. For each one it records the work done so far, the total work, and an estimate of the time remaining."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT sid,\n       sql_id,\n       opname,\n       target,\n       sofar,\n       totalwork,\n       ROUND(sofar / totalwork * 100, 1) AS pct_done,\n       elapsed_seconds,\n       time_remaining\n  FROM v$session_longops\n WHERE totalwork > 0\n   AND sofar <> totalwork\n ORDER BY elapsed_seconds DESC;",
+        "caption": "Progress of long operations"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "SID",
+            "SQL_ID",
+            "OPNAME",
+            "TARGET",
+            "SOFAR",
+            "TOTALWORK",
+            "PCT_DONE",
+            "ELAPSED_SECONDS",
+            "TIME_REMAINING"
+          ],
+          [
+            "142",
+            "4k8q2xr1u7c9m",
+            "Hash Join",
+            "",
+            "61240",
+            "142310",
+            "43",
+            "95",
+            "124"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<i>Output (expected output). Values are illustrative.</i>"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The filter <code class=\"inline-code\">sofar <> totalwork</code> removes finished operations, which stay in the view for a while. <code class=\"inline-code\">TIME_REMAINING</code> is in seconds and is only an estimate based on the rate so far, so treat it as a hint."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Two limits matter. First, the view tracks single plan operations, not whole queries. A query made of thousands of short index lookups can run for an hour and never appear here. Second, the documentation says query progress is shown only when timed statistics are on and the objects have optimizer statistics gathered with DBMS_STATS."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You can add your own batch jobs to this view with <code class=\"inline-code\">DBMS_APPLICATION_INFO.SET_SESSION_LONGOPS</code>, which is useful for long PL/SQL loads."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Method 3: find the slowest SQL in the shared pool with V$SQL",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "When the slow query has already finished, the session view no longer shows it. <code class=\"inline-code\">V$SQL</code> still has its totals for as long as the cursor stays in the shared pool. Time columns are in microseconds, so divide by 1,000,000 for seconds."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT sql_id,\n       child_number,\n       executions,\n       ROUND(elapsed_time / 1e6, 1) AS total_secs,\n       ROUND(elapsed_time / NULLIF(executions, 0) / 1e6, 2)\n         AS secs_per_exec,\n       ROUND(cpu_time / 1e6, 1) AS cpu_secs,\n       buffer_gets,\n       SUBSTR(sql_text, 1, 40) AS sql_text\n  FROM v$sql\n WHERE parsing_schema_name NOT IN ('SYS', 'SYSTEM')\n ORDER BY elapsed_time DESC\n FETCH FIRST 10 ROWS ONLY;",
+        "caption": "Top 10 statements by elapsed time (12c and later)"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "SQL_ID",
+            "CHILD_NUMBER",
+            "EXECUTIONS",
+            "TOTAL_SECS",
+            "SECS_PER_EXEC",
+            "CPU_SECS",
+            "BUFFER_GETS",
+            "SQL_TEXT"
+          ],
+          [
+            "4k8q2xr1u7c9m",
+            "0",
+            "1",
+            "312.4",
+            "312.4",
+            "288.9",
+            "10652",
+            "SELECT /* slow_report */ o1.customer_id"
+          ],
+          [
+            "9h2bd0sp3wq6t",
+            "0",
+            "48210",
+            "96.7",
+            ".00",
+            "61.2",
+            "192840",
+            "SELECT amount FROM orders WHERE order_i"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<i>Output (expected output). Values are illustrative.</i>"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Look at both columns. The first row is a single slow execution: a tuning problem in one query. The second row is fast per call but runs tens of thousands of times, so it uses a lot of total time. Ordering by total time finds the load on the database; ordering by time per execution finds the queries users complain about."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">FETCH FIRST</code> needs Oracle 12c or later. On 11g, wrap the query in a subquery and filter with <code class=\"inline-code\">ROWNUM <= 10</code>."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "",
+        "text": "<code class=\"inline-code\">ELAPSED_TIME</code> is database time, not wall-clock time. For a parallel query it adds up the time of the coordinator and all parallel workers, so it can be larger than the time the user waited."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Method 4: use Real-Time SQL Monitoring (Tuning Pack)",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If you have the Tuning Pack licence, <code class=\"inline-code\">V$SQL_MONITOR</code> is the most precise source. Oracle monitors a statement automatically when it runs in parallel or has used at least 5 seconds of CPU or I/O time in a single execution. You can force monitoring with the <code class=\"inline-code\">/*+ MONITOR */</code> hint."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT sid,\n       username,\n       sql_id,\n       status,\n       sql_exec_start,\n       ROUND(elapsed_time / 1e6) AS elapsed_secs,\n       ROUND(cpu_time / 1e6) AS cpu_secs\n  FROM v$sql_monitor\n WHERE status = 'EXECUTING'\n ORDER BY elapsed_time DESC;",
+        "caption": "Monitored executions still running"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "SID",
+            "USERNAME",
+            "SQL_ID",
+            "STATUS",
+            "SQL_EXEC_START",
+            "ELAPSED_SECS",
+            "CPU_SECS"
+          ],
+          [
+            "142",
+            "SCOTT",
+            "4k8q2xr1u7c9m",
+            "EXECUTING",
+            "08-NOV-26",
+            "201",
+            "187"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<i>Output (expected output). Values are illustrative.</i>"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Unlike <code class=\"inline-code\">V$SQL</code>, this view has one row per execution, identified by <code class=\"inline-code\">SQL_ID</code>, <code class=\"inline-code\">SQL_EXEC_START</code> and <code class=\"inline-code\">SQL_EXEC_ID</code>. Finished executions stay for a while with statuses such as <code class=\"inline-code\">DONE (ALL ROWS)</code> or <code class=\"inline-code\">DONE (ERROR)</code>, so you can also find a slow run from a few minutes ago."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To see where the time is going inside the plan, generate the text report for that SQL_ID:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SET LONG 1000000\nSET LONGCHUNKSIZE 1000000\nSET PAGESIZE 0\nSELECT DBMS_SQLTUNE.REPORT_SQL_MONITOR(\n         sql_id => '4k8q2xr1u7c9m',\n         type   => 'TEXT')\n  FROM dual;",
+        "caption": "SQL Monitor report in SQL*Plus"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The report shows each plan line with its actual rows, time and waits, updated about every second while the query runs. It is usually the fastest way to see which step is slow."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Method 5: look at the execution plan",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Once you have the <code class=\"inline-code\">SQL_ID</code> and child number from Method 1 or 3, you do not need the Tuning Pack to see the plan the query is actually using. <code class=\"inline-code\">DBMS_XPLAN.DISPLAY_CURSOR</code> reads it from the cursor cache."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT *\n  FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR('4k8q2xr1u7c9m', 0));",
+        "caption": "Plan of the running cursor"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "For our slow query you would expect a <code class=\"inline-code\">HASH JOIN</code> between two full scans of <code class=\"inline-code\">ORDERS</code> followed by a <code class=\"inline-code\">HASH GROUP BY</code>. The real problem here is the join itself: it produces about 100 million intermediate rows (5,000 customers with 200 orders each, matched pairwise) before grouping. If you need help reading the output, see <a href=\"/posts/plsql/how-to-read-explain-plan-in-oracle/\">how to read an explain plan in Oracle</a>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What to do with a long running query",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Finding the query is half the job. Before you stop anything, check whether it is slow or just blocked. If the event is a lock wait such as enq: TX - row lock contention, the fix is the blocking session, not the query. Our guide to the <a href=\"/posts/plsql/oracle-blocking-sessions-query/\">Oracle blocking sessions query</a> covers that case."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If the query must stop, Oracle 18c and later let you cancel just the statement and keep the session connected:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "-- Format: 'SID, SERIAL#, SQL_ID'\nALTER SYSTEM CANCEL SQL '142, 31877, 4k8q2xr1u7c9m';",
+        "caption": "Cancel one statement (18c and later)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If you leave out the SQL_ID, Oracle cancels whatever the session is running at that moment. Passing it protects you from cancelling the wrong statement if the session has moved on. When a DML statement is cancelled, that statement is rolled back."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "On older versions, or when the whole session must go, use <code class=\"inline-code\">ALTER SYSTEM KILL SESSION '142,31877'</code>. Killing a session rolls back its entire open transaction and releases its locks. A large rollback can itself take a long time, and the session shows as <code class=\"inline-code\">KILLED</code> until it finishes."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Finding long queries from the past",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "For a query that ran last night, the shared pool may already have aged it out. If you have the Diagnostics Pack, <code class=\"inline-code\">V$ACTIVE_SESSION_HISTORY</code> samples every active session once a second. Counting samples per SQL_ID gives a rough number of seconds each statement was active."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT sql_id,\n       COUNT(*) AS active_samples\n  FROM v$active_session_history\n WHERE sample_time > SYSTIMESTAMP - INTERVAL '1' HOUR\n   AND sql_id IS NOT NULL\n GROUP BY sql_id\n ORDER BY active_samples DESC\n FETCH FIRST 10 ROWS ONLY;",
+        "caption": "Busiest SQL in the last hour (Diagnostics Pack)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Older samples are kept in <code class=\"inline-code\">DBA_HIST_ACTIVE_SESS_HISTORY</code> and per-snapshot totals in <code class=\"inline-code\">DBA_HIST_SQLSTAT</code>, both also Diagnostics Pack views. Without the licence, a common approach is to schedule the V$SQL query from Method 3 and save its results to your own table."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Forgetting the units.</b> <code class=\"inline-code\">ELAPSED_TIME</code> and <code class=\"inline-code\">CPU_TIME</code> in V$SQL are microseconds, not milliseconds or centiseconds. A value of 5,000,000 is 5 seconds.",
+            "items": []
+          },
+          {
+            "content": "<b>Reading total time as time per run.</b> V$SQL totals are cumulative across all executions. Divide by <code class=\"inline-code\">EXECUTIONS</code>, using <code class=\"inline-code\">NULLIF</code> to avoid a divide-by-zero error.",
+            "items": []
+          },
+          {
+            "content": "<b>Expecting every slow query in V$SESSION_LONGOPS.</b> Only single operations over 6 seconds appear. An empty result does not mean nothing is slow.",
+            "items": []
+          },
+          {
+            "content": "<b>Treating INACTIVE as finished.</b> When a client fetches rows slowly, the session is INACTIVE between fetch calls and waits on <code class=\"inline-code\">SQL*Net message from client</code>. The query may be fast; the application is slow to read.",
+            "items": []
+          },
+          {
+            "content": "<b>Joining V$SQL on SQL_ID alone.</b> One SQL_ID can have several child cursors with different plans. Join on <code class=\"inline-code\">child_number = sql_child_number</code> too, or you get duplicate rows.",
+            "items": []
+          },
+          {
+            "content": "<b>Using licensed views by accident.</b> Many scripts online query <code class=\"inline-code\">V$SQL_MONITOR</code> or <code class=\"inline-code\">DBA_HIST_SQLSTAT</code> without a word about licensing. Check before you run them in production.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Best practices",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Tag application SQL with <code class=\"inline-code\">DBMS_APPLICATION_INFO.SET_MODULE</code> so <code class=\"inline-code\">MODULE</code> and <code class=\"inline-code\">ACTION</code> in V$SESSION tell you which screen or job runs the slow query.",
+            "items": []
+          },
+          {
+            "content": "Keep a saved version of the Method 1 query so you are not writing it under pressure during an incident.",
+            "items": []
+          },
+          {
+            "content": "Run the monitoring queries a few times, a few seconds apart. One sample can be misleading; a trend is not.",
+            "items": []
+          },
+          {
+            "content": "Look at the wait event before you tune. CPU, I/O, temp space and locks each need a different fix.",
+            "items": []
+          },
+          {
+            "content": "Keep optimizer statistics current. Stale statistics are a common reason a query suddenly picks a slow plan, and V$SESSION_LONGOPS progress also depends on them.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I see currently running queries in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Query <code class=\"inline-code\">V$SESSION</code> where <code class=\"inline-code\">STATUS = 'ACTIVE'</code> and <code class=\"inline-code\">USERNAME IS NOT NULL</code>, and join to <code class=\"inline-code\">V$SQL</code> on <code class=\"inline-code\">SQL_ID</code> and child number for the text. The query in Method 1 does this and adds the runtime in seconds."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I find long running queries in Oracle SQL Developer?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "SQL Developer has Monitor Sessions and Real Time SQL Monitor options under the Tools menu, if your user can read the V$ views. Real Time SQL Monitor reads <code class=\"inline-code\">V$SQL_MONITOR</code>, so it needs the Tuning Pack. You can also run the queries in this article in a worksheet."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I find the top 10 long running queries in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Order <code class=\"inline-code\">V$SQL</code> by <code class=\"inline-code\">elapsed_time DESC</code> and add <code class=\"inline-code\">FETCH FIRST 10 ROWS ONLY</code> (12c and later), as shown in Method 3. Order by elapsed time per execution instead if you want the slowest single runs."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How long has a query been running in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Use <code class=\"inline-code\">ROUND((SYSDATE - sql_exec_start) * 86400)</code> from <code class=\"inline-code\">V$SESSION</code> for the active session. That gives the seconds since the current execution of its current statement began."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between ELAPSED_TIME and CPU_TIME?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "CPU_TIME is time spent on CPU. ELAPSED_TIME also includes waits such as disk reads, locks and network. A big gap between them means the query spends most of its time waiting, so look at the wait events."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "Use V$SESSION with <code class=\"inline-code\">SQL_EXEC_START</code> to find statements running right now and for how long.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Join V$SQL on SQL_ID and child number to get the SQL text.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Check V$SESSION_LONGOPS for progress on big scans, joins and sorts over 6 seconds.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use V$SQL ordered by elapsed time for slow SQL that already finished, dividing by executions.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use V$SQL_MONITOR and ASH only if you have the Tuning and Diagnostics Pack licences.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Check the wait event and plan before you cancel; prefer ALTER SYSTEM CANCEL SQL on 18c and later.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "A user says \"the report is stuck\". Which query is it, and how long has it been running? Here is how to check in Oracle.\n\n1. V$SESSION shows what every active session is running now. Filter status = 'ACTIVE' and compute (SYSDATE - sql_exec_start) * 86400 for seconds.\n2. Prefer SQL_EXEC_START over LAST_CALL_ET. LAST_CALL_ET counts from the start of the whole call, so inside a PL/SQL procedure it points at the call, not the slow statement.\n3. V$SESSION_LONGOPS gives % done and time remaining, but only for single operations over 6 seconds. Empty output does not mean nothing is slow.\n4. V$SQL keeps totals after the query ends. ELAPSED_TIME is in microseconds and is cumulative, so divide by EXECUTIONS.\n5. V$SQL_MONITOR and ASH are great, but they need Tuning and Diagnostics Pack licences.\n\nOn 18c and later you can stop just the statement and keep the session: ALTER SYSTEM CANCEL SQL 'sid, serial#, sql_id'\n\nWhich view do you check first when someone says the database is slow?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #OracleDBA #PLSQL",
+    "slides": [
+      {
+        "title": "Find Long Running Queries in Oracle",
+        "body": "Five views, ready queries, and how to stop a runaway statement safely"
+      },
+      {
+        "title": "Queries running right now",
+        "points": [
+          "V$SESSION has one row per session",
+          "STATUS = 'ACTIVE' means it is running a call",
+          "SQL_EXEC_START is when the current statement began"
+        ],
+        "code": "SELECT sid, serial#, sql_id,\n  ROUND((SYSDATE - sql_exec_start)\n    * 86400) AS running_secs\nFROM v$session\nWHERE status = 'ACTIVE'\n  AND type = 'USER'\nORDER BY running_secs DESC;",
+        "lang": "sql"
+      },
+      {
+        "title": "SQL_EXEC_START vs LAST_CALL_ET",
+        "body": "LAST_CALL_ET counts from the start of the whole call. Inside a PL/SQL procedure that runs many statements, SQL_EXEC_START resets for each one, so it points at the slow statement."
+      },
+      {
+        "title": "Progress with V$SESSION_LONGOPS",
+        "points": [
+          "Shows SOFAR, TOTALWORK and TIME_REMAINING",
+          "Only single operations over 6 seconds appear",
+          "Many short index lookups never show up here"
+        ],
+        "code": "SELECT sid, opname, sofar, totalwork,\n  time_remaining\nFROM v$session_longops\nWHERE totalwork > 0\n  AND sofar <> totalwork;",
+        "lang": "sql"
+      },
+      {
+        "title": "Slow SQL that already finished",
+        "points": [
+          "V$SQL keeps totals while the cursor is cached",
+          "ELAPSED_TIME is in microseconds",
+          "Totals are cumulative: divide by EXECUTIONS"
+        ],
+        "code": "SELECT sql_id, executions,\n  ROUND(elapsed_time / 1e6) AS secs\nFROM v$sql\nORDER BY elapsed_time DESC\nFETCH FIRST 10 ROWS ONLY;",
+        "lang": "sql"
+      },
+      {
+        "title": "Check before you stop it",
+        "points": [
+          "Lock wait event? Fix the blocker, not the query",
+          "V$SQL_MONITOR and ASH need pack licences",
+          "18c+: ALTER SYSTEM CANCEL SQL keeps the session"
+        ]
+      }
+    ]
+  }
+}

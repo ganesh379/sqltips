@@ -44,3 +44,4 @@
 - 2026-11-06 [PostgreSQL] postgres transaction id wraparound -> _drafts/2026-11-06-postgresql-postgresql-dba-part-14-transaction-id-wraparound-freezing.json
 - 2026-11-07 [Oracle] oracle tablespace usage query -> _drafts/2026-11-07-oracle-oracle-tablespace-usage-query.json
 - 2026-11-07 [PostgreSQL] postgresql returning old value -> _drafts/2026-11-07-postgresql-postgresql-returning-old-value.json
+- 2026-11-08 [Oracle] how to find long running queries in oracle -> _drafts/2026-11-08-oracle-how-to-find-long-running-queries-in-oracle.json
