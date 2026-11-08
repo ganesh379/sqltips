@@ -41,6 +41,23 @@ export type DiagramEdge = {
 // prompt: optional prompt shown before a "cmd" line instead of "$ " (e.g. "appdb=# " for psql)
 export type TermLine = { kind: "cmd" | "out" | "comment"; text: string; at?: number; prompt?: string };
 
+// ---- 3D scene ("three"): real 3D objects with lighting, drawn by Three.js inside Remotion.
+// World units: x -3.2..3.2 (left/right), y -2.2..2.4 (down/up), z -2..2 (back/front).
+export type Obj3DKind = "db" | "disk" | "server" | "memory" | "page" | "process" | "user" | "log" | "box";
+export type Obj3D = {
+  id: string;
+  kind: Obj3DKind;
+  x: number; y: number; z?: number;
+  label?: string;  // short label pinned above the object (max 16 characters)
+  sub?: string;    // smaller second line (max 22 characters)
+  color?: string;  // accent name: blue, cyan, orange, green, red, amber, purple
+  at?: number;     // voice line on which it appears (default: scene start)
+  scale?: number;  // 0.6 to 1.4
+};
+export type Move3D = { id: string; x: number; y: number; z?: number; at: number }; // fly to a new spot on line `at` (lands on that line's cue word if set)
+export type Flow3D = { from: string; to: string; at: number; color?: string };       // stream of glowing packets from -> to, from line `at`
+export type Pulse3D = { id: string; at: number };                                     // glow and bump on line `at`
+
 export type Scene =
   | { type: "hook"; from: number; to: number; text: string; sub?: string }
   | { type: "title"; from: number; to: number; kicker?: string; title: string; sub?: string }
@@ -52,7 +69,8 @@ export type Scene =
   | { type: "callout"; from: number; to: number; kind: "warning" | "tip" | "fact" | "myth"; title: string; text: string }
   | { type: "stat"; from: number; to: number; value: string; label: string; text?: string; color?: string }
   | { type: "checklist"; from: number; to: number; heading?: string; items: Item[] }
-  | { type: "outro"; from: number; to: number; next?: string };
+  | { type: "outro"; from: number; to: number; next?: string }
+  | { type: "three"; from: number; to: number; heading?: string; camera?: "front" | "high" | "orbit"; objects: Obj3D[]; moves?: Move3D[]; flows?: Flow3D[]; pulses?: Pulse3D[] };
 
 export type Episode = {
   ep: number;

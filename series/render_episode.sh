@@ -43,6 +43,8 @@ json.dump({"episode": json.load(open(f"{d}/episode.json")), "timing": json.load(
 PY
 
 cd "$HERE"
+# 3D ("three") scenes render with the default GL. Do not add --gl=swangle: it made 2D frames
+# about 4x slower (0.14 s -> 0.61 s) and 3D frames slower too (0.23 s -> 0.67 s).
 if [ "$MODE" = "stills" ]; then
   mkdir -p "$DIR/stills"
   for s in "$@"; do

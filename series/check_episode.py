@@ -85,8 +85,20 @@ if len(scenes) > 1 and scenes[1]["type"] != "title":
 if scenes and scenes[-1]["type"] != "outro":
     err("last scene must be the outro")
 kinds = {s["type"] for s in scenes}
-if not kinds & {"diagram", "terminal", "compare"}:
-    warn("no diagram, terminal or compare scene; most topics teach better with one")
+if not kinds & {"diagram", "terminal", "compare", "three"}:
+    warn("no diagram, terminal, compare or three scene; most topics teach better with one")
+if "three" not in kinds:
+    warn("no 3D (three) scene. If something moves or is stored somewhere in this topic (pages, memory, "
+         "disk, WAL, processes, replication, row versions), one 20-40 s three scene makes it easier to picture")
+
+# 3D object sizes in world units: half width, height (keep in step with src/Scene3D.tsx)
+KIND3D = {"db": (0.8, 1.35), "disk": (0.95, 0.45), "server": (0.55, 1.6), "memory": (1.2, 0.5),
+          "page": (0.25, 0.62), "process": (0.35, 0.7), "user": (0.45, 1.2), "log": (1.1, 0.5), "box": (0.45, 0.9)}
+SMALL3D = {"page", "process"}  # may sit on or fly into other objects
+
+
+def in_bounds3d(x, y, z):
+    return -2.8 <= x <= 2.8 and -2.0 <= y <= 1.4 and -1.5 <= z <= 1.5
 
 
 # ---- layout limits per scene --------------------------------------------------------------------
@@ -176,6 +188,53 @@ for k, s in enumerate(scenes):
             warn(f"scene {k} (diagram): no focus; glow the node being talked about")
         if not any(ed.get("flow") for ed in s["edges"]):
             warn(f"scene {k} (diagram): no animated flow on any edge")
+    elif t == "three":
+        objs = s["objects"]
+        ids = [o["id"] for o in objs]
+        if len(objs) > 7:
+            err(f"scene {k} (three): {len(objs)} objects, max 7")
+        if len(set(ids)) != len(ids):
+            err(f"scene {k} (three): object ids must be unique")
+        if s.get("camera", "front") not in ("front", "high", "orbit"):
+            err(f"scene {k} (three): camera must be front, high or orbit")
+        for o in objs:
+            if o["kind"] not in KIND3D:
+                err(f"scene {k} (three): unknown kind {o['kind']!r}; use one of {sorted(KIND3D)}")
+                continue
+            if not in_bounds3d(o["x"], o["y"], o.get("z", 0)):
+                err(f"scene {k} (three): {o['id']} at ({o['x']}, {o['y']}, {o.get('z', 0)}) is outside "
+                    f"x -2.8..2.8, y -2.0..1.4, z -1.5..1.5")
+            if not 0.6 <= o.get("scale", 1) <= 1.4:
+                err(f"scene {k} (three): {o['id']} scale must be 0.6 to 1.4")
+            if len(o.get("label", "")) > 16:
+                err(f"scene {k} (three): label of {o['id']} longer than 16 characters: {o['label']!r}")
+            if len(o.get("sub", "")) > 22:
+                err(f"scene {k} (three): sub of {o['id']} longer than 22 characters: {o['sub']!r}")
+            check_common(k, s, o)
+        big = [o for o in objs if o["kind"] in KIND3D and o["kind"] not in SMALL3D]
+        for i, a in enumerate(big):
+            for b in big[i + 1:]:
+                (wa, ha), (wb, hb) = KIND3D[a["kind"]], KIND3D[b["kind"]]
+                sa, sb = a.get("scale", 1), b.get("scale", 1)
+                if (abs(a["x"] - b["x"]) < wa * sa + wb * sb + 0.25 and
+                        a["y"] < b["y"] + hb * sb + 0.55 and b["y"] < a["y"] + ha * sa + 0.55 and
+                        abs(a.get("z", 0) - b.get("z", 0)) < 1.2):
+                    err(f"scene {k} (three): {a['id']} and {b['id']} overlap or leave no room for labels; move them apart")
+        for m in s.get("moves", []):
+            if m["id"] not in ids:
+                err(f"scene {k} (three): move of unknown object {m['id']!r}")
+            if not in_bounds3d(m["x"], m["y"], m.get("z", 0)):
+                err(f"scene {k} (three): move of {m['id']} goes outside the 3D stage")
+            check_common(k, s, m)
+        for f in s.get("flows", []):
+            for end in (f["from"], f["to"]):
+                if end not in ids:
+                    err(f"scene {k} (three): flow refers to unknown object {end!r}")
+            check_common(k, s, f)
+        for pl in s.get("pulses", []):
+            if pl["id"] not in ids:
+                err(f"scene {k} (three): pulse on unknown object {pl['id']!r}")
+            check_common(k, s, pl)
     elif t == "callout":
         if length(s["text"]) > 150:
             err(f"scene {k} (callout): text longer than 150 characters")
@@ -188,7 +247,7 @@ if timing:
     for k, s in enumerate(scenes):
         start, end = A[s["from"]], B[s["to"] - 1]
         ev = {start}
-        for key in ("items", "nodes", "edges", "lines"):
+        for key in ("items", "nodes", "edges", "lines", "objects", "moves", "flows", "pulses"):
             for it in s.get(key, []) or []:
                 if isinstance(it, dict) and it.get("at") is not None:
                     ev.add(A[it["at"]])
@@ -206,6 +265,9 @@ if timing:
             err(msg)
         elif gap > STILL_WARN:
             warn(msg)
+    secs3d = sum(B[s["to"] - 1] - A[s["from"]] for s in scenes if s["type"] == "three")
+    if secs3d > 45:
+        err(f"3D scenes run {secs3d:.0f} s in total; keep them to 45 s or less (3D frames render slower)")
     if not 85 <= timing["total"] <= 185:
         err(f"voice is {timing['total']:.1f} s; keep 85 to 185 s")
 

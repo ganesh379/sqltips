@@ -3,6 +3,7 @@ import { C, FONT, MONO, STAGE, W, accent } from "./theme";
 import { Icon } from "./icons";
 import { pop, rise, useTiming } from "./timing";
 import type { DiagramNode, Item, Scene } from "./types";
+import { Three } from "./Scene3D";
 
 type P<S> = { s: S; t: number };
 
@@ -372,5 +373,6 @@ export const SceneView: React.FC<{ s: Scene; t: number }> = ({ s, t }) => {
     case "stat": return <Stat s={s} t={t} />;
     case "checklist": return <Checklist s={s} t={t} />;
     case "outro": return <Outro s={s} t={t} />;
+    case "three": return <Three s={s} t={t} />;
   }
 };

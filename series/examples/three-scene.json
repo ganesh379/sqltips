@@ -1,0 +1,123 @@
+{
+ "note": "Example 3D scene (tested 2026-11-08). Lines 0-5 of its demo script: 0 never reads one row, 1 8 kB pages, 2 backend checks shared buffers, 3 read from disk (cue 'read'), 4 found in memory (cue 'memory'), 5 WAL first (cue 'WAL').",
+ "scene": {
+  "type": "three",
+  "from": 0,
+  "to": 6,
+  "heading": "Where a row really comes from",
+  "camera": "orbit",
+  "objects": [
+   {
+    "id": "cli",
+    "kind": "user",
+    "x": -2.4,
+    "y": 0.6,
+    "label": "Client",
+    "color": "cyan",
+    "at": 0
+   },
+   {
+    "id": "be",
+    "kind": "process",
+    "x": -0.7,
+    "y": 0.8,
+    "label": "Backend",
+    "sub": "one per connection",
+    "color": "green",
+    "at": 0
+   },
+   {
+    "id": "sb",
+    "kind": "memory",
+    "x": 1.5,
+    "y": 0.7,
+    "label": "shared_buffers",
+    "sub": "memory",
+    "color": "blue",
+    "at": 2
+   },
+   {
+    "id": "disk",
+    "kind": "disk",
+    "x": 1.5,
+    "y": -1.8,
+    "label": "Data files",
+    "color": "purple",
+    "at": 1
+   },
+   {
+    "id": "pg",
+    "kind": "page",
+    "x": 1.5,
+    "y": -1.35,
+    "z": 0.5,
+    "label": "8 kB page",
+    "color": "orange",
+    "at": 1
+   },
+   {
+    "id": "wal",
+    "kind": "log",
+    "x": -1.5,
+    "y": -1.8,
+    "label": "WAL",
+    "sub": "written first",
+    "color": "amber",
+    "at": 5
+   }
+  ],
+  "moves": [
+   {
+    "id": "pg",
+    "x": 1.5,
+    "y": 1.0,
+    "z": 0.5,
+    "at": 3
+   }
+  ],
+  "flows": [
+   {
+    "from": "cli",
+    "to": "be",
+    "at": 0,
+    "color": "cyan"
+   },
+   {
+    "from": "be",
+    "to": "sb",
+    "at": 2,
+    "color": "blue"
+   },
+   {
+    "from": "sb",
+    "to": "be",
+    "at": 4,
+    "color": "green"
+   },
+   {
+    "from": "be",
+    "to": "wal",
+    "at": 5,
+    "color": "amber"
+   }
+  ],
+  "pulses": [
+   {
+    "id": "sb",
+    "at": 2
+   },
+   {
+    "id": "disk",
+    "at": 3
+   },
+   {
+    "id": "sb",
+    "at": 4
+   },
+   {
+    "id": "wal",
+    "at": 5
+   }
+  ]
+ }
+}
