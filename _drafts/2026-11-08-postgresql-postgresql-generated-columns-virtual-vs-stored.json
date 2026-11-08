@@ -1,0 +1,1205 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL Generated Column: Virtual vs Stored (PostgreSQL 18)",
+ "slug": "postgresql-generated-columns-virtual-vs-stored",
+ "category": "postgresql",
+ "description": "PostgreSQL generated columns explained with real output: virtual vs stored in PostgreSQL 18, indexing, ALTER TABLE, JSONB and the errors you will hit.",
+ "focusKeyword": "postgresql generated column",
+ "tags": [
+  "postgresql",
+  "generated-columns",
+  "postgresql-18",
+  "ddl"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/",
+  "/posts/postgresql/postgresql-upsert-on-conflict/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 5.4 Generated Columns",
+   "url": "https://www.postgresql.org/docs/current/ddl-generated-columns.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CREATE TABLE (GENERATED ALWAYS AS ... STORED | VIRTUAL)",
+   "url": "https://www.postgresql.org/docs/current/sql-createtable.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: ALTER TABLE (SET EXPRESSION, DROP EXPRESSION, rewrite notes)",
+   "url": "https://www.postgresql.org/docs/current/sql-altertable.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes",
+   "url": "https://www.postgresql.org/docs/current/release-18.html"
+  },
+  {
+   "title": "PostgreSQL 17.0 release notes (ALTER COLUMN SET EXPRESSION)",
+   "url": "https://www.postgresql.org/docs/release/17.0/"
+  }
+ ],
+ "reviewNotes": "Regular (Sunday) article, not a series part. Tested on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) from the PGDG repository on Ubuntu 24.04.5 LTS; followed the PostgreSQL 18 documentation (docs/current pages in sources) plus the 17.0 and 18 release notes. All outputs are real and come from one run in article order on a fresh scratch database 'shop', except the virtual-column expression-index EXPLAIN, which I re-ran after adding the ANALYZE shown in the article (without ANALYZE the planner chose a parallel seq scan). Long psql headers/plan lines were only trimmed of trailing spaces; the filenode values and the 50 MB / 66 MB sizes will differ slightly for readers. SANDBOX CAVEATS: (1) As in earlier runs, postgresql-18 needs liburing2 from archive.ubuntu.com, which is blocked here; I installed a local stub liburing.so.2 package (only io_method=io_uring would use it; the default is worker). The 18 main cluster was created with pg_createcluster because the image already had a 16 cluster. (2) The 'syntax error at or near \")\"' for omitting STORED was captured on PostgreSQL 16.15 (the image's distribution package); the callout labels it as PostgreSQL 16. EDITOR CHECKS: (a) 'PostgreSQL 12 to 17 only had STORED' (FAQ): generated columns first appeared in 12; I did not re-read the 12 release notes this run. (b) The numeric(12,2) cast gotcha (common mistake 5) and the 'concat_ws/to_char are not immutable' errors are from my tests, not from the docs text. (c) The statement that the planner guesses selectivity for virtual columns is my inference from 'virtual generated columns never have statistics' (ALTER TABLE page). (d) The pages ranking for this keyword (neon/postgresqltutorial) still say only STORED is supported, which is the gap this article fills. Related links: DBA Part 11 (MVCC, cited in best practices) and the upsert article (both live).",
+ "generatedAt": "2026-11-08T13:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A PostgreSQL generated column is a column whose value is always calculated from other columns in the same row. You declare it with <code class=\"inline-code\">GENERATED ALWAYS AS (expression)</code>, and PostgreSQL fills it in for you. You can never write to it yourself."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL 18 changed how these columns work. There are now two kinds: <b>virtual</b> (calculated when you read the row, no disk space) and <b>stored</b> (calculated when you write the row, saved on disk). Virtual is the new default. Many tutorials still say \"PostgreSQL only supports STORED\", which was true up to PostgreSQL 17 and is no longer correct."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This guide shows both kinds on a small orders table, with real output from PostgreSQL 18. You will see how to add a generated column to an existing table, why you cannot index a virtual column (and the workaround), how to change or drop the expression, and the error messages you will hit along the way."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is a generated column?",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of a generated column as a formula cell in a spreadsheet. You type the quantity and the unit price, and the total cell works itself out. If someone changes the quantity, the total changes too. Nobody can type a different number into the total cell."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation puts it this way: a generated column is for columns what a view is for tables. A <b>virtual</b> generated column is like a view (worked out on every read). A <b>stored</b> generated column is like a materialized view that refreshes itself automatically every time the row is inserted or updated."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "",
+      "VIRTUAL (default in PostgreSQL 18)",
+      "STORED"
+     ],
+     [
+      "When the value is computed",
+      "When the row is read",
+      "When the row is inserted or updated"
+     ],
+     [
+      "Disk space",
+      "None",
+      "Same as a normal column"
+     ],
+     [
+      "Can you index it?",
+      "No (use an expression index)",
+      "Yes, like any column"
+     ],
+     [
+      "Planner statistics (ANALYZE)",
+      "Never collected",
+      "Collected like a normal column"
+     ],
+     [
+      "User-defined functions in the expression",
+      "Not allowed (built-in only)",
+      "Allowed if IMMUTABLE"
+     ],
+     [
+      "ADD COLUMN on a big table",
+      "No table rewrite",
+      "Rewrites the whole table"
+     ],
+     [
+      "DROP EXPRESSION (turn into normal column)",
+      "Not supported",
+      "Supported"
+     ],
+     [
+      "Logical replication",
+      "Not published",
+      "Can be published"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The syntax is the same for both. Add the keyword <code class=\"inline-code\">VIRTUAL</code> or <code class=\"inline-code\">STORED</code> at the end, or leave it out to get virtual:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "column_name data_type GENERATED ALWAYS AS ( expression ) [ STORED | VIRTUAL ]",
+    "caption": "Column definition syntax"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Version difference",
+    "text": "Before PostgreSQL 18, the <code class=\"inline-code\">STORED</code> keyword was required. If you leave it out on PostgreSQL 16, you get <b>ERROR: syntax error at or near \")\"</b>. On PostgreSQL 18 the same statement works and creates a virtual column. If your scripts must run on older versions too, always write <code class=\"inline-code\">STORED</code> explicitly."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup: an orders table",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Connect to a scratch database with psql (for example <code class=\"inline-code\">sudo -u postgres psql -d shop</code> on Ubuntu) and create this table. It has one virtual column (<code class=\"inline-code\">line_total</code>) and one stored column (<code class=\"inline-code\">total_gst</code>, the total including 18% GST)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders (\n    order_id     integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer     text          NOT NULL,\n    quantity     integer       NOT NULL,\n    unit_price   numeric(10,2) NOT NULL,\n    discount_pct numeric(5,2)  NOT NULL DEFAULT 0,\n    line_total   numeric(12,2) GENERATED ALWAYS AS\n                   (quantity * unit_price * (1 - discount_pct / 100)),\n    total_gst    numeric(12,2) GENERATED ALWAYS AS\n                   (round(quantity * unit_price * (1 - discount_pct / 100) * 1.18, 2)) STORED\n);\n\nINSERT INTO orders (customer, quantity, unit_price, discount_pct) VALUES\n  ('Asha',  2,  499.00,  0),\n  ('Ravi',  1, 1299.00, 10),\n  ('Meena', 5,  120.50,  5);",
+    "caption": "Create the sample table and rows"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice that the INSERT lists only the normal columns. You never supply values for <code class=\"inline-code\">line_total</code> or <code class=\"inline-code\">total_gst</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reading and updating generated columns",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: select the rows",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, customer, quantity, unit_price, discount_pct,\n       line_total, total_gst\n  FROM orders;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | customer | quantity | unit_price | discount_pct | line_total | total_gst\n----------+----------+----------+------------+--------------+------------+-----------\n        1 | Asha     |        2 |     499.00 |         0.00 |     998.00 |   1177.64\n        2 | Ravi     |        1 |    1299.00 |        10.00 |    1169.10 |   1379.54\n        3 | Meena    |        5 |     120.50 |         5.00 |     572.38 |    675.40\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both columns look like ordinary columns to the query. For Meena the raw result is 572.375, and the <code class=\"inline-code\">numeric(12,2)</code> column type rounds it to 572.38. The declared type of a generated column applies to its result, just as it would for a normal column."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: check which kind each column is",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The catalog table <code class=\"inline-code\">pg_attribute</code> has a column <code class=\"inline-code\">attgenerated</code>: <code class=\"inline-code\">v</code> means virtual, <code class=\"inline-code\">s</code> means stored, and an empty string means a normal column."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT attname, attgenerated\n  FROM pg_attribute\n WHERE attrelid = 'orders'::regclass\n   AND attgenerated <> '';",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  attname   | attgenerated\n------------+--------------\n line_total | v\n total_gst  | s\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In psql, <code class=\"inline-code\">\\d orders</code> also shows the expression in the Default column, with the word <i>stored</i> at the end for stored columns and nothing for virtual ones."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: update a base column",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders SET quantity = 3 WHERE order_id = 1;\n\nSELECT order_id, quantity, line_total, total_gst\n  FROM orders\n WHERE order_id = 1;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | quantity | line_total | total_gst\n----------+----------+------------+-----------\n        1 |        3 |    1497.00 |   1766.46\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both values followed the new quantity. The stored column was recomputed during the UPDATE and written into the new row version. The virtual column was simply computed again when the SELECT read the row."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: try to write a generated column",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO orders (customer, quantity, unit_price, line_total)\nVALUES ('Kiran', 1, 100, 100);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  cannot insert a non-DEFAULT value into column \"line_total\"\nDETAIL:  Column \"line_total\" is a generated column.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders SET total_gst = 0 WHERE order_id = 2;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  column \"total_gst\" can only be updated to DEFAULT\nDETAIL:  Column \"total_gst\" is a generated column.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The only value you may give a generated column is the keyword <code class=\"inline-code\">DEFAULT</code>. That is handy when a tool or ORM always sends every column in the INSERT:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO orders (customer, quantity, unit_price, line_total)\nVALUES ('Kiran', 1, 100, DEFAULT)\nRETURNING order_id, line_total, total_gst;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | line_total | total_gst\n----------+------------+-----------\n        4 |     100.00 |    118.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Virtual vs stored: disk space and table rewrites",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How much space does a stored column use?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see the storage difference, create two identical tables with one million rows. The only difference is VIRTUAL versus STORED on the two generated columns."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE sales_virtual (\n  id         bigint GENERATED ALWAYS AS IDENTITY,\n  quantity   integer NOT NULL,\n  unit_price numeric(10,2) NOT NULL,\n  amount     numeric GENERATED ALWAYS AS (quantity * unit_price) VIRTUAL,\n  summary    text GENERATED ALWAYS AS\n               ('Qty ' || quantity::text || ' x Rs ' || unit_price::text) VIRTUAL\n);\n\nCREATE TABLE sales_stored (\n  id         bigint GENERATED ALWAYS AS IDENTITY,\n  quantity   integer NOT NULL,\n  unit_price numeric(10,2) NOT NULL,\n  amount     numeric GENERATED ALWAYS AS (quantity * unit_price) STORED,\n  summary    text GENERATED ALWAYS AS\n               ('Qty ' || quantity::text || ' x Rs ' || unit_price::text) STORED\n);\n\nINSERT INTO sales_virtual (quantity, unit_price)\nSELECT 1 + g % 10, 100 + g % 900 FROM generate_series(1, 1000000) AS g;\n\nINSERT INTO sales_stored (quantity, unit_price)\nSELECT 1 + g % 10, 100 + g % 900 FROM generate_series(1, 1000000) AS g;\n\nVACUUM ANALYZE sales_virtual;\nVACUUM ANALYZE sales_stored;\n\nSELECT relname, pg_size_pretty(pg_table_size(oid)) AS table_size\n  FROM pg_class\n WHERE relname IN ('sales_virtual', 'sales_stored');",
+    "caption": "Compare table sizes"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "    relname    | table_size\n---------------+------------\n sales_virtual | 50 MB\n sales_stored  | 66 MB\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In this test the stored version is about a third larger, because the <code class=\"inline-code\">amount</code> and <code class=\"inline-code\">summary</code> values sit in every row on disk. The virtual table holds only the id, quantity and unit price, yet it returns the same values:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT id, amount, summary FROM sales_virtual ORDER BY id LIMIT 3;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " id | amount |      summary\n----+--------+-------------------\n  1 | 202.00 | Qty 2 x Rs 101.00\n  2 | 306.00 | Qty 3 x Rs 102.00\n  3 | 412.00 | Qty 4 x Rs 103.00\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Smaller tables mean fewer pages to read and less to back up. The price is that a virtual column is computed again on every read, so a heavy expression read millions of times costs CPU every time."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Adding a generated column to an existing table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You add a generated column with <code class=\"inline-code\">ALTER TABLE ... ADD COLUMN</code>. The two kinds behave very differently on a big table. The documentation says adding a stored generated column rewrites the entire table and its indexes, while adding a virtual one never requires a rewrite. You can see this with <code class=\"inline-code\">pg_relation_filenode()</code>, which returns the number of the file that holds the table. A rewrite creates a new file, so the number changes."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_relation_filenode('orders') AS filenode_before;\n\nALTER TABLE orders\n  ADD COLUMN unit_price_usd numeric\n  GENERATED ALWAYS AS (round(unit_price / 88, 2)) VIRTUAL;\n\nSELECT pg_relation_filenode('orders') AS after_virtual;\n\nALTER TABLE orders\n  ADD COLUMN big_order boolean\n  GENERATED ALWAYS AS (quantity >= 5) STORED;\n\nSELECT pg_relation_filenode('orders') AS after_stored;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " filenode_before\n-----------------\n           16528\n\n after_virtual\n---------------\n         16528\n\n after_stored\n--------------\n        16565",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The virtual column left the file alone, so the ALTER finished almost instantly. The stored column made PostgreSQL write a brand new copy of the table. Your file numbers will differ; what matters is whether the number changes."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Locking on big tables",
+    "text": "A table rewrite holds an <code class=\"inline-code\">ACCESS EXCLUSIVE</code> lock for the whole time, so nobody can read or write the table until it finishes. On a large production table, adding a STORED generated column can block your application for minutes. Add a VIRTUAL column instead, or schedule the change in a maintenance window."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can you index a generated column?",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Virtual columns cannot be indexed",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX sales_virtual_amount_idx ON sales_virtual (amount);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  indexes on virtual generated columns are not supported",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is a current limit of PostgreSQL 18. Stored columns are indexed like any other column, and the planner uses the index directly:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX sales_stored_amount_idx ON sales_stored (amount);\n\nEXPLAIN (COSTS OFF)\nSELECT count(*) FROM sales_stored WHERE amount > 9900;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                             QUERY PLAN\n---------------------------------------------------------------------\n Aggregate\n   ->  Index Only Scan using sales_stored_amount_idx on sales_stored\n         Index Cond: (amount > '9900'::numeric)\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Workaround: an expression index on the same formula",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a query reads a virtual column, PostgreSQL replaces the column with its expression before planning. So an <b>expression index</b> built on exactly the same formula can serve queries on the virtual column. Run <code class=\"inline-code\">ANALYZE</code> after creating it so the planner has statistics for the indexed expression."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX sales_virtual_amount_expr_idx\n    ON sales_virtual ((quantity * unit_price));\n\nANALYZE sales_virtual;\n\nEXPLAIN (COSTS OFF)\nSELECT count(*) FROM sales_virtual WHERE amount > 9900;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                    QUERY PLAN\n----------------------------------------------------------------------------------\n Aggregate\n   ->  Bitmap Heap Scan on sales_virtual\n         Recheck Cond: (((quantity)::numeric * unit_price) > '9900'::numeric)\n         ->  Bitmap Index Scan on sales_virtual_amount_expr_idx\n               Index Cond: (((quantity)::numeric * unit_price) > '9900'::numeric)\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The query says <code class=\"inline-code\">amount > 9900</code>, but the plan shows <code class=\"inline-code\">(quantity)::numeric * unit_price</code>. That is the virtual column being expanded, and the expression index matches it. If you need a plain index on the column itself, use STORED."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Statistics: another difference",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">ANALYZE</code> collects statistics for stored generated columns but never for virtual ones. You can check in <code class=\"inline-code\">pg_stats</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT attname, n_distinct\n  FROM pg_stats\n WHERE tablename = 'sales_stored' AND attname = 'amount';\n\nSELECT attname, n_distinct\n  FROM pg_stats\n WHERE tablename = 'sales_virtual' AND attname = 'amount';",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " attname | n_distinct\n---------+------------\n amount  |        801\n(1 row)\n\n attname | n_distinct\n---------+------------\n(0 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Without statistics, the planner guesses how many rows a filter on a virtual column returns. For a column you filter on often, a stored column (or an expression index, which gets its own statistics) gives the planner better estimates."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Generated column from JSONB",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A common real use is pulling one field out of a JSONB document into a proper column, so you can index it and query it simply. The <code class=\"inline-code\">->></code> operator is built in and immutable, so it is allowed."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE customers (\n  customer_id integer PRIMARY KEY,\n  profile     jsonb NOT NULL,\n  city        text GENERATED ALWAYS AS (profile ->> 'city') STORED\n);\n\nINSERT INTO customers VALUES\n  (1, '{\"name\": \"Asha\", \"city\": \"Pune\", \"tier\": \"gold\"}'),\n  (2, '{\"name\": \"Ravi\", \"city\": \"Chennai\"}'),\n  (3, '{\"name\": \"Meena\"}');\n\nCREATE INDEX customers_city_idx ON customers (city);\n\nSELECT customer_id, profile ->> 'name' AS name, city\n  FROM customers\n ORDER BY customer_id;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " customer_id | name  |  city\n-------------+-------+---------\n           1 | Asha  | Pune\n           2 | Ravi  | Chennai\n           3 | Meena |\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Meena's profile has no city key, so <code class=\"inline-code\">city</code> is NULL. When the JSON changes, the column follows:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE customers\n   SET profile = profile || '{\"city\": \"Bengaluru\"}'\n WHERE customer_id = 3;\n\nSELECT customer_id, city FROM customers WHERE city = 'Bengaluru';",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " customer_id |   city\n-------------+-----------\n           3 | Bengaluru\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "STORED is the right choice here because we want a normal B-tree index on the city column."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Changing or removing the expression",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Change the formula with SET EXPRESSION",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Say the GST rate on this product changes to 12%. <code class=\"inline-code\">ALTER COLUMN ... SET EXPRESSION AS</code> (added in PostgreSQL 17) replaces the expression. For a stored column, the documentation says existing data is rewritten and the column's statistics are removed, so run <code class=\"inline-code\">ANALYZE</code> afterwards. Virtual columns have no statistics, so ANALYZE is not needed for them."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLE orders\n  ALTER COLUMN total_gst\n  SET EXPRESSION AS (round(quantity * unit_price * (1 - discount_pct / 100) * 1.12, 2));\n\nANALYZE orders;\n\nSELECT order_id, line_total, total_gst FROM orders ORDER BY order_id;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | line_total | total_gst\n----------+------------+-----------\n        1 |    1497.00 |   1676.64\n        2 |    1169.10 |   1309.39\n        3 |     572.38 |    641.06\n        4 |     100.00 |    112.00\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every existing row now uses the 12% rate. Because a stored column is rewritten, this also takes a heavy lock on a big table."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Turn a stored generated column into a normal column",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">DROP EXPRESSION</code> keeps the current values but stops computing them. After this, <code class=\"inline-code\">big_order</code> is an ordinary boolean column you can write to."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLE orders ALTER COLUMN big_order DROP EXPRESSION;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER TABLE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same command on a virtual column fails, because a virtual column has no stored values to keep:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLE orders ALTER COLUMN line_total DROP EXPRESSION;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  ALTER TABLE / DROP EXPRESSION is not supported for virtual generated columns\nDETAIL:  Column \"line_total\" of relation \"orders\" is a virtual generated column.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For a virtual column you either drop it (<code class=\"inline-code\">ALTER TABLE orders DROP COLUMN line_total;</code>) or add a new normal column and fill it with an UPDATE."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and the errors they cause",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "1. Using now() or another non-immutable function",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A generation expression may only use immutable functions, meaning functions that always return the same result for the same input. Anything that depends on the clock, settings or other tables is rejected."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE invoices (\n  invoice_id integer,\n  issued_at  timestamptz,\n  age        interval GENERATED ALWAYS AS (now() - issued_at)\n);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  generation expression is not immutable",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix: compute values like age in the query (<code class=\"inline-code\">now() - issued_at</code>) or in a view, not in a generated column."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "2. Using concat() or concat_ws() for a full name",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This one surprises many people. <code class=\"inline-code\">concat_ws</code> is marked stable, not immutable, so it is refused:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE staff (\n  first_name text,\n  last_name  text,\n  full_name  text GENERATED ALWAYS AS (concat_ws(' ', first_name, last_name))\n);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  generation expression is not immutable",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix: use the <code class=\"inline-code\">||</code> operator on text columns:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE staff (\n  first_name text NOT NULL,\n  last_name  text NOT NULL,\n  full_name  text GENERATED ALWAYS AS (first_name || ' ' || last_name)\n);\nINSERT INTO staff VALUES ('Priya', 'Sharma'), ('Arjun', 'Nair');\nSELECT * FROM staff;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " first_name | last_name |  full_name\n------------+-----------+--------------\n Priya      | Sharma    | Priya Sharma\n Arjun      | Nair      | Arjun Nair\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Remember that <code class=\"inline-code\">||</code> returns NULL if either side is NULL. Here both name columns are NOT NULL, so that cannot happen. Formatting a date with <code class=\"inline-code\">to_char()</code> fails for the same reason as concat: it is not immutable."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "3. Building one generated column on another",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE prices (\n  net     numeric,\n  gst     numeric GENERATED ALWAYS AS (net * 0.18),\n  gross   numeric GENERATED ALWAYS AS (net + gst)\n);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  cannot use generated column \"gst\" in column generation expression\nLINE 4:   gross   numeric GENERATED ALWAYS AS (net + gst)\n                                                     ^\nDETAIL:  A generated column cannot reference another generated column.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix: repeat the formula, for example <code class=\"inline-code\">GENERATED ALWAYS AS (net * 1.18)</code>. Subqueries and references to other tables are also not allowed; a generated column can only see the current row."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "4. Calling your own function from a virtual column",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE FUNCTION add_gst(amount numeric) RETURNS numeric\n  LANGUAGE sql IMMUTABLE\n  AS $$ SELECT round(amount * 1.18, 2) $$;\n\nCREATE TABLE bills (\n  net   numeric,\n  gross numeric GENERATED ALWAYS AS (add_gst(net))\n);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  generation expression uses user-defined function\nLINE 3:   gross numeric GENERATED ALWAYS AS (add_gst(net))\n                                             ^\nDETAIL:  Virtual generated columns that make use of user-defined functions are not yet supported.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Virtual columns may only use built-in functions and types. The same function works in a stored column:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE bills (\n  net   numeric,\n  gross numeric GENERATED ALWAYS AS (add_gst(net)) STORED\n);\nINSERT INTO bills (net) VALUES (100) RETURNING net, gross;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " net | gross\n-----+--------\n 100 | 118.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "Marking a function IMMUTABLE is a promise you make to PostgreSQL. If the function actually reads a table or a setting, PostgreSQL will not stop you, but stored values can become wrong when that data changes. Only mark functions IMMUTABLE when they truly depend on their arguments alone."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "5. An expression index that the planner never uses",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the virtual column has a type with a length or scale, like <code class=\"inline-code\">numeric(12,2)</code>, PostgreSQL adds a cast to that type when it expands the column. An index on the bare formula then does not match. On the orders table (with sequential scans disabled just for this test, so the planner shows whether it can use the index at all):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET enable_seqscan = off;\nCREATE INDEX orders_line_total_expr_idx\n    ON orders ((quantity * unit_price * (1 - discount_pct / 100)));\nEXPLAIN (COSTS OFF) SELECT order_id FROM orders WHERE line_total > 1000;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Seq Scan on orders\n   Disabled: true\n   Filter: (((((quantity)::numeric * unit_price) * ('1'::numeric - (discount_pct / '100'::numeric))))::numeric(12,2) > '1000'::numeric)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "See the <code class=\"inline-code\">::numeric(12,2)</code> at the end of the filter. Include the same cast in the index and it matches:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_line_total_cast_idx\n    ON orders (((quantity * unit_price * (1 - discount_pct / 100))::numeric(12,2)));\nEXPLAIN (COSTS OFF) SELECT order_id FROM orders WHERE line_total > 1000;\nRESET enable_seqscan;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Index Scan using orders_line_total_cast_idx on orders\n   Index Cond: (((((quantity)::numeric * unit_price) * ('1'::numeric - (discount_pct / '100'::numeric))))::numeric(12,2) > '1000'::numeric)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Do not leave <code class=\"inline-code\">enable_seqscan</code> off in real sessions; it is only a testing switch."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Best practices: when to use VIRTUAL and when to use STORED",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Use VIRTUAL</b> for cheap expressions (arithmetic, string joins, JSON field extraction) that you mostly display rather than filter on. You save disk space and can add the column to a huge table without a rewrite.",
+      "items": []
+     },
+     {
+      "content": "<b>Use STORED</b> when you need a normal index or a unique constraint on the value, when the expression calls your own IMMUTABLE function, when the column must be logically replicated, or when the expression is expensive and read far more often than written.",
+      "items": []
+     },
+     {
+      "content": "<b>Write the keyword explicitly</b> (<code class=\"inline-code\">VIRTUAL</code> or <code class=\"inline-code\">STORED</code>) so the intent is clear to readers and the script behaves the same if it is ever run on an older server (where it fails loudly instead of silently changing kind).",
+      "items": []
+     },
+     {
+      "content": "<b>Remember the write cost of STORED.</b> Every UPDATE recomputes and writes it into the new row version. See <a href=\"/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/\">PostgreSQL DBA Part 11: MVCC</a> for why each UPDATE writes a whole new row.",
+      "items": []
+     },
+     {
+      "content": "<b>Prefer a generated column over a trigger</b> for values that come purely from the same row. It is declarative, cannot be overwritten by mistake, and has no PL/pgSQL to maintain.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "Generated columns also carry their own privileges. You can <code class=\"inline-code\">GRANT SELECT (line_total)</code> on a table to a reporting role without granting the underlying price columns. For virtual columns the documentation adds that this is only fully secure if the expression uses leakproof functions."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is a PostgreSQL generated column virtual or stored by default?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In PostgreSQL 18 the default is VIRTUAL. In PostgreSQL 12 to 17 only STORED existed, and the <code class=\"inline-code\">STORED</code> keyword was mandatory."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can a generated column reference another table?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. The expression can only use columns of the current row, with immutable functions and no subqueries. To show values from another table, use a join in a view, or maintain the value with a trigger."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I insert a value into a generated column?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. INSERT and UPDATE may only set it to <code class=\"inline-code\">DEFAULT</code>. Any other value raises \"cannot insert a non-DEFAULT value into column\" or \"can only be updated to DEFAULT\"."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I convert a generated column into a normal column?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For a stored column, run <code class=\"inline-code\">ALTER TABLE t ALTER COLUMN c DROP EXPRESSION;</code>. The values stay and the column becomes writable. This is not supported for virtual columns in PostgreSQL 18."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does a generated column have a default value?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. A column cannot be both. If you try <code class=\"inline-code\">DEFAULT 5 GENERATED ALWAYS AS (...)</code>, PostgreSQL reports \"both default and generation expression specified\". A default is applied once at insert and can be overridden; a generated value is recomputed whenever the row changes and can never be overridden."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "A generated column is computed from other columns of the same row with <code class=\"inline-code\">GENERATED ALWAYS AS (expression)</code>",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "PostgreSQL 18 adds VIRTUAL generated columns and makes them the default; STORED still exists",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "VIRTUAL: computed on read, no disk space, no index, no statistics, no table rewrite when added",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "STORED: computed on write, uses disk, can be indexed, adding one rewrites the table",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Only DEFAULT can be written to a generated column",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Expressions must be immutable: no now(), concat_ws(), to_char(), subqueries or other generated columns",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Virtual columns accept only built-in functions; use STORED for your own IMMUTABLE functions",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Index a virtual column's formula with an expression index that matches it exactly, including any type cast",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Change the formula with SET EXPRESSION (PostgreSQL 17+) and run ANALYZE after changing a stored column",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Old tutorials say PostgreSQL only supports STORED generated columns. On PostgreSQL 18 that is wrong.\n\nPostgreSQL 18 added VIRTUAL generated columns and made them the default. Same syntax, very different behaviour:\n\n→ VIRTUAL is computed when you read the row. It takes no disk space. In my test, 1 million rows: 50 MB virtual vs 66 MB stored.\n→ Adding a VIRTUAL column with ALTER TABLE needs no table rewrite. Adding a STORED one rewrites the whole table under an exclusive lock.\n→ You cannot index a virtual column (\"indexes on virtual generated columns are not supported\"). Use STORED, or an expression index on the exact same formula.\n→ The expression must be immutable. now(), concat_ws() and to_char() are all rejected. Use first_name || ' ' || last_name instead of concat_ws.\n→ Virtual columns cannot call your own functions yet. Stored ones can.\n\nIf your scripts also run on PostgreSQL 17 or older, write STORED explicitly. Leaving it out is a syntax error there.\n\nWhich one would you pick for an order total column: virtual or stored?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #Database #DBA",
+  "slides": [
+   {
+    "title": "Generated Columns in PostgreSQL 18",
+    "body": "Virtual vs stored, with real output and the errors you will hit"
+   },
+   {
+    "title": "One column, computed for you",
+    "body": "A generated column is calculated from other columns in the same row. You never write to it. In PostgreSQL 18 it is VIRTUAL by default.",
+    "code": "CREATE TABLE orders (\n  quantity   int,\n  unit_price numeric(10,2),\n  line_total numeric GENERATED ALWAYS AS\n    (quantity * unit_price),\n  total_gst  numeric GENERATED ALWAYS AS\n    (quantity * unit_price * 1.18) STORED\n);",
+    "lang": "postgresql"
+   },
+   {
+    "title": "VIRTUAL vs STORED",
+    "points": [
+     "VIRTUAL: computed on read, no disk space",
+     "STORED: computed on write, saved on disk",
+     "1M rows in my test: 50 MB virtual, 66 MB stored",
+     "ADD COLUMN: virtual is instant, stored rewrites the table"
+    ]
+   },
+   {
+    "title": "Indexing a virtual column",
+    "body": "CREATE INDEX on a virtual column fails. Index the same formula instead, then run ANALYZE.",
+    "code": "CREATE INDEX sales_amount_expr_idx\n  ON sales ((quantity * unit_price));\nANALYZE sales;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Only immutable expressions",
+    "points": [
+     "now() fails: generation expression is not immutable",
+     "concat_ws() and to_char() fail for the same reason",
+     "Use first_name || ' ' || last_name",
+     "No subqueries, no other generated columns"
+    ]
+   },
+   {
+    "title": "Change or drop the formula",
+    "code": "ALTER TABLE orders\n  ALTER COLUMN total_gst\n  SET EXPRESSION AS\n  (quantity * unit_price * 1.12);\n\nALTER TABLE orders\n  ALTER COLUMN total_gst DROP EXPRESSION;",
+    "lang": "postgresql",
+    "body": "SET EXPRESSION works from PostgreSQL 17. DROP EXPRESSION works only for STORED columns."
+   }
+  ]
+ }
+}
