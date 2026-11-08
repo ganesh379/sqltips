@@ -49,7 +49,7 @@ WORDS = {
     "stat": "stat", "xact": "transaction", "lsn": "L-S-N", "xid": "X-I-D", "oid": "O-I-D",
     "autovacuum": "auto vacuum", "basebackup": "base backup", "isready": "is ready",
     "waldump": "wall dump", "receivewal": "receive wall", "dumpall": "dump all",
-    "statio": "stat I-O", "repack": "re-pack",
+    "statio": "stat I-O", "tblspc": "T-B-L-S-P-C", "filepath": "file path", "filenode": "file node", "pid": "P-I-D", "repack": "re-pack",
     "walsender": "wall sender", "walreceiver": "wall receiver", "walwriter": "wall writer",
     # extensions, tools and related products
     "pgvector": "P-G vector", "pgaudit": "P-G audit", "pglogical": "P-G logical",
@@ -95,7 +95,7 @@ SPOKEN_CAPS = {"VACUUM", "ANALYZE", "EXPLAIN", "SELECT", "INSERT", "UPDATE", "DE
                "NUMERIC", "ARRAY", "IDENTITY", "GENERATED", "ALWAYS", "CONNECTION", "OUTER", "INNER",
                "LEFT", "RIGHT", "CROSS", "LATERAL", "ONLY", "WINDOW", "OVER", "FILTER", "USING",
                "VACUUMDB", "REASSIGN", "OWNED", "SECURITY", "POLICY", "ENABLE", "DISABLE", "RULE",
-               "DECLARE", "CURSOR", "FETCH", "CALL", "DO", "ON", "OR", "IN", "AS", "BY", "IS", "TO",
+               "DECLARE", "CURSOR", "SYSTEM", "VERSION", "FETCH", "CALL", "DO", "ON", "OR", "IN", "AS", "BY", "IS", "TO",
                "OF", "IF", "AT", "NO", "UP"}
 
 _KEYS = sorted(WORDS, key=len, reverse=True)

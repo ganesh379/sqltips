@@ -1,0 +1,643 @@
+{
+ "ep": 7,
+ "total": 140,
+ "title": "PostgreSQL Data Directory: What Lives Inside PGDATA?",
+ "phase": "Foundations",
+ "lines": [
+  {
+   "say": "What is actually stored inside PGDATA?",
+   "cap": "What is actually stored inside *PGDATA?*"
+  },
+  {
+   "say": "This is episode seven of the PostgreSQL DBA series. Today: a tour of the data directory.",
+   "cap": "Episode 7: a tour of the *data* *directory.*"
+  },
+  {
+   "say": "PGDATA is a cluster's data directory. initdb creates it, and by default every database's files live there.",
+   "cap": "*initdb* creates it. Database files live *under* *it.*",
+   "cue": "initdb"
+  },
+  {
+   "say": "The name comes from the PGDATA environment variable, an alternative to initdb's dash D option.",
+   "cap": "Named after the *PGDATA* variable, an alternative to *-D.*",
+   "cue": "variable"
+  },
+  {
+   "say": "Where is it? On this Ubuntu test server, SHOW data_directory points into slash var slash lib.",
+   "cap": "*SHOW data_directory* tells you where it is."
+  },
+  {
+   "say": "But config_file points into slash etc. Ubuntu keeps its config files outside PGDATA.",
+   "cap": "Config files *can* *live* *elsewhere.* Ubuntu uses */etc.*",
+   "cue": "config_file"
+  },
+  {
+   "say": "Here is a fresh cluster made with initdb. The output is trimmed.",
+   "cap": "A fresh cluster made with *initdb.* Output trimmed."
+  },
+  {
+   "say": "base: one subdirectory per database, named by its OID.",
+   "cap": "*base:* one folder per database, named by *OID.*"
+  },
+  {
+   "say": "global: cluster-wide tables, like pg_database.",
+   "cap": "*global:* cluster-wide tables like *pg_database.*"
+  },
+  {
+   "say": "pg_wal: the write-ahead log files.",
+   "cap": "*pg_wal:* the write-ahead log files."
+  },
+  {
+   "say": "pg_tblspc: symbolic links to tablespaces.",
+   "cap": "*pg_tblspc:* symbolic links to *tablespaces.*"
+  },
+  {
+   "say": "pg X-act: transaction commit status data.",
+   "cap": "*pg_xact:* transaction *commit* *status.*"
+  },
+  {
+   "say": "PG_VERSION holds the major version. postmaster.pid is a lock file, and it's not there after the server shuts down.",
+   "cap": "*PG_VERSION* and the *postmaster.pid* lock file.",
+   "cue": "postmaster.pid"
+  },
+  {
+   "say": "Config files usually sit here too, and postgresql.auto.conf stores ALTER SYSTEM settings.",
+   "cap": "Config files, plus *postgresql.auto.conf* for *ALTER SYSTEM.*"
+  },
+  {
+   "say": "Now a real table. In appdb, the database OID is one six three eight four.",
+   "cap": "*appdb* has OID *16384.*"
+  },
+  {
+   "say": "pg_relation_filepath of orders returns base, slash, one six three eight four, slash, one six three nine two.",
+   "cap": "*pg_relation_filepath* shows the table's file.",
+   "cue": "returns"
+  },
+  {
+   "say": "So one table has three files: the main data, a free space map, and a visibility map.",
+   "cap": "Main file, *free* *space* *map,* *visibility* *map.*",
+   "cue": "three"
+  },
+  {
+   "say": "Past one gigabyte, a table or index is split into one gigabyte segments: dot one, dot two, and so on.",
+   "cap": "Over *1* *GB:* split into *segments* .1, .2 ...",
+   "cue": "segments"
+  },
+  {
+   "say": "Careful: files are named by filenode, which is not always the table's OID. TRUNCATE and REINDEX can change it.",
+   "cap": "File name = *filenode,* not always the *OID.*"
+  },
+  {
+   "say": "Big mistake: deleting files in PGDATA by hand, even when the disk is full.",
+   "cap": "*Never* delete files in PGDATA by hand."
+  },
+  {
+   "say": "PostgreSQL removes or recycles old WAL itself. If pg_wal keeps growing, check archive_command and replication slots.",
+   "cap": "pg_wal growing? Check *archiving* and *replication* *slots.*",
+   "cue": "growing"
+  },
+  {
+   "say": "Security: initdb gives access only to the PostgreSQL user, and optionally its group. Owner-only mode is seven zero zero.",
+   "cap": "Owner-only access: mode *0700.*"
+  },
+  {
+   "say": "Recap: base holds databases, global holds cluster-wide tables, and pg_wal holds the WAL.",
+   "cap": "Recap: *base,* *global* and *pg_wal.*"
+  },
+  {
+   "say": "pg_relation_filepath finds any table's file. And never delete files by hand.",
+   "cap": "*pg_relation_filepath* finds files. *Never* delete by hand."
+  },
+  {
+   "say": "Next up: tables, rows, pages and tuples. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *pages* and *tuples.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "What is actually stored inside *PGDATA?*",
+   "sub": "Episode 7 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 7 · FOUNDATIONS",
+   "title": "Inside the Data Directory",
+   "sub": "A tour of PGDATA"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 4,
+   "heading": "What PGDATA is",
+   "nodes": [
+    {
+     "id": "initdb",
+     "label": "initdb",
+     "sub": "creates it",
+     "x": 290,
+     "y": 540,
+     "w": 340,
+     "h": 130,
+     "icon": "terminal",
+     "color": "blue",
+     "at": 2
+    },
+    {
+     "id": "var",
+     "label": "PGDATA variable",
+     "sub": "or initdb -D",
+     "x": 790,
+     "y": 540,
+     "w": 340,
+     "h": 130,
+     "icon": "key",
+     "color": "purple",
+     "at": 3
+    },
+    {
+     "id": "dir",
+     "label": "Data directory",
+     "sub": "PGDATA",
+     "x": 540,
+     "y": 840,
+     "w": 380,
+     "h": 150,
+     "icon": "folder",
+     "color": "amber",
+     "at": 2
+    },
+    {
+     "id": "dbs",
+     "label": "Database files",
+     "sub": "base/ by default",
+     "x": 540,
+     "y": 1140,
+     "w": 380,
+     "h": 130,
+     "icon": "database",
+     "color": "green",
+     "at": 2
+    }
+   ],
+   "edges": [
+    {
+     "from": "initdb",
+     "to": "dir",
+     "label": "creates",
+     "at": 2,
+     "flow": true
+    },
+    {
+     "from": "dir",
+     "to": "dbs",
+     "label": "holds",
+     "at": 2,
+     "flow": true
+    },
+    {
+     "from": "var",
+     "to": "dir",
+     "label": "points to",
+     "at": 3,
+     "flow": true,
+     "color": "purple"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "dir"
+    },
+    {
+     "at": 3,
+     "id": "var"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 4,
+   "to": 6,
+   "heading": "Where is PGDATA?",
+   "title": "psql (PostgreSQL 16, Ubuntu)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "postgres=# ",
+     "text": "SHOW data_directory;",
+     "at": 4
+    },
+    {
+     "kind": "out",
+     "text": "       data_directory",
+     "at": 4
+    },
+    {
+     "kind": "out",
+     "text": "-----------------------------",
+     "at": 4
+    },
+    {
+     "kind": "out",
+     "text": " /var/lib/postgresql/16/main",
+     "at": 4
+    },
+    {
+     "kind": "cmd",
+     "prompt": "postgres=# ",
+     "text": "SHOW config_file;",
+     "at": 5
+    },
+    {
+     "kind": "out",
+     "text": "            config_file",
+     "at": 5
+    },
+    {
+     "kind": "out",
+     "text": "-----------------------------",
+     "at": 5
+    },
+    {
+     "kind": "out",
+     "text": " /etc/postgresql/16/main/",
+     "at": 5
+    },
+    {
+     "kind": "out",
+     "text": "   postgresql.conf",
+     "at": 5
+    },
+    {
+     "kind": "comment",
+     "text": "-- long output line wrapped",
+     "at": 5
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 6,
+   "to": 7,
+   "heading": "A fresh cluster",
+   "title": "bash: after initdb (output trimmed)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "ls $PGDATA",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "PG_VERSION     pg_snapshots",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "base           pg_stat",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "global         pg_stat_tmp",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "pg_commit_ts   pg_subtrans",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "pg_dynshmem    pg_tblspc",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "pg_hba.conf    pg_twophase",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "pg_ident.conf  pg_wal",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "pg_logical     pg_xact",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "pg_multixact   postgresql.auto.conf",
+     "at": 6
+    },
+    {
+     "kind": "comment",
+     "text": "# ... 24 entries in total",
+     "at": 6
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 7,
+   "to": 13,
+   "heading": "What lives inside",
+   "columns": 2,
+   "items": [
+    {
+     "at": 7,
+     "icon": "database",
+     "title": "base/",
+     "text": "One subdirectory per database, named by OID",
+     "color": "green"
+    },
+    {
+     "at": 8,
+     "icon": "layers",
+     "title": "global/",
+     "text": "Cluster-wide tables like pg_database",
+     "color": "blue"
+    },
+    {
+     "at": 9,
+     "icon": "file",
+     "title": "pg_wal/",
+     "text": "Write-ahead log (WAL) files",
+     "color": "amber"
+    },
+    {
+     "at": 10,
+     "icon": "network",
+     "title": "pg_tblspc/",
+     "text": "Symbolic links to tablespaces",
+     "color": "purple"
+    },
+    {
+     "at": 11,
+     "icon": "check",
+     "title": "pg_xact/",
+     "text": "Transaction commit status data",
+     "color": "cyan"
+    },
+    {
+     "at": 12,
+     "icon": "lock",
+     "title": "PG_VERSION, .pid",
+     "text": "Major version number; postmaster lock file",
+     "color": "orange"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 13,
+   "to": 14,
+   "kind": "fact",
+   "title": "Config files",
+   "text": "postgresql.conf, pg_hba.conf and pg_ident.conf are traditionally in PGDATA. postgresql.auto.conf holds ALTER SYSTEM settings."
+  },
+  {
+   "type": "terminal",
+   "from": 14,
+   "to": 16,
+   "heading": "Find a table's file",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT oid FROM pg_database",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  WHERE datname = 'appdb';",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "  oid",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "-------",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": " 16384",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT pg_relation_filepath(",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  'orders');",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": " pg_relation_filepath",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "----------------------",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": " base/16384/16392",
+     "at": 15
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 16,
+   "to": 18,
+   "heading": "One table, several files",
+   "nodes": [
+    {
+     "id": "tbl",
+     "label": "orders",
+     "sub": "base/16384/",
+     "x": 540,
+     "y": 520,
+     "w": 340,
+     "h": 130,
+     "icon": "table",
+     "color": "blue",
+     "at": 16
+    },
+    {
+     "id": "main",
+     "label": "16392",
+     "sub": "main data",
+     "x": 205,
+     "y": 830,
+     "w": 290,
+     "h": 140,
+     "icon": "file",
+     "color": "green",
+     "at": 16
+    },
+    {
+     "id": "fsm",
+     "label": "16392_fsm",
+     "sub": "free space map",
+     "x": 540,
+     "y": 830,
+     "w": 290,
+     "h": 140,
+     "icon": "file",
+     "color": "amber",
+     "at": 16
+    },
+    {
+     "id": "vm",
+     "label": "16392_vm",
+     "sub": "visibility map",
+     "x": 875,
+     "y": 830,
+     "w": 290,
+     "h": 140,
+     "icon": "file",
+     "color": "purple",
+     "at": 16
+    },
+    {
+     "id": "seg",
+     "label": "16392.1",
+     "sub": "1 GB segments",
+     "x": 205,
+     "y": 1110,
+     "w": 340,
+     "h": 140,
+     "icon": "layers",
+     "color": "cyan",
+     "at": 17
+    }
+   ],
+   "edges": [
+    {
+     "from": "tbl",
+     "to": "main",
+     "at": 16,
+     "flow": true
+    },
+    {
+     "from": "tbl",
+     "to": "fsm",
+     "at": 16,
+     "flow": true
+    },
+    {
+     "from": "tbl",
+     "to": "vm",
+     "at": 16,
+     "flow": true
+    },
+    {
+     "from": "main",
+     "to": "seg",
+     "label": "past 1 GB",
+     "at": 17,
+     "flow": true,
+     "color": "cyan"
+    }
+   ],
+   "focus": [
+    {
+     "at": 16,
+     "id": "main"
+    },
+    {
+     "at": 17,
+     "id": "seg"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 18,
+   "to": 19,
+   "kind": "myth",
+   "title": "File name = table OID?",
+   "text": "Not always. Files are named by filenode. TRUNCATE, REINDEX and some ALTER TABLE forms can change it."
+  },
+  {
+   "type": "callout",
+   "from": 19,
+   "to": 20,
+   "kind": "warning",
+   "title": "Hands off PGDATA files",
+   "text": "Never delete data or WAL files by hand, even when the disk is full."
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "tip",
+   "title": "pg_wal keeps growing?",
+   "text": "PostgreSQL recycles old WAL after checkpoints. Check for a failing archive_command or a stuck replication slot."
+  },
+  {
+   "type": "stat",
+   "from": 21,
+   "to": 22,
+   "value": "0700",
+   "label": "Data directory mode",
+   "text": "Owner only. Optional group read access uses 0750.",
+   "color": "green"
+  },
+  {
+   "type": "checklist",
+   "from": 22,
+   "to": 24,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 22,
+     "title": "base/ = one folder per DB"
+    },
+    {
+     "at": 22,
+     "title": "global/ = cluster-wide tables"
+    },
+    {
+     "at": 22,
+     "title": "pg_wal/ = write-ahead log"
+    },
+    {
+     "at": 23,
+     "title": "pg_relation_filepath()"
+    },
+    {
+     "at": 23,
+     "title": "Never delete files by hand"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 24,
+   "to": 25,
+   "next": "Ep 8 · Tables, Rows, Pages and Tuples"
+  }
+ ]
+}

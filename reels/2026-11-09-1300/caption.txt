@@ -1,0 +1,13 @@
+What is actually stored inside PGDATA? A quick tour of the PostgreSQL data directory.
+
+PGDATA is the data directory of a PostgreSQL cluster, created by initdb. Run SHOW data_directory to find it. On Ubuntu, SHOW config_file points to /etc/postgresql, because config files can live outside PGDATA.
+
+Key folders: base (one subdirectory per database, named by its OID), global (cluster-wide tables like pg_database), pg_wal (write-ahead log files), pg_tblspc (symbolic links to tablespaces) and pg_xact (transaction commit status). PG_VERSION holds the major version and postmaster.pid is the lock file.
+
+PostgreSQL DBA tip: SELECT pg_relation_filepath('orders') shows a table's file, like base/16384/16392, with _fsm and _vm forks beside it. Files are named by filenode, which is not always the table's OID. Never delete files in PGDATA or pg_wal by hand. If pg_wal keeps growing, check archive_command and replication slots.
+
+Episode 7 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql
