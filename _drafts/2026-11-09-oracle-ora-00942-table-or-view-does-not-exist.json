@@ -1,0 +1,888 @@
+{
+ "schemaVersion": 1,
+ "title": "ORA-00942 Table or View Does Not Exist: Causes and Fixes",
+ "slug": "ora-00942-table-or-view-does-not-exist",
+ "category": "plsql",
+ "description": "Fix ORA-00942 table or view does not exist in Oracle: missing schema prefix, grants, role privileges in procedures, quoted names and broken synonyms.",
+ "focusKeyword": "ora-00942 table or view does not exist",
+ "tags": [
+  "oracle",
+  "ora-errors",
+  "privileges",
+  "plsql",
+  "troubleshooting"
+ ],
+ "related": [
+  "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/",
+  "/posts/plsql/ora-00060-deadlock-detected-oracle/",
+  "/posts/interview-questions/plsql-developer-interview-questions/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle error help: ORA-00942",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-00942/"
+  },
+  {
+   "title": "Oracle 19c PL/SQL Language Reference: Invoker's Rights and Definer's Rights (AUTHID Property)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/invokers-rights-and-definers-rights-authid-property.html"
+  },
+  {
+   "title": "Oracle 19c SQL Language Reference: Database Object Names and Qualifiers",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Database-Object-Names-and-Qualifiers.html"
+  },
+  {
+   "title": "Oracle 19c SQL Language Reference: CREATE SYNONYM",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/CREATE-SYNONYM.html"
+  },
+  {
+   "title": "Oracle 23ai SQL Language Reference: DROP TABLE",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/23/sqlrf/DROP-TABLE.html"
+  }
+ ],
+ "reviewNotes": "All examples written from the 19c/23ai docs and need a test run. Please check: (1) the exact SQL*Plus error layout and asterisk positions, and the LINE/COL values in the SHOW ERRORS output (4/37 is an estimate); (2) whether a synonym to a missing object gives ORA-00942 or ORA-00980 on your version (the article says either may appear); (3) the claim that 23ai+ prints the object name in the message: the official error page documents the 'table or view object_name does not exist' form, and one blog reports a backport to 19.22, which I could not verify, so the article only claims 23ai and later; (4) that the object privilege added to an already-enabled role takes effect without reconnecting (the article hedges with 'if it still fails, reconnect'). The ORA-01031 for UPDATE-with-only-SELECT statement is standard behaviour but not taken from a doc page.",
+ "generatedAt": "2026-11-09T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>ORA-00942: table or view does not exist</b> means Oracle could not find the table or view you named, <i>as seen by the user running the statement</i>. Very often the table does exist. The real problem is a missing schema prefix, a missing privilege, a privilege that came through a role inside a stored procedure, or a name created with double quotes."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This guide walks through each cause on a small sample schema. For every cause you get a query to confirm it and the exact fix, so you can stop guessing and go straight to the right one."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What ORA-00942 means",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When you write <code class=\"inline-code\">SELECT * FROM orders</code>, Oracle has to turn the name <code class=\"inline-code\">orders</code> into one real object. If you do not give a schema, it looks first for an object called ORDERS in your current schema, and then for a public synonym called ORDERS. If neither exists, or one exists but you have no privilege on it, you get ORA-00942."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "That last part surprises people. If the table exists in another schema but you have no privilege on it, Oracle still reports ORA-00942 rather than telling you about the missing grant. The official error reference lists exactly this: the table may not exist, a synonym may point to a missing object, or the user may not have access to it."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Cause",
+      "Typical symptom",
+      "Fix"
+     ],
+     [
+      "Table is in another schema",
+      "Works as the owner, fails as the app user",
+      "Prefix the schema, or create a synonym"
+     ],
+     [
+      "No privilege on the table",
+      "Fails even with schema.table",
+      "GRANT SELECT (or other) on the table"
+     ],
+     [
+      "Privilege only through a role",
+      "Works in SQL*Plus, fails inside a procedure",
+      "Grant the privilege directly to the procedure owner"
+     ],
+     [
+      "Table created with quoted mixed-case name",
+      "Fails unless you type the exact quotes",
+      "Use the quoted name, or rename the table"
+     ],
+     [
+      "Synonym points to a dropped or renamed object",
+      "The synonym exists but queries fail",
+      "Recreate the synonym or the object"
+     ],
+     [
+      "Object really missing",
+      "Install or upgrade script fails on DROP",
+      "Create the table, or skip the DROP when it is absent"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Newer releases show the object name",
+    "text": "The Oracle error reference documents a form of the message that includes the name, written as SCHEMA.OBJECT_NAME when a schema was given. Newer releases (Oracle Database 23ai and later) print that name, which helps a lot when a query joins many tables. In 19c you usually see only <code class=\"inline-code\">ORA-00942: table or view does not exist</code> with an asterisk under the failing name."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "We use two users. <code class=\"inline-code\">SALES</code> owns the data. <code class=\"inline-code\">APP_USER</code> is the account an application logs in with. Run the first block as a DBA user (in a multitenant database, connect to your pluggable database, not the root)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- As a DBA user\nCREATE USER sales IDENTIFIED BY \"Sales#2026\"\n  QUOTA 10M ON users;\nGRANT CREATE SESSION, CREATE TABLE TO sales;\n\nCREATE USER app_user IDENTIFIED BY \"App#2026\";\nGRANT CREATE SESSION, CREATE PROCEDURE, CREATE SYNONYM TO app_user;\n\nCREATE ROLE orders_reader;\nGRANT orders_reader TO app_user;",
+    "caption": "Create the two users and a role (run as DBA)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Connected as SALES\nCREATE TABLE orders (\n  order_id     NUMBER PRIMARY KEY,\n  customer     VARCHAR2(50),\n  amount       NUMBER(10,2),\n  order_date   DATE\n);\n\nINSERT INTO orders VALUES (1, 'Asha',  2500, DATE '2026-11-01');\nINSERT INTO orders VALUES (2, 'Ravi',  1200, DATE '2026-11-02');\nINSERT INTO orders VALUES (3, 'Meena',  800, DATE '2026-11-03');\nCOMMIT;",
+    "caption": "Create the ORDERS table as SALES"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If your database has no <code class=\"inline-code\">USERS</code> tablespace, change the QUOTA line to a tablespace that exists."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: find out whether the object exists, and who owns it",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before changing anything, ask the dictionary. Run this as a DBA (or any user with access to <code class=\"inline-code\">DBA_OBJECTS</code>):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT owner, object_name, object_type, status\n  FROM dba_objects\n WHERE UPPER(object_name) = 'ORDERS';",
+    "caption": "Search every schema for the name"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "OWNER",
+      "OBJECT_NAME",
+      "OBJECT_TYPE",
+      "STATUS"
+     ],
+     [
+      "SALES",
+      "ORDERS",
+      "TABLE",
+      "VALID"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). The table exists and SALES owns it. Now run the same check as the failing user, using <code class=\"inline-code\">ALL_OBJECTS</code>, which only lists objects that user can access:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Connected as APP_USER\nSELECT owner, object_name, object_type\n  FROM all_objects\n WHERE UPPER(object_name) = 'ORDERS';",
+    "caption": "What the failing user can see"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "no rows selected",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This comparison tells you a lot. If the DBA sees the table but the user sees nothing, it is a privilege problem. If nobody sees it, the object really is missing, or its name is not what you think. Using <code class=\"inline-code\">UPPER(object_name)</code> also catches tables created with mixed-case quoted names."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Cause 1: no privilege on the table",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "APP_USER tries to read the orders using the full name, before any grant is in place:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT * FROM sales.orders;",
+    "caption": "Run as APP_USER"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "SELECT * FROM sales.orders\n                    *\nERROR at line 1:\nORA-00942: table or view does not exist",
+    "caption": "Output (expected output, SQL*Plus on 19c)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The schema is right and the table exists, yet the error is the same. Oracle needs a privilege before it will resolve the name for you. Connect as SALES and grant SELECT through the role we created:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Connected as SALES\nGRANT SELECT ON orders TO orders_reader;",
+    "caption": "Grant through a role"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now <code class=\"inline-code\">SELECT * FROM sales.orders</code> returns the three rows as APP_USER. If it still fails, reconnect so the session picks up its roles. To check what a user has been granted on a table, query <code class=\"inline-code\">USER_TAB_PRIVS</code> as that user (direct grants) and <code class=\"inline-code\">ROLE_TAB_PRIVS</code> (grants through enabled roles):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT role, owner, table_name, privilege\n  FROM role_tab_privs\n WHERE table_name = 'ORDERS';",
+    "caption": "Privileges APP_USER gets through roles"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ROLE",
+      "OWNER",
+      "TABLE_NAME",
+      "PRIVILEGE"
+     ],
+     [
+      "ORDERS_READER",
+      "SALES",
+      "ORDERS",
+      "SELECT"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Keep this in mind: SELECT only. If APP_USER now tries an UPDATE on the table it can see, Oracle reports a privilege error (ORA-01031: insufficient privileges) instead, because the name now resolves."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Cause 2: the table is in another schema",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now APP_USER has the privilege, but the application code says only ORDERS:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT * FROM orders;",
+    "caption": "Run as APP_USER, no schema prefix"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "SELECT * FROM orders\n              *\nERROR at line 1:\nORA-00942: table or view does not exist",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle looked for APP_USER.ORDERS and then for a public synonym called ORDERS. It found neither, so it never looked in SALES. You have three fixes. Pick one per application, not a mix."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix A: qualify the name",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT * FROM sales.orders;",
+    "caption": "Clear and explicit"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix B: create a private synonym",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Connected as APP_USER\nCREATE SYNONYM orders FOR sales.orders;\n\nSELECT order_id, customer, amount FROM orders;",
+    "caption": "The synonym maps ORDERS to SALES.ORDERS"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "CUSTOMER",
+      "AMOUNT"
+     ],
+     [
+      "1",
+      "Asha",
+      "2500"
+     ],
+     [
+      "2",
+      "Ravi",
+      "1200"
+     ],
+     [
+      "3",
+      "Meena",
+      "800"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). A synonym is only a name. It does not grant anything, so the SELECT privilege from Cause 1 is still required."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix C: change the current schema for the session",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ALTER SESSION SET CURRENT_SCHEMA = sales;\n\nSELECT COUNT(*) FROM orders;",
+    "caption": "Unqualified names now resolve in SALES"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Unqualified names now resolve in SALES for this session. This is handy in a logon trigger or a connection pool setup. It changes name resolution only. Privileges are still checked against APP_USER."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Cause 3: it works in SQL but fails inside a procedure",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the case behind most \"ORA-00942 but table exists\" searches. APP_USER can query SALES.ORDERS in SQL*Plus, so it writes a procedure that does the same:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "CREATE OR REPLACE PROCEDURE count_orders IS\n  v_count NUMBER;\nBEGIN\n  SELECT COUNT(*) INTO v_count FROM sales.orders;\n  DBMS_OUTPUT.PUT_LINE('Orders: ' || v_count);\nEND;\n/\nSHOW ERRORS",
+    "caption": "Run as APP_USER"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Warning: Procedure created with compilation errors.\n\nErrors for PROCEDURE COUNT_ORDERS:\n\nLINE/COL ERROR\n-------- ------------------------------------------------\n4/3      PL/SQL: SQL Statement ignored\n4/37     PL/SQL: ORA-00942: table or view does not exist",
+    "caption": "Output (expected output, line and column numbers may differ)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why this happens",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The privilege came through the role ORDERS_READER. A procedure is a definer's rights unit by default. The PL/SQL Language Reference explains that when such a unit runs, Oracle switches to the owner's privileges and enables only the role PUBLIC. Static SQL is also checked when the procedure is compiled, and at compile time every unit is treated as definer's rights. So any privilege that arrives only through a role (other than PUBLIC) is invisible to compiled PL/SQL."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The fix: grant the privilege directly",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Connected as SALES\nGRANT SELECT ON orders TO app_user;\n\n-- Connected as APP_USER\nALTER PROCEDURE count_orders COMPILE;\nSET SERVEROUTPUT ON\nEXEC count_orders",
+    "caption": "Direct grant, then recompile"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Procedure altered.\n\nOrders: 3\n\nPL/SQL procedure successfully completed.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "AUTHID CURRENT_USER is not a shortcut",
+    "text": "Adding <code class=\"inline-code\">AUTHID CURRENT_USER</code> does not fix the compile error. The docs state that static SQL is checked at compile time as if the unit were definer's rights, so the owner still needs a direct grant. Switching to dynamic SQL with <code class=\"inline-code\">EXECUTE IMMEDIATE</code> only moves the check to run time. Grant the privilege directly instead of working around it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same rule applies to triggers, functions, packages and views that the owner creates on top of another schema's tables. If an object compiles fine as the DBA but not as the real owner, look for role-only grants first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Cause 4: the table was created with a quoted name",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Some tools and migration scripts generate names in double quotes. Oracle stores unquoted names in uppercase, but a quoted name is kept exactly as typed and becomes case sensitive."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Connected as SALES\nCREATE TABLE \"Payments\" (\n  payment_id NUMBER,\n  amount     NUMBER(10,2)\n);\n\nSELECT * FROM payments;    -- looks for PAYMENTS: ORA-00942\nSELECT * FROM \"Payments\";  -- works",
+    "caption": "A mixed-case quoted name"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The first query fails because <code class=\"inline-code\">payments</code> is read as PAYMENTS, and no table has that name. The second works because the quotes match the stored name exactly. You can spot such tables with the Step 1 query: the OBJECT_NAME column shows the mixed case."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The lasting fix is to rename the table to an ordinary uppercase name, after checking that nothing depends on the old one:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ALTER TABLE \"Payments\" RENAME TO payments;",
+    "caption": "Rename to a normal, case-insensitive name"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle's own documentation recommends against quoted identifiers for object names for this reason."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Cause 5: a synonym points to a missing object",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle lets you create a synonym for an object that does not exist yet, and a synonym is left behind when its table is dropped or renamed. Queries through it then fail. Depending on the case you may see ORA-00942 or ORA-00980 (synonym translation is no longer valid). Check where the synonym points:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT owner, synonym_name, table_owner, table_name, db_link\n  FROM all_synonyms\n WHERE synonym_name = 'ORDERS';",
+    "caption": "Where does the synonym lead?"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "OWNER",
+      "SYNONYM_NAME",
+      "TABLE_OWNER",
+      "TABLE_NAME",
+      "DB_LINK"
+     ],
+     [
+      "APP_USER",
+      "ORDERS",
+      "SALES",
+      "ORDERS",
+      ""
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Then confirm that <code class=\"inline-code\">TABLE_OWNER.TABLE_NAME</code> exists with the Step 1 query. If the synonym uses a database link, the name is resolved and the privilege is checked on the remote database, for the user the link connects as, so run the checks there."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Cause 6: DROP in a script when the table is not there",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Install and test scripts often start by dropping a table. If it is missing, the DROP raises ORA-00942 and many script runners stop."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Oracle Database 23ai and later you can write <code class=\"inline-code\">DROP TABLE IF EXISTS orders_stage;</code>, which drops the table only if it exists. In 19c and earlier, catch only this one error code and re-raise everything else:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "BEGIN\n  EXECUTE IMMEDIATE 'DROP TABLE orders_stage PURGE';\nEXCEPTION\n  WHEN OTHERS THEN\n    IF SQLCODE != -942 THEN\n      RAISE;\n    END IF;\nEND;\n/",
+    "caption": "Ignore ORA-00942 only, on 19c and earlier"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Never swallow every error here. A failed DROP for any other reason, such as a lock or a privilege problem, should still stop the script."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Granting to a role and testing only in SQL*Plus.</b> The query works interactively, then the package fails to compile. Grant directly to any user that owns PL/SQL or views which use the table.",
+      "items": []
+     },
+     {
+      "content": "<b>Checking USER_TABLES as the wrong user.</b> USER_TABLES shows only your own tables. Use ALL_OBJECTS as the failing user and DBA_OBJECTS as a DBA, and compare.",
+      "items": []
+     },
+     {
+      "content": "<b>Creating a synonym and expecting it to grant access.</b> A synonym only maps a name. The privilege on the underlying table is still required.",
+      "items": []
+     },
+     {
+      "content": "<b>Running in the wrong container or database.</b> In a multitenant database, the table lives in a PDB. Connected to CDB$ROOT, the PDB's tables are not visible. Check with <code class=\"inline-code\">SHOW CON_NAME</code> in SQL*Plus.",
+      "items": []
+     },
+     {
+      "content": "<b>Using GRANT SELECT ANY TABLE to make the error go away.</b> It hides the real problem and gives far more access than needed. Grant on the specific object.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Best practices to avoid ORA-00942",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Pick one naming strategy per application: always qualify schema names, or use private synonyms, or set CURRENT_SCHEMA at logon.",
+      "items": []
+     },
+     {
+      "content": "Give roles to people who run ad hoc queries, and direct object grants to schemas that own code.",
+      "items": []
+     },
+     {
+      "content": "Never use quoted mixed-case names for tables and columns.",
+      "items": []
+     },
+     {
+      "content": "Keep grants in the same deployment script as the CREATE TABLE, so a new environment never misses them.",
+      "items": []
+     },
+     {
+      "content": "When an application reports ORA-00942, log the full SQL text. In a join of ten tables, the statement and the error position are what tell you which name failed.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why do I get ORA-00942 when the table exists?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Because the user running the statement cannot see it. Either the table is in another schema and you did not prefix it, the user has no privilege on it, the privilege comes only through a role and you are inside PL/SQL, or the table name was created in quotes with mixed case."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I fix ORA-00942 in a stored procedure?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Grant the needed privilege directly to the procedure owner, for example <code class=\"inline-code\">GRANT SELECT ON sales.orders TO app_user;</code>, and recompile the procedure. Roles other than PUBLIC are not enabled when definer's rights PL/SQL is compiled or run."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does ORA-00942 mean I need a GRANT?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Not always, but often. If DBA_OBJECTS shows the table and ALL_OBJECTS for the failing user does not, a grant is missing. If DBA_OBJECTS shows nothing, the object really does not exist under that name."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between ORA-00942 and ORA-01031?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "ORA-00942 means the name could not be resolved to an object you can access. ORA-01031 (insufficient privileges) means Oracle found the object, but you lack the specific privilege for the operation, for example UPDATE when you only have SELECT."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Run the Step 1 checks: DBA_OBJECTS as a DBA, ALL_OBJECTS as the failing user.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Prefix the schema, create a synonym, or set CURRENT_SCHEMA when the table lives elsewhere.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Grant the specific privilege on the table, not an ANY privilege.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "For procedures, packages, triggers and views, grant directly to the owner, not through a role.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Look for quoted mixed-case names and rename them.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Check ALL_SYNONYMS when a synonym is involved.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use DROP TABLE IF EXISTS on 23ai, or catch only SQLCODE -942 on older releases.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your SELECT works in SQL Developer, but the same query inside a procedure fails with ORA-00942. The table is right there.\n\nORA-00942 rarely means the table is gone. It means the user running the statement cannot see it.\n\nThe usual causes:\n1. No schema prefix. Oracle looks in your own schema and in public synonyms only. Write sales.orders or create a synonym.\n2. No privilege. Without a grant, Oracle reports ORA-00942, not a privilege error.\n3. Grant came through a role. Definer's rights PL/SQL enables only PUBLIC, so the procedure owner needs a direct GRANT.\n4. Quoted names. CREATE TABLE \"Payments\" is case sensitive, so SELECT * FROM payments fails.\n5. Broken synonym. Check ALL_SYNONYMS to see where it points.\n\nQuick test: compare DBA_OBJECTS (as DBA) with ALL_OBJECTS (as the failing user). If only the DBA sees the table, a grant is missing.\n\nWhich one cost you the most time: the role grant or the missing schema prefix?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #PLSQL #OracleSQL #OracleDBA",
+  "slides": [
+   {
+    "title": "ORA-00942: Table or View Does Not Exist",
+    "body": "Six real causes, how to confirm each one, and the exact fix"
+   },
+   {
+    "title": "What the error really means",
+    "body": "Oracle could not resolve the name to an object the current user can access. The table often exists. The user just cannot see it, or the name is not what you typed."
+   },
+   {
+    "title": "Step 1: compare two views",
+    "points": [
+     "As DBA: query DBA_OBJECTS for the name",
+     "As the failing user: query ALL_OBJECTS",
+     "Only the DBA sees it? A grant is missing"
+    ],
+    "code": "SELECT owner, object_type\n  FROM all_objects\n WHERE UPPER(object_name) = 'ORDERS';",
+    "lang": "sql"
+   },
+   {
+    "title": "Wrong schema or no grant",
+    "points": [
+     "Unqualified names resolve in your schema, then public synonyms",
+     "A synonym maps a name but grants nothing"
+    ],
+    "code": "GRANT SELECT ON sales.orders TO app_user;\n\nCREATE SYNONYM orders FOR sales.orders;",
+    "lang": "sql"
+   },
+   {
+    "title": "Works in SQL, fails in a procedure",
+    "points": [
+     "Definer's rights PL/SQL enables only the PUBLIC role",
+     "Grant directly to the owner, then recompile",
+     "AUTHID CURRENT_USER does not fix compile errors"
+    ],
+    "code": "-- as SALES\nGRANT SELECT ON orders TO app_user;\n-- as APP_USER\nALTER PROCEDURE count_orders COMPILE;",
+    "lang": "sql"
+   },
+   {
+    "title": "Quoted names and old scripts",
+    "points": [
+     "\"Payments\" is case sensitive; rename it to PAYMENTS",
+     "23ai and later: DROP TABLE IF EXISTS",
+     "19c: catch only SQLCODE -942 and re-raise the rest"
+    ],
+    "code": "BEGIN\n  EXECUTE IMMEDIATE 'DROP TABLE stage_t';\nEXCEPTION WHEN OTHERS THEN\n  IF SQLCODE != -942 THEN RAISE; END IF;\nEND;",
+    "lang": "plsql"
+   }
+  ]
+ }
+}
