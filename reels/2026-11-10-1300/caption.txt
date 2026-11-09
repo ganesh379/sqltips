@@ -1,0 +1,13 @@
+A PostgreSQL table is not one big blob. It is a stack of 8 kB pages.
+
+Every table and index is stored as an array of fixed-size pages, usually 8 kB (SHOW block_size returns 8192). Each page has a 24-byte header, an array of 4-byte line pointers, free space, and the tuples. New line pointers are added from the start of the free space and new tuples from the end.
+
+A tuple is a stored row version. Its header is 23 bytes on most machines and holds xmin (inserting transaction) and xmax (deleting transaction). A tuple cannot span pages: rows wider than about 2 kB trigger TOAST.
+
+PostgreSQL DBA tip: ctid is a row's physical address (page, item). In our test, UPDATE moved row 2 from (0,2) to (5,76). ctid changes on UPDATE and VACUUM FULL, so never use it as a row ID. Use a primary key.
+
+Episode 8 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql

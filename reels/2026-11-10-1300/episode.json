@@ -1,0 +1,710 @@
+{
+ "ep": 8,
+ "total": 140,
+ "title": "Tables, Rows, Pages and Tuples",
+ "phase": "Foundations",
+ "lines": [
+  {
+   "say": "A table is not one big blob. It's a stack of pages.",
+   "cap": "A table is a stack of *pages.*"
+  },
+  {
+   "say": "This is episode eight of the PostgreSQL DBA series. Today: how your rows are really stored.",
+   "cap": "Episode 8: how rows are *really* *stored.*"
+  },
+  {
+   "say": "In SQL, you see a table as rows and columns. That is the logical view.",
+   "cap": "SQL shows *rows* and *columns.* The logical view."
+  },
+  {
+   "say": "On disk, every table and index is stored as an array of fixed-size pages, usually eight kilobytes each.",
+   "cap": "On disk: an array of *fixed-size* *pages,* usually *8 kB.*"
+  },
+  {
+   "say": "In a table, all pages are equal, so a row can be stored in any page.",
+   "cap": "A row can live in *any* page.",
+   "cue": "any"
+  },
+  {
+   "say": "A row version stored in a page is called a tuple. Every update writes a new tuple.",
+   "cap": "A stored row version is a *tuple.*",
+   "cue": "tuple"
+  },
+  {
+   "say": "Every page has five parts. First, a twenty-four byte page header, with pointers to the free space.",
+   "cap": "*Page header:* 24 bytes, with free space pointers."
+  },
+  {
+   "say": "Then an array of line pointers, four bytes each, pointing to the tuples.",
+   "cap": "*Line pointers:* 4 bytes each, pointing to tuples."
+  },
+  {
+   "say": "Line pointers grow from the start of the free space, and new tuples are added from the end.",
+   "cap": "Pointers grow *down,* tuples grow *up* from the end.",
+   "cue": "end"
+  },
+  {
+   "say": "Last, the special space. Indexes use it. In ordinary tables, it is empty.",
+   "cap": "*Special space:* for indexes, empty in tables."
+  },
+  {
+   "say": "Each tuple starts with its own header, twenty-three bytes on most machines.",
+   "cap": "Tuple header: *23 bytes* on most machines."
+  },
+  {
+   "say": "It stores xmin, the inserting transaction, and xmax, the deleting one.",
+   "cap": "*xmin* = inserting, *xmax* = deleting transaction.",
+   "cue": "xmax"
+  },
+  {
+   "say": "Let's see it on a real server. SHOW block_size returns eight one nine two bytes.",
+   "cap": "*SHOW block_size* returns *8192.*"
+  },
+  {
+   "say": "ctid is a row's physical address: page, then item. Row one is at page zero, item one.",
+   "cap": "*ctid* = (page, item). Row 1 is at *(0,1).*",
+   "cue": "address"
+  },
+  {
+   "say": "I loaded one thousand small rows. pg_relation_size divided by eight one nine two gives six pages.",
+   "cap": "1,000 small rows fill *6 pages.*",
+   "cue": "six"
+  },
+  {
+   "say": "And row one thousand lives in page five, item seventy-five.",
+   "cap": "Row 1000 is at *(5,75).*"
+  },
+  {
+   "say": "pageinspect shows the line pointers. Tuple one starts at offset eight one five two, near the end of the page.",
+   "cap": "*pageinspect:* tuple 1 starts at offset *8152.*",
+   "cue": "offset"
+  },
+  {
+   "say": "The next tuples sit lower, filling the page backwards. Page zero holds one hundred eighty-five.",
+   "cap": "Page 0 holds *185* tuples, filled *backwards.*",
+   "cue": "hundred"
+  },
+  {
+   "say": "Now update row two. Its ctid moves from page zero, item two, to page five, item seventy-six.",
+   "cap": "After UPDATE, row 2 moves to *(5,76).*",
+   "cue": "moves"
+  },
+  {
+   "say": "Common mistake: using ctid as a row ID. It changes on UPDATE and VACUUM FULL. Use a primary key.",
+   "cap": "*Never* use ctid as a row ID. Use a *primary* *key.*"
+  },
+  {
+   "say": "A tuple can't span pages. Rows wider than about two kilobytes trigger TOAST, which compresses or moves big values out of line.",
+   "cap": "Rows over ~*2 kB* trigger *TOAST.*",
+   "cue": "TOAST"
+  },
+  {
+   "say": "DBA takeaway: tables grow in whole pages. Size divided by block_size gives the page count.",
+   "cap": "Size / block_size = *pages* in the table."
+  },
+  {
+   "say": "Recap: tables are arrays of eight kilobyte pages, holding line pointers and tuples.",
+   "cap": "Recap: *pages,* *line* *pointers,* *tuples.*"
+  },
+  {
+   "say": "And ctid is page plus item. It changes, so identify rows by primary key.",
+   "cap": "*ctid* changes. Use a *primary* *key.*",
+   "cue": "changes"
+  },
+  {
+   "say": "Next up: the PostgreSQL data types you should know. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *data* *types.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "A table is a stack of *pages.*",
+   "sub": "Episode 8 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 8 · FOUNDATIONS",
+   "title": "Tables, Rows, Pages and Tuples",
+   "sub": "How rows are really stored"
+  },
+  {
+   "type": "compare",
+   "from": 2,
+   "to": 3,
+   "heading": "Two views of a table",
+   "left": {
+    "title": "Logical",
+    "color": "blue",
+    "rows": [
+     "Rows and columns",
+     "What SQL shows you",
+     "Found by primary key"
+    ]
+   },
+   "right": {
+    "title": "Physical",
+    "color": "orange",
+    "rows": [
+     "Fixed-size pages",
+     "Usually 8 kB each",
+     "Tuples inside pages"
+    ]
+   }
+  },
+  {
+   "type": "three",
+   "from": 3,
+   "to": 6,
+   "heading": "A table on disk",
+   "camera": "orbit",
+   "objects": [
+    {
+     "id": "disk",
+     "kind": "disk",
+     "x": 0,
+     "y": -1.8,
+     "label": "orders",
+     "sub": "table file",
+     "color": "purple",
+     "at": 3
+    },
+    {
+     "id": "p0",
+     "kind": "page",
+     "x": -2.2,
+     "y": 0.4,
+     "label": "page 0",
+     "sub": "8 kB",
+     "color": "orange",
+     "at": 3
+    },
+    {
+     "id": "p1",
+     "kind": "page",
+     "x": 0,
+     "y": 0.4,
+     "label": "page 1",
+     "sub": "8 kB",
+     "color": "orange",
+     "at": 3
+    },
+    {
+     "id": "p2",
+     "kind": "page",
+     "x": 2.2,
+     "y": 0.4,
+     "label": "page 2",
+     "sub": "8 kB",
+     "color": "orange",
+     "at": 3
+    },
+    {
+     "id": "row",
+     "kind": "box",
+     "x": -2.6,
+     "y": -1.2,
+     "label": "new row",
+     "color": "green",
+     "at": 4,
+     "scale": 0.7
+    }
+   ],
+   "moves": [
+    {
+     "id": "row",
+     "x": 2.2,
+     "y": 0.9,
+     "at": 4
+    }
+   ],
+   "flows": [
+    {
+     "from": "disk",
+     "to": "p0",
+     "at": 3
+    },
+    {
+     "from": "disk",
+     "to": "p2",
+     "at": 3
+    }
+   ],
+   "pulses": [
+    {
+     "id": "p2",
+     "at": 5
+    },
+    {
+     "id": "p0",
+     "at": 5
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 6,
+   "to": 10,
+   "heading": "Inside one 8 kB page",
+   "nodes": [
+    {
+     "id": "hdr",
+     "label": "Page header",
+     "sub": "24 bytes",
+     "x": 320,
+     "y": 500,
+     "w": 380,
+     "h": 120,
+     "icon": "file",
+     "color": "blue",
+     "at": 6
+    },
+    {
+     "id": "lp",
+     "label": "Line pointers",
+     "sub": "4 bytes each",
+     "x": 320,
+     "y": 665,
+     "w": 380,
+     "h": 120,
+     "icon": "layers",
+     "color": "cyan",
+     "at": 7
+    },
+    {
+     "id": "free",
+     "label": "Free space",
+     "sub": "unallocated",
+     "x": 320,
+     "y": 840,
+     "w": 380,
+     "h": 140,
+     "icon": "sync",
+     "color": "green",
+     "at": 6
+    },
+    {
+     "id": "tup",
+     "label": "Tuples",
+     "sub": "the row data",
+     "x": 320,
+     "y": 1025,
+     "w": 380,
+     "h": 140,
+     "icon": "table",
+     "color": "orange",
+     "at": 7
+    },
+    {
+     "id": "sp",
+     "label": "Special space",
+     "sub": "empty in tables",
+     "x": 320,
+     "y": 1220,
+     "w": 380,
+     "h": 120,
+     "icon": "lock",
+     "color": "purple",
+     "at": 9
+    },
+    {
+     "id": "np",
+     "label": "New pointer",
+     "sub": "from the start",
+     "x": 780,
+     "y": 665,
+     "w": 340,
+     "h": 120,
+     "icon": "layers",
+     "color": "cyan",
+     "at": 8
+    },
+    {
+     "id": "nt",
+     "label": "New tuple",
+     "sub": "from the end",
+     "x": 780,
+     "y": 1025,
+     "w": 340,
+     "h": 140,
+     "icon": "table",
+     "color": "orange",
+     "at": 8
+    }
+   ],
+   "edges": [
+    {
+     "from": "np",
+     "to": "lp",
+     "at": 8,
+     "flow": true,
+     "color": "cyan"
+    },
+    {
+     "from": "nt",
+     "to": "tup",
+     "at": 8,
+     "flow": true,
+     "color": "orange"
+    }
+   ],
+   "focus": [
+    {
+     "at": 6,
+     "id": "hdr"
+    },
+    {
+     "at": 7,
+     "id": "lp"
+    },
+    {
+     "at": 8,
+     "id": "free"
+    },
+    {
+     "at": 9,
+     "id": "sp"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 10,
+   "to": 12,
+   "heading": "The tuple header",
+   "columns": 1,
+   "items": [
+    {
+     "at": 10,
+     "icon": "file",
+     "title": "Fixed header",
+     "text": "23 bytes on most machines, then the column data",
+     "color": "blue"
+    },
+    {
+     "at": 11,
+     "icon": "check",
+     "title": "xmin",
+     "text": "ID of the inserting transaction",
+     "color": "green"
+    },
+    {
+     "at": 11,
+     "icon": "alert",
+     "title": "xmax",
+     "text": "ID of the deleting transaction, or zero",
+     "color": "red"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 12,
+   "to": 14,
+   "heading": "Page size and ctid",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SHOW block_size;",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": " block_size",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "------------",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": " 8192",
+     "at": 12
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT ctid, id FROM orders",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  WHERE id <= 3;",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": " ctid  | id",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "-------+----",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": " (0,1) |  1",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": " (0,2) |  2",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": " (0,3) |  3",
+     "at": 13
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 14,
+   "to": 16,
+   "heading": "1,000 rows, 6 pages",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT pg_relation_size(",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  'orders') / 8192 AS pages;",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": " pages",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "-------",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "     6",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT ctid, id FROM orders",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  WHERE id = 1000;",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "  ctid  |  id",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "--------+------",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": " (5,75) | 1000",
+     "at": 15
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 16,
+   "to": 18,
+   "heading": "Look inside page 0",
+   "title": "psql: pageinspect extension",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT lp, lp_off, lp_len",
+     "at": 16
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  FROM heap_page_items(",
+     "at": 16
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  get_raw_page('orders', 0))",
+     "at": 16
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  WHERE lp <= 3;",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": " lp | lp_off | lp_len",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "----+--------+--------",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "  1 |   8152 |     35",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "  2 |   8112 |     35",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "  3 |   8072 |     35",
+     "at": 17
+    },
+    {
+     "kind": "comment",
+     "text": "-- count(*) for page 0: 185",
+     "at": 17
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 18,
+   "to": 19,
+   "heading": "UPDATE moves the row",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "UPDATE orders SET item = 'pen'",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  WHERE id = 2;",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "UPDATE 1",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT ctid, id FROM orders",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  WHERE id = 2;",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "  ctid  | id",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "--------+----",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " (5,76) |  2",
+     "at": 18
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 19,
+   "to": 20,
+   "kind": "myth",
+   "title": "ctid is a stable row ID?",
+   "text": "No. A row's ctid changes when it is updated or moved by VACUUM FULL. Use a primary key."
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "fact",
+   "title": "No tuple spans two pages",
+   "text": "When a row is wider than about 2 kB, TOAST compresses or moves large values out of line."
+  },
+  {
+   "type": "stat",
+   "from": 21,
+   "to": 22,
+   "value": "6",
+   "label": "pages for 1,000 small rows",
+   "text": "pg_relation_size / block_size",
+   "color": "orange"
+  },
+  {
+   "type": "checklist",
+   "from": 22,
+   "to": 24,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 22,
+     "title": "Tables = arrays of 8 kB pages"
+    },
+    {
+     "at": 22,
+     "title": "Header, line pointers, tuples"
+    },
+    {
+     "at": 22,
+     "title": "Tuples added from the end"
+    },
+    {
+     "at": 23,
+     "title": "ctid = (page, item)"
+    },
+    {
+     "at": 23,
+     "title": "ctid changes: use a PK"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 24,
+   "to": 25,
+   "next": "Ep 9 · PostgreSQL Data Types"
+  }
+ ]
+}
