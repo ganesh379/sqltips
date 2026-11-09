@@ -41,3 +41,4 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-07 | 13:00 | Instagram | Series Ep 005 (moved from 2026-11-06 20:00) | PostgreSQL Processes: Postmaster, Backend and Workers | reels/2026-11-06-2000 | 6aec6440a5300fd99cc7a3f6
 - 2026-11-08 | 13:00 | Instagram | Series Ep 006 (moved from 2026-11-07 13:00) | Cluster, Instance, Database and Schema | reels/2026-11-07-1300 | 6aed68c4c1e74b84e5cbf56c
 - 2026-11-09 | 13:00 | Instagram | Series Ep 007 | PostgreSQL Data Directory: What Lives Inside PGDATA? | reels/2026-11-09-1300 | 6af00a2151492b796e1be2d0
+- 2026-11-10 | 13:00 | Instagram | Series Ep 008 | Tables, Rows, Pages and Tuples | reels/2026-11-10-1300 | 6af15c33e44ddbb57c34a925

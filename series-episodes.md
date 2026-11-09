@@ -36,7 +36,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Introduce base, global, pg_wal, pg_tblspc and configuration files; caution against manual file edits.
   - Format: Directory tour · Level: Beginner
   - Hook: What is actually stored inside PGDATA?
-- [ ] Ep 008 | 2026-11-11 | Tables, Rows, Pages and Tuples
+- [x] Ep 008 | 2026-11-11 | Tables, Rows, Pages and Tuples (posted 2026-11-10 13:00, Buffer 6af15c33e44ddbb57c34a925)
   - Objective: Explain logical rows versus physical heap pages and tuple storage at a conceptual level.
   - Format: Storage visualization · Level: Beginner
   - Hook: A table is not stored as one giant file.
