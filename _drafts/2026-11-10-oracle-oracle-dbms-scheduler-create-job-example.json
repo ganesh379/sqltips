@@ -1,0 +1,833 @@
+{
+  "schemaVersion": 1,
+  "title": "Oracle DBMS_SCHEDULER.CREATE_JOB Example: Daily, Weekly, One-Time",
+  "slug": "oracle-dbms-scheduler-create-job-example",
+  "category": "plsql",
+  "description": "DBMS_SCHEDULER.CREATE_JOB examples for daily, weekly and one-time Oracle jobs, repeat_interval patterns, job history queries and fixes for jobs that never run.",
+  "focusKeyword": "oracle dbms_scheduler create_job example",
+  "tags": [
+    "oracle",
+    "plsql",
+    "dbms_scheduler",
+    "jobs",
+    "administration"
+  ],
+  "related": [
+    "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/",
+    "/posts/plsql/pragma-autonomous-transaction-in-oracle/",
+    "/posts/plsql/oracle-bulk-collect-limit-example/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle 19c PL/SQL Packages: DBMS_SCHEDULER",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_SCHEDULER.html"
+    },
+    {
+      "title": "Oracle 19c Reference: ALL_SCHEDULER_JOBS",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/ALL_SCHEDULER_JOBS.html"
+    },
+    {
+      "title": "Oracle 19c Reference: ALL_SCHEDULER_JOB_RUN_DETAILS",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/ALL_SCHEDULER_JOB_RUN_DETAILS.html"
+    },
+    {
+      "title": "Oracle 19c Reference: JOB_QUEUE_PROCESSES",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/JOB_QUEUE_PROCESSES.html"
+    },
+    {
+      "title": "Oracle Database Administrator's Guide: Support for DBMS_JOB",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/21/admin/support-for-DBMS_JOB.html"
+    }
+  ],
+  "reviewNotes": "All examples written from the Oracle 19c DBMS_SCHEDULER, ALL_SCHEDULER_JOBS, ALL_SCHEDULER_JOB_RUN_DETAILS and JOB_QUEUE_PROCESSES docs; none were run, so every block needs a test run (19c or 23ai). Please verify: (1) the EVALUATE_CALENDAR_STRING output format with TZR (region may print as Asia/Kolkata rather than upper case); (2) the illustrative USER_SCHEDULER_JOBS and RUN_DETAILS rows (dates, RUN_DURATION display, ERROR# 0 on success); (3) that omitting BYMINUTE/BYSECOND takes those values from start_date for FREQ=DAILY (docs show this for FREQ=YEARLY); (4) that a malformed PLSQL_BLOCK job_action is only reported at run time, not by CREATE_JOB; (5) the statement that role privileges are not available to the job, worded around definer-rights procedures. Related links point to published posts only; the ORA-00942 and ORA-00054 drafts would be better links once published.",
+  "generatedAt": "2026-11-10T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To schedule a job in Oracle, call <code class=\"inline-code\">DBMS_SCHEDULER.CREATE_JOB</code> with a job name, a job type, the code to run and a <code class=\"inline-code\">repeat_interval</code> such as <code class=\"inline-code\">FREQ=DAILY;BYHOUR=1</code>. Set <code class=\"inline-code\">enabled => TRUE</code>, because jobs are created disabled by default and a disabled job never runs. Forgetting it is a very common reason a new job \"does nothing\"."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This tutorial walks through complete DBMS_SCHEDULER.CREATE_JOB examples on a small orders table: a daily PL/SQL block, a weekly stored procedure with an argument, a one-time job, and the calendar strings people search for most (every 15 minutes, weekdays only, last day of the month). You will also see how to test a schedule before you trust it, how to read the job history, and how to fix the mistakes that make jobs fail quietly."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How DBMS_SCHEDULER works",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle Scheduler is built into the database. You create a <b>job</b>, which pairs <i>what</i> to run (the job action) with <i>when</i> to run it (the schedule). A background coordinator process wakes up when a job is due and hands it to a job worker process, so the job runs inside the database even when nobody is logged in."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The number of job worker processes is limited by the <code class=\"inline-code\">JOB_QUEUE_PROCESSES</code> initialization parameter. If it is set to 0, Scheduler jobs and old <code class=\"inline-code\">DBMS_JOB</code> jobs do not run at all. Oracle recommends DBMS_SCHEDULER over DBMS_JOB, which is kept only for backward compatibility."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The simplest form of <code class=\"inline-code\">CREATE_JOB</code> takes everything inline. This is the signature from the Oracle 19c documentation:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DBMS_SCHEDULER.CREATE_JOB (\n   job_name             IN VARCHAR2,\n   job_type             IN VARCHAR2,\n   job_action           IN VARCHAR2,\n   number_of_arguments  IN PLS_INTEGER              DEFAULT 0,\n   start_date           IN TIMESTAMP WITH TIME ZONE DEFAULT NULL,\n   repeat_interval      IN VARCHAR2                 DEFAULT NULL,\n   end_date             IN TIMESTAMP WITH TIME ZONE DEFAULT NULL,\n   job_class            IN VARCHAR2                 DEFAULT 'DEFAULT_JOB_CLASS',\n   enabled              IN BOOLEAN                  DEFAULT FALSE,\n   auto_drop            IN BOOLEAN                  DEFAULT TRUE,\n   comments             IN VARCHAR2                 DEFAULT NULL,\n   credential_name      IN VARCHAR2                 DEFAULT NULL,\n   destination_name     IN VARCHAR2                 DEFAULT NULL);",
+        "caption": "CREATE_JOB signature (inline program and schedule)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "These are the parameters you will use almost every time:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Parameter",
+            "What it means",
+            "Default"
+          ],
+          [
+            "job_name",
+            "Name of the job in your schema",
+            "Required"
+          ],
+          [
+            "job_type",
+            "PLSQL_BLOCK, STORED_PROCEDURE, EXECUTABLE, CHAIN and others",
+            "Required"
+          ],
+          [
+            "job_action",
+            "The PL/SQL block, procedure name or program path to run",
+            "Required"
+          ],
+          [
+            "start_date",
+            "First run time; also the reference date and time zone for the calendar",
+            "NULL"
+          ],
+          [
+            "repeat_interval",
+            "Calendar string such as FREQ=DAILY. NULL means run once",
+            "NULL"
+          ],
+          [
+            "enabled",
+            "TRUE schedules the job immediately",
+            "FALSE"
+          ],
+          [
+            "auto_drop",
+            "TRUE drops the job once it has completed",
+            "TRUE"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If both <code class=\"inline-code\">start_date</code> and <code class=\"inline-code\">repeat_interval</code> are NULL, the job runs as soon as it is enabled. If you give a <code class=\"inline-code\">start_date</code> but no <code class=\"inline-code\">repeat_interval</code>, it runs once at that time."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Create two small tables and two procedures. The jobs in the following sections run these procedures, so you can follow along in any test schema that has the CREATE JOB privilege."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE orders (\n  order_id      NUMBER PRIMARY KEY,\n  customer_name VARCHAR2(50),\n  amount        NUMBER(10,2),\n  status        VARCHAR2(20),\n  order_date    DATE\n);\n\nCREATE TABLE order_daily_summary (\n  summary_date  DATE PRIMARY KEY,\n  order_count   NUMBER,\n  total_amount  NUMBER(12,2),\n  created_at    TIMESTAMP DEFAULT SYSTIMESTAMP\n);\n\nINSERT INTO orders VALUES (1, 'Asha',  1200, 'PAID',      TRUNC(SYSDATE) - 1 + 10/24);\nINSERT INTO orders VALUES (2, 'Ravi',   850, 'PAID',      TRUNC(SYSDATE) - 1 + 15/24);\nINSERT INTO orders VALUES (3, 'Meera',  400, 'CANCELLED', TRUNC(SYSDATE) - 120);\nINSERT INTO orders VALUES (4, 'John',   990, 'CANCELLED', TRUNC(SYSDATE) - 5);\nCOMMIT;",
+        "caption": "Sample tables and data"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE PROCEDURE build_daily_summary AS\n  l_day DATE := TRUNC(SYSDATE) - 1;\nBEGIN\n  DELETE FROM order_daily_summary WHERE summary_date = l_day;\n\n  INSERT INTO order_daily_summary (summary_date, order_count, total_amount)\n  SELECT l_day, COUNT(*), NVL(SUM(amount), 0)\n    FROM orders\n   WHERE order_date >= l_day\n     AND order_date <  l_day + 1;\n\n  COMMIT;\nEND;\n/\n\nCREATE OR REPLACE PROCEDURE purge_cancelled_orders (p_days IN NUMBER) AS\nBEGIN\n  DELETE FROM orders\n   WHERE status = 'CANCELLED'\n     AND order_date < SYSDATE - p_days;\n  COMMIT;\nEND;\n/",
+        "caption": "Procedures the jobs will call"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The summary procedure deletes and re-inserts yesterday's row, so running it twice gives the same result. Make scheduled code safe to rerun like this, because you will run it by hand while testing and the Scheduler may retry it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 1: a daily job with a PL/SQL block",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This job runs <code class=\"inline-code\">build_daily_summary</code> every day at 1:00 AM India time."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  DBMS_SCHEDULER.CREATE_JOB (\n    job_name        => 'DAILY_ORDER_SUMMARY',\n    job_type        => 'PLSQL_BLOCK',\n    job_action      => 'BEGIN build_daily_summary; END;',\n    start_date      => TO_TIMESTAMP_TZ('2026-11-11 01:00:00 Asia/Kolkata',\n                                       'YYYY-MM-DD HH24:MI:SS TZR'),\n    repeat_interval => 'FREQ=DAILY;BYHOUR=1;BYMINUTE=0;BYSECOND=0',\n    enabled         => TRUE,\n    comments        => 'Builds yesterday''s order summary');\nEND;\n/",
+        "caption": "Create a daily job"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "PL/SQL procedure successfully completed.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A few things are happening here. The <code class=\"inline-code\">job_action</code> for a PLSQL_BLOCK job is a complete anonymous block, and it must end with a semicolon. The calendar string sets the hour, minute and second explicitly. Without <code class=\"inline-code\">BYMINUTE</code> and <code class=\"inline-code\">BYSECOND</code>, those values are taken from the start date."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The <code class=\"inline-code\">start_date</code> uses a region name (<code class=\"inline-code\">Asia/Kolkata</code>) rather than an offset like <code class=\"inline-code\">+05:30</code>. The calendar syntax has no time zone of its own; the Scheduler takes it from the start date. With a region name, jobs in regions that observe daylight saving time follow the clock changes. With a fixed offset they do not, and the job runs an hour off for half the year."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "Quotes inside job_action",
+        "text": "The job action is a string, so any single quote inside it must be doubled, as in <code class=\"inline-code\">'BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, ''ORDERS''); END;'</code>. For longer blocks, the alternative quoting syntax <code class=\"inline-code\">q'[ ... ]'</code> is easier to read."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 2: run a stored procedure with an argument",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "When the job action is a procedure, use <code class=\"inline-code\">job_type => STORED_PROCEDURE</code> and pass only the procedure name. Arguments are not written into the action. You declare how many there are with <code class=\"inline-code\">number_of_arguments</code> and then set each one with <code class=\"inline-code\">SET_JOB_ARGUMENT_VALUE</code>."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  DBMS_SCHEDULER.CREATE_JOB (\n    job_name            => 'PURGE_CANCELLED_JOB',\n    job_type            => 'STORED_PROCEDURE',\n    job_action          => 'PURGE_CANCELLED_ORDERS',\n    number_of_arguments => 1,\n    start_date          => SYSTIMESTAMP,\n    repeat_interval     => 'FREQ=WEEKLY;BYDAY=SUN;BYHOUR=2;BYMINUTE=0;BYSECOND=0',\n    enabled             => FALSE);\n\n  DBMS_SCHEDULER.SET_JOB_ARGUMENT_VALUE (\n    job_name          => 'PURGE_CANCELLED_JOB',\n    argument_position => 1,\n    argument_value    => '90');\n\n  DBMS_SCHEDULER.ENABLE('PURGE_CANCELLED_JOB');\nEND;\n/",
+        "caption": "Weekly job that calls a procedure with one argument"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The job is created with <code class=\"inline-code\">enabled => FALSE</code> on purpose. Oracle's documentation says to define all arguments before you enable a job, so the order is: create disabled, set arguments, then enable. The value is passed as a string (<code class=\"inline-code\">'90'</code>); for non-VARCHAR2 values you can use <code class=\"inline-code\">SET_JOB_ANYDATA_VALUE</code>."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This job uses <code class=\"inline-code\">SYSTIMESTAMP</code> as the start date, which is convenient but takes the time zone of the database server. That is fine for a weekly cleanup. For jobs that must fire at a precise local time, use an explicit region name as in Example 1."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 3: a one-time job",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Leave <code class=\"inline-code\">repeat_interval</code> out and the job runs once at its start date. Because <code class=\"inline-code\">auto_drop</code> defaults to TRUE, the job is dropped after it completes, which is what you usually want for a one-off task."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  DBMS_SCHEDULER.CREATE_JOB (\n    job_name   => 'ONE_TIME_ORDERS_STATS',\n    job_type   => 'PLSQL_BLOCK',\n    job_action => 'BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, ''ORDERS''); END;',\n    start_date => SYSTIMESTAMP + INTERVAL '10' MINUTE,\n    enabled    => TRUE);\nEND;\n/",
+        "caption": "Run once, ten minutes from now"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Use this pattern to push slow work into the background. For example, a screen can submit a long report job and return immediately instead of waiting. If you want to keep the job definition after it runs, for example to look at its settings later, set <code class=\"inline-code\">auto_drop => FALSE</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "repeat_interval examples you can copy",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The calendar string always starts with <code class=\"inline-code\">FREQ</code>. Valid frequencies are YEARLY, MONTHLY, WEEKLY, DAILY, HOURLY, MINUTELY and SECONDLY. <code class=\"inline-code\">INTERVAL</code> is a positive whole number from 1 to 99 (default 1), and the BY clauses narrow down the exact times. The strings are not case-sensitive."
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Requirement",
+            "repeat_interval"
+          ],
+          [
+            "Every 15 minutes",
+            "FREQ=MINUTELY;INTERVAL=15"
+          ],
+          [
+            "Every 2 hours",
+            "FREQ=HOURLY;INTERVAL=2"
+          ],
+          [
+            "Every day at 11:30 PM",
+            "FREQ=DAILY;BYHOUR=23;BYMINUTE=30;BYSECOND=0"
+          ],
+          [
+            "Weekdays at 9:30 AM",
+            "FREQ=WEEKLY;BYDAY=MON,TUE,WED,THU,FRI;BYHOUR=9;BYMINUTE=30;BYSECOND=0"
+          ],
+          [
+            "Twice a day, 8 AM and 8 PM",
+            "FREQ=DAILY;BYHOUR=8,20;BYMINUTE=0;BYSECOND=0"
+          ],
+          [
+            "Last day of every month",
+            "FREQ=MONTHLY;BYMONTHDAY=-1;BYHOUR=22;BYMINUTE=0;BYSECOND=0"
+          ],
+          [
+            "Last Friday of every month",
+            "FREQ=MONTHLY;BYDAY=-1FRI;BYHOUR=18;BYMINUTE=0;BYSECOND=0"
+          ],
+          [
+            "Last working day of the month",
+            "FREQ=MONTHLY;BYDAY=MON,TUE,WED,THU,FRI;BYSETPOS=-1"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "BYMONTHDAY=31 is not \"month end\"",
+        "text": "<code class=\"inline-code\">BYMONTHDAY=31</code> only matches months that have 31 days, so the job skips February, April, June, September and November. Use <code class=\"inline-code\">BYMONTHDAY=-1</code> for the last day of every month."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Test a calendar string before you use it",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You do not have to wait for a job to fire to find out whether its schedule is right. <code class=\"inline-code\">DBMS_SCHEDULER.EVALUATE_CALENDAR_STRING</code> returns the next run date after a given time. Call it in a loop, feeding each result back in, to list the next few runs."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "SET SERVEROUTPUT ON\nDECLARE\n  l_start TIMESTAMP WITH TIME ZONE :=\n    TO_TIMESTAMP_TZ('2026-11-10 10:00:00 Asia/Kolkata',\n                    'YYYY-MM-DD HH24:MI:SS TZR');\n  l_after TIMESTAMP WITH TIME ZONE := l_start;\n  l_next  TIMESTAMP WITH TIME ZONE;\nBEGIN\n  FOR i IN 1 .. 5 LOOP\n    DBMS_SCHEDULER.EVALUATE_CALENDAR_STRING(\n      calendar_string   => 'FREQ=WEEKLY;BYDAY=MON,TUE,WED,THU,FRI;BYHOUR=9;BYMINUTE=30;BYSECOND=0',\n      start_date        => l_start,\n      return_date_after => l_after,\n      next_run_date     => l_next);\n    DBMS_OUTPUT.PUT_LINE(TO_CHAR(l_next, 'DY DD-MON-YYYY HH24:MI TZR'));\n    l_after := l_next;\n  END LOOP;\nEND;\n/",
+        "caption": "List the next five run times of a weekday schedule"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "WED 11-NOV-2026 09:30 ASIA/KOLKATA\nTHU 12-NOV-2026 09:30 ASIA/KOLKATA\nFRI 13-NOV-2026 09:30 ASIA/KOLKATA\nMON 16-NOV-2026 09:30 ASIA/KOLKATA\nTUE 17-NOV-2026 09:30 ASIA/KOLKATA",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The start time is Tuesday 10:00, which is already past 9:30, so the first run is Wednesday. Saturday and Sunday are skipped. If the list does not match what the business asked for, fix the string now instead of after a missed run."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Check job status and run history",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Is the job scheduled?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">USER_SCHEDULER_JOBS</code> shows the jobs you own, whether they are enabled, their current state and when they will run next. Use <code class=\"inline-code\">DBA_SCHEDULER_JOBS</code> to see every job in the database."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT job_name,\n       enabled,\n       state,\n       TO_CHAR(next_run_date, 'DD-MON-YYYY HH24:MI') AS next_run,\n       run_count,\n       failure_count\n  FROM user_scheduler_jobs\n ORDER BY job_name;",
+        "caption": "Your jobs and their next run"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "JOB_NAME",
+            "ENABLED",
+            "STATE",
+            "NEXT_RUN",
+            "RUN_COUNT",
+            "FAILURE_COUNT"
+          ],
+          [
+            "DAILY_ORDER_SUMMARY",
+            "TRUE",
+            "SCHEDULED",
+            "11-NOV-2026 01:00",
+            "0",
+            "0"
+          ],
+          [
+            "ONE_TIME_ORDERS_STATS",
+            "TRUE",
+            "SCHEDULED",
+            "10-NOV-2026 10:25",
+            "0",
+            "0"
+          ],
+          [
+            "PURGE_CANCELLED_JOB",
+            "TRUE",
+            "SCHEDULED",
+            "15-NOV-2026 02:00",
+            "0",
+            "0"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output). <code class=\"inline-code\">SCHEDULED</code> means the job is waiting for its next run. Other states you will see include <code class=\"inline-code\">RUNNING</code>, <code class=\"inline-code\">DISABLED</code>, <code class=\"inline-code\">COMPLETED</code>, <code class=\"inline-code\">FAILED</code> and <code class=\"inline-code\">BROKEN</code>. A job is marked broken after it has failed more times than <code class=\"inline-code\">MAX_FAILURES</code> allows. If a job you just created shows <code class=\"inline-code\">DISABLED</code>, you forgot <code class=\"inline-code\">enabled => TRUE</code> or the <code class=\"inline-code\">ENABLE</code> call."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Did the last run succeed?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Each run is logged in <code class=\"inline-code\">USER_SCHEDULER_JOB_RUN_DETAILS</code> (or <code class=\"inline-code\">DBA_SCHEDULER_JOB_RUN_DETAILS</code>). The <code class=\"inline-code\">ERRORS</code> column holds the error text when a run fails, which is the first place to look when a job \"did not work\"."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT job_name,\n       status,\n       TO_CHAR(actual_start_date, 'DD-MON HH24:MI') AS started,\n       run_duration,\n       error#,\n       SUBSTR(errors, 1, 60) AS error_text\n  FROM user_scheduler_job_run_details\n WHERE log_date > SYSTIMESTAMP - INTERVAL '7' DAY\n ORDER BY log_date DESC;",
+        "caption": "Run history for the last seven days"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "JOB_NAME",
+            "STATUS",
+            "STARTED",
+            "RUN_DURATION",
+            "ERROR#",
+            "ERROR_TEXT"
+          ],
+          [
+            "DAILY_ORDER_SUMMARY",
+            "SUCCEEDED",
+            "12-NOV 01:00",
+            "+000 00:00:01",
+            "0",
+            ""
+          ],
+          [
+            "DAILY_ORDER_SUMMARY",
+            "FAILED",
+            "11-NOV 01:00",
+            "+000 00:00:00",
+            "942",
+            "ORA-00942: table or view does not exist"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output, illustrative rows). Here the first run failed because a table the procedure used was missing or not granted, and the next run succeeded after the fix. <code class=\"inline-code\">ERROR#</code> gives the ORA number without the prefix. The log is kept for 30 days by default (the Scheduler <code class=\"inline-code\">log_history</code> attribute), so older runs disappear on their own."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Run, change, stop and drop a job",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "These calls cover day-to-day job maintenance:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "-- Run now, in your own session, to test it\nEXEC DBMS_SCHEDULER.RUN_JOB('DAILY_ORDER_SUMMARY');\n\n-- Run now in the background, like a normal scheduled run\nEXEC DBMS_SCHEDULER.RUN_JOB('DAILY_ORDER_SUMMARY', use_current_session => FALSE);\n\n-- Change the schedule to 2:30 AM\nBEGIN\n  DBMS_SCHEDULER.SET_ATTRIBUTE(\n    name      => 'DAILY_ORDER_SUMMARY',\n    attribute => 'repeat_interval',\n    value     => 'FREQ=DAILY;BYHOUR=2;BYMINUTE=30;BYSECOND=0');\nEND;\n/\n\n-- Pause and resume\nEXEC DBMS_SCHEDULER.DISABLE('DAILY_ORDER_SUMMARY');\nEXEC DBMS_SCHEDULER.ENABLE('DAILY_ORDER_SUMMARY');\n\n-- Stop a running job, then drop it\nEXEC DBMS_SCHEDULER.STOP_JOB('DAILY_ORDER_SUMMARY');\nEXEC DBMS_SCHEDULER.DROP_JOB('DAILY_ORDER_SUMMARY');",
+        "caption": "Common job maintenance calls"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">RUN_JOB</code> defaults to <code class=\"inline-code\">use_current_session => TRUE</code>. The job runs in your session, the call waits until it finishes, and any error comes straight back to you. That is ideal for testing, but it does not update <code class=\"inline-code\">run_count</code>, <code class=\"inline-code\">state</code> or <code class=\"inline-code\">last_start_date</code> in <code class=\"inline-code\">USER_SCHEDULER_JOBS</code>. With <code class=\"inline-code\">FALSE</code>, the job runs in a background worker and you check the run details view for errors."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">SET_ATTRIBUTE</code> on an enabled job disables it, applies the change and enables it again, so you do not need to disable it yourself. <code class=\"inline-code\">DROP_JOB</code> fails if the job is running; pass <code class=\"inline-code\">force => TRUE</code> to stop it first or <code class=\"inline-code\">defer => TRUE</code> to let the current run finish, but not both."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "STOP_JOB with force",
+        "text": "<code class=\"inline-code\">STOP_JOB</code> first tries a graceful interrupt. <code class=\"inline-code\">force => TRUE</code> kills the job worker immediately and needs the MANAGE SCHEDULER system privilege. Oracle recommends it only after a normal STOP_JOB has failed."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Forgetting enabled => TRUE.</b> The default is FALSE. The job exists but the Scheduler ignores it. Check <code class=\"inline-code\">ENABLED</code> in <code class=\"inline-code\">USER_SCHEDULER_JOBS</code>.",
+            "items": []
+          },
+          {
+            "content": "<b>Missing privilege.</b> You need the <code class=\"inline-code\">CREATE JOB</code> system privilege to create a job in your own schema, and <code class=\"inline-code\">CREATE ANY JOB</code> for another schema. An EXECUTABLE job also needs <code class=\"inline-code\">CREATE EXTERNAL JOB</code>.",
+            "items": []
+          },
+          {
+            "content": "<b>Relying on roles inside the job.</b> The job runs as its owner, and the procedures it calls follow normal definer's-rights rules: privileges that come only through a role are not available to stored code. Grant table access directly to the job owner. This is why a procedure that works in SQL Developer can fail as a job with ORA-00942.",
+            "items": []
+          },
+          {
+            "content": "<b>Broken quotes or a missing semicolon in job_action.</b> <code class=\"inline-code\">'BEGIN build_daily_summary END;'</code> fails at run time, not at create time. Test the block on its own first.",
+            "items": []
+          },
+          {
+            "content": "<b>Putting arguments in a STORED_PROCEDURE action.</b> <code class=\"inline-code\">job_action => 'PURGE_CANCELLED_ORDERS(90)'</code> is wrong. Use <code class=\"inline-code\">number_of_arguments</code> and <code class=\"inline-code\">SET_JOB_ARGUMENT_VALUE</code>.",
+            "items": []
+          },
+          {
+            "content": "<b>Using an offset instead of a region time zone.</b> A start date with <code class=\"inline-code\">-05:00</code> ignores daylight saving changes. Use a region name such as <code class=\"inline-code\">America/New_York</code>.",
+            "items": []
+          },
+          {
+            "content": "<b>Online DDL in the job action.</b> The job action runs inside an autonomous transaction, and Oracle's documentation notes that online DDL operations cannot be used there.",
+            "items": []
+          },
+          {
+            "content": "<b>JOB_QUEUE_PROCESSES set to 0.</b> If no job runs at all, ask your DBA to check this parameter. In a CDB, 0 in the root stops jobs in every PDB.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Best practices",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Name jobs after what they do (DAILY_ORDER_SUMMARY, not JOB1) and fill in comments. Six months later someone will thank you.",
+            "items": []
+          },
+          {
+            "content": "Keep the logic in a procedure and keep <code class=\"inline-code\">job_action</code> to a one-line call. The procedure can be compiled, tested and versioned like any other code.",
+            "items": []
+          },
+          {
+            "content": "Make the job code safe to rerun, as the summary procedure in this tutorial is.",
+            "items": []
+          },
+          {
+            "content": "Test the schedule with EVALUATE_CALENDAR_STRING and the code with RUN_JOB before the first real run.",
+            "items": []
+          },
+          {
+            "content": "Check USER_SCHEDULER_JOB_RUN_DETAILS for FAILED rows regularly, or build an alert on it. A job that fails every night without anyone noticing is worse than no job.",
+            "items": []
+          },
+          {
+            "content": "Avoid very frequent jobs (every few seconds) for work that could be triggered by an event or done in a single batch. Each run has startup overhead.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I run a DBMS_SCHEDULER job every 5 minutes?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Use <code class=\"inline-code\">repeat_interval => 'FREQ=MINUTELY;INTERVAL=5'</code>. The runs are spaced from the start date, so set <code class=\"inline-code\">start_date</code> to a round time if you want runs at :00, :05, :10 and so on."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between DBMS_JOB and DBMS_SCHEDULER?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "DBMS_JOB is the older package, kept for backward compatibility. DBMS_SCHEDULER adds calendar strings, run history views, job classes, chains, external jobs and much more. Oracle recommends DBMS_SCHEDULER for all new jobs."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Why is my DBMS_SCHEDULER job not running?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Check, in order: <code class=\"inline-code\">ENABLED</code> and <code class=\"inline-code\">STATE</code> in <code class=\"inline-code\">USER_SCHEDULER_JOBS</code>, <code class=\"inline-code\">NEXT_RUN_DATE</code> (is it in the time zone you expect?), FAILED rows in <code class=\"inline-code\">USER_SCHEDULER_JOB_RUN_DETAILS</code>, and finally the <code class=\"inline-code\">JOB_QUEUE_PROCESSES</code> parameter."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I create a one-time job in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Give a <code class=\"inline-code\">start_date</code> and leave <code class=\"inline-code\">repeat_interval</code> NULL. With the default <code class=\"inline-code\">auto_drop => TRUE</code>, the job drops itself after it completes."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What privileges are needed for DBMS_SCHEDULER.CREATE_JOB?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "CREATE JOB for your own schema, CREATE ANY JOB for other schemas, and CREATE EXTERNAL JOB for EXECUTABLE jobs. Force-stopping jobs needs MANAGE SCHEDULER."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "Create jobs with DBMS_SCHEDULER.CREATE_JOB and set enabled => TRUE (the default is FALSE).",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use PLSQL_BLOCK for short blocks and STORED_PROCEDURE plus SET_JOB_ARGUMENT_VALUE for procedures with arguments.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Leave repeat_interval NULL for a one-time job; auto_drop removes it afterwards.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Give start_date a region time zone and test the calendar string with EVALUATE_CALENDAR_STRING.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Check USER_SCHEDULER_JOBS for state and USER_SCHEDULER_JOB_RUN_DETAILS for errors.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Grant table privileges directly to the job owner, not through a role.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your DBMS_SCHEDULER job was created without errors, but it never runs. Check this one parameter first.\n\nDBMS_SCHEDULER.CREATE_JOB creates jobs DISABLED by default. Without enabled => TRUE, the job just sits there.\n\nA few more things worth knowing before your next scheduled job:\n\n→ Run a procedure with job_type STORED_PROCEDURE, then pass arguments with SET_JOB_ARGUMENT_VALUE, not inside job_action.\n→ Leave repeat_interval empty for a one-time job. auto_drop removes it after it completes.\n→ BYMONTHDAY=31 skips months with 30 days. Use BYMONTHDAY=-1 for the last day of every month.\n→ Test a schedule before trusting it with DBMS_SCHEDULER.EVALUATE_CALENDAR_STRING.\n→ When a job fails, the real error is in the ERRORS column of USER_SCHEDULER_JOB_RUN_DETAILS.\n\nWhat is the most confusing repeat_interval you have had to write?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #PLSQL #OracleSQL #OracleDBA",
+    "slides": [
+      {
+        "title": "DBMS_SCHEDULER.CREATE_JOB in Oracle",
+        "body": "Daily, weekly and one-time jobs, with the mistakes that stop them running"
+      },
+      {
+        "title": "Jobs are created disabled",
+        "points": [
+          "enabled defaults to FALSE",
+          "A disabled job exists but the Scheduler ignores it",
+          "Set enabled => TRUE or call DBMS_SCHEDULER.ENABLE"
+        ]
+      },
+      {
+        "title": "A daily job at 1 AM",
+        "code": "BEGIN\n  DBMS_SCHEDULER.CREATE_JOB(\n    job_name   => 'DAILY_SUMMARY',\n    job_type   => 'PLSQL_BLOCK',\n    job_action => 'BEGIN build_sum; END;',\n    repeat_interval =>\n      'FREQ=DAILY;BYHOUR=1;BYMINUTE=0',\n    enabled    => TRUE);\nEND;",
+        "lang": "plsql"
+      },
+      {
+        "title": "repeat_interval you can copy",
+        "points": [
+          "Every 15 min: FREQ=MINUTELY;INTERVAL=15",
+          "Weekdays: FREQ=WEEKLY;BYDAY=MON,TUE,WED,THU,FRI",
+          "Month end: FREQ=MONTHLY;BYMONTHDAY=-1",
+          "BYMONTHDAY=31 skips 30-day months"
+        ]
+      },
+      {
+        "title": "Procedure with an argument",
+        "code": "-- create with enabled => FALSE first\nBEGIN\n  DBMS_SCHEDULER.SET_JOB_ARGUMENT_VALUE(\n    job_name          => 'PURGE_JOB',\n    argument_position => 1,\n    argument_value    => '90');\n  DBMS_SCHEDULER.ENABLE('PURGE_JOB');\nEND;",
+        "lang": "plsql"
+      },
+      {
+        "title": "Why did my job fail?",
+        "code": "SELECT job_name, status,\n       error#, errors\n  FROM user_scheduler_job_run_details\n ORDER BY log_date DESC;",
+        "lang": "sql"
+      },
+      {
+        "title": "Test before the first run",
+        "points": [
+          "RUN_JOB runs it now in your session and shows errors",
+          "EVALUATE_CALENDAR_STRING lists the next run times",
+          "Grant tables directly to the job owner, not via a role"
+        ]
+      }
+    ]
+  }
+}

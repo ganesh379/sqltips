@@ -47,3 +47,4 @@
 - 2026-11-08 [Oracle] how to find long running queries in oracle -> _drafts/2026-11-08-oracle-how-to-find-long-running-queries-in-oracle.json
 - 2026-11-08 [PostgreSQL] postgresql generated column -> _drafts/2026-11-08-postgresql-postgresql-generated-columns-virtual-vs-stored.json
 - 2026-11-09 [Oracle] ora-00942 table or view does not exist -> _drafts/2026-11-09-oracle-ora-00942-table-or-view-does-not-exist.json
+- 2026-11-10 [Oracle] oracle dbms_scheduler create_job example -> _drafts/2026-11-10-oracle-oracle-dbms-scheduler-create-job-example.json
