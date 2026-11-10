@@ -1,0 +1,1758 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 15: WAL Explained, wal_level and Segments",
+ "slug": "postgresql-dba-part-15-wal-write-ahead-log",
+ "category": "postgresql",
+ "description": "What PostgreSQL WAL is, where pg_wal files live, how to read LSNs, measure WAL and set wal_level, with real outputs from PostgreSQL 18 on Ubuntu.",
+ "focusKeyword": "postgresql wal",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "wal",
+  "wal-level",
+  "crash-recovery"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-14-transaction-id-wraparound-freezing/",
+  "/posts/postgresql/postgresql-dba-part-3-data-directory-pgdata/",
+  "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 28.3 Write-Ahead Logging (WAL)",
+   "url": "https://www.postgresql.org/docs/current/wal-intro.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 28.6 WAL Internals",
+   "url": "https://www.postgresql.org/docs/current/wal-internals.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 28.5 WAL Configuration",
+   "url": "https://www.postgresql.org/docs/current/wal-configuration.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.5 Write Ahead Log (wal_level, fsync, synchronous_commit, full_page_writes, wal_compression, wal_buffers, max_wal_size, min_wal_size, archive_mode)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-wal.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.6 Replication (wal_keep_size)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-replication.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 28.4 Asynchronous Commit",
+   "url": "https://www.postgresql.org/docs/current/wal-async-commit.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 9.28 System Administration Functions (WAL and backup control functions)",
+   "url": "https://www.postgresql.org/docs/current/functions-admin.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_waldump",
+   "url": "https://www.postgresql.org/docs/current/pgwaldump.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: initdb (--wal-segsize, --waldir)",
+   "url": "https://www.postgresql.org/docs/current/app-initdb.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 27.2 Cumulative Statistics System (pg_stat_wal, pg_stat_io, pg_stat_archiver)",
+   "url": "https://www.postgresql.org/docs/current/monitoring-stats.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 66.1 Database File Layout (pg_wal)",
+   "url": "https://www.postgresql.org/docs/current/storage-file-layout.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes (pg_stat_wal columns moved to pg_stat_io)",
+   "url": "https://www.postgresql.org/docs/current/release-18.html"
+  }
+ ],
+ "reviewNotes": "Series part 15. Part 14 is live and linked. Tested on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) from the PGDG repository on Ubuntu 24.04.5 LTS; followed the PostgreSQL 18 documentation (docs/current pages in sources). All outputs are real; LSNs, file numbers, PIDs and timestamps will differ for readers. SANDBOX CAVEATS: (1) postgresql-18 depends on liburing2 from archive.ubuntu.com, which is blocked here. I installed an empty liburing2 package plus a locally compiled stub liburing.so.2 whose functions return ENOSYS; this only affects io_method=io_uring, not the default io_method=worker. (2) The sandbox has no systemd, so I ran 'pg_ctlcluster 18 main reload/restart/start/stop' where the article shows 'systemctl ... postgresql@18-main'; outputs are from those runs. (3) A leftover PostgreSQL 16 cluster existed in the image (moved to port 5416, down); I removed its line from the pg_lsclusters output in Step 18. (4) Step 7: the table_size/index_size values were produced by two queries and are combined in one output (caption says so); pg_waldump -z output had zero rows replaced by '...' and column spacing narrowed (caption says so). (5) Run order: I first ran Steps 12, 14 and 16-17 before Step 8, then re-ran them after Step 8 so the published outputs follow the article order (the copies use WHERE order_id <= 101000, so they hold the same 101,000 rows either way). Sizes are single runs. (7) Step 8's pg_stat_io row counts are since the last crash/restart (stats reset by the immediate stop), not since pg_stat_reset_shared('wal'). (8) The 'Deleting files from pg_wal' PANIC message was reproduced on a throwaway cluster (waltest) after an immediate stop, then dropped. EDITOR CHECKS: (a) Step 16 crashes the lab cluster with pg_ctlcluster stop -m immediate (danger callout added). (b) The practice answer numbers (387,200 and 247,504 bytes) are from my run; I did not run pg_waldump -z on those two ranges. (c) PGDG build support for lz4 and zstd was checked with pg_config --configure (--with-lz4 --with-zstd); only lz4 was run. LENGTH: about 4,400 words of prose, lists and tables (above the 3,200 target) because the part has 18 steps; easy cuts: Step 11 (segment size) and the fsync mistake.",
+ "generatedAt": "2026-11-10T13:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 15 of the PostgreSQL DBA series. <b>WAL (write-ahead log)</b> is the record PostgreSQL writes of every change <i>before</i> it changes the real table and index files. It is the reason a committed transaction survives a power cut, and it is also the raw material for backups, point-in-time recovery and replication. Think of it as the notebook PostgreSQL writes in first: if the server crashes, it reads the notebook and redoes anything the data files missed."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In <a href=\"/posts/postgresql/postgresql-dba-part-14-transaction-id-wraparound-freezing/\">Part 14</a> we covered transaction ID wraparound and freezing. In this part you will find the WAL files on disk, read WAL positions (LSNs), measure how much WAL your statements produce, look inside WAL records with pg_waldump, change <code class=\"inline-code\">wal_level</code> correctly, and watch PostgreSQL use WAL to recover from a crash. Every command was run on PostgreSQL 18 on Ubuntu, and the outputs are real."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "What WAL is, why PostgreSQL writes it first, and what a commit really waits for",
+      "items": []
+     },
+     {
+      "content": "Where WAL lives (<code class=\"inline-code\">pg_wal</code>), how segment files are named and why they are 16 MB",
+      "items": []
+     },
+     {
+      "content": "How to read an LSN and turn it into a WAL file name with <code class=\"inline-code\">pg_walfile_name()</code>",
+      "items": []
+     },
+     {
+      "content": "How to measure the WAL a statement generates, and why the first change after a checkpoint costs more (full page writes)",
+      "items": []
+     },
+     {
+      "content": "The three <code class=\"inline-code\">wal_level</code> values (minimal, replica, logical), which one to use, and how to change it safely",
+      "items": []
+     },
+     {
+      "content": "How to watch WAL volume with <code class=\"inline-code\">pg_stat_wal</code> and <code class=\"inline-code\">pg_stat_io</code>, and what keeps old WAL files on disk",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 14 of this series, especially <a href=\"/posts/postgresql/postgresql-dba-part-3-data-directory-pgdata/\">Part 3 (the data directory)</a> and <a href=\"/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/\">Part 5 (postgresql.conf, reload vs restart)</a>.",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu 24.04 LTS server with PostgreSQL 18 from the PGDG repository, cluster <b>18 main</b> running on port 5432, installed as in <a href=\"/posts/postgresql/postgresql-dba-part-2-install-postgresql-18-ubuntu/\">Part 2</a>. We call this server db1.",
+      "items": []
+     },
+     {
+      "content": "A user with sudo rights. SQL is run in psql as the postgres operating system user.",
+      "items": []
+     },
+     {
+      "content": "A test server, not production. Steps 13, 16 and 18 restart or stop the cluster, and Step 16 simulates a crash.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Tables and indexes live in data files made of 8 kB pages, as you saw in Part 3. When you change a row, PostgreSQL changes the page in shared memory (shared_buffers) first. Writing that page back to its data file straight away, for every commit, would mean many small random disk writes. PostgreSQL does something cheaper."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before a changed page may be written to its data file, a <b>WAL record</b> describing the change must already be safely on disk. WAL records are appended one after another to WAL files, so writing them is fast sequential I/O. At commit, PostgreSQL only has to flush the WAL up to the commit record. The changed data pages can be written later, in the background."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the server crashes, the data files may be missing recent changes. On startup PostgreSQL reads the WAL from the last <b>checkpoint</b> (a point where all earlier changes are known to be in the data files) and replays every record after it. The documentation calls this roll-forward recovery, or REDO."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " client: UPDATE ... ; COMMIT\n          |\n          v\n shared_buffers (page changed in memory)\n          |\n          | 1. WAL record written and flushed at COMMIT\n          v\n pg_wal/000000010000000000000001  (sequential, fsync'd)\n          |\n          | 2. later: checkpointer / background writer\n          v\n base/16384/16386  (table data file, written in the background)",
+    "caption": "The order of writes"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Four terms you will see throughout this part:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Term",
+      "Meaning"
+     ],
+     [
+      "WAL record",
+      "One entry describing one change, for example \"insert tuple 41 into block 8 of relation 16386\"."
+     ],
+     [
+      "LSN (Log Sequence Number)",
+      "The byte position of a record in the WAL, shown like 0/1BCC3B0. It only ever grows, so the difference between two LSNs is the number of WAL bytes written between them."
+     ],
+     [
+      "WAL segment",
+      "One file in pg_wal. By default each segment is 16 MB. When one fills up, PostgreSQL moves on to the next."
+     ],
+     [
+      "Full page write (FPW, or FPI for full page image)",
+      "A copy of a whole 8 kB page written into the WAL the first time that page changes after a checkpoint. It protects against a page being only half written during a crash."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "WAL is also what makes the later parts of this series possible. Copying WAL files elsewhere is WAL archiving (Part 19). Replaying archived WAL on top of an old backup is point-in-time recovery (Part 20). Streaming WAL to another server is replication (Part 33). How much detail the WAL contains for these uses is controlled by <code class=\"inline-code\">wal_level</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Build a small lab",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Create the lab database and an orders table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as the postgres user</b> (start psql with <code class=\"inline-code\">sudo -u postgres psql</code>):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE wallab;\n\\c wallab\nCREATE TABLE orders (\n    order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer    text          NOT NULL,\n    amount      numeric(10,2) NOT NULL,\n    status      text          NOT NULL DEFAULT 'new',\n    created_at  timestamptz   NOT NULL DEFAULT now()\n);\nINSERT INTO orders (customer, amount)\nSELECT 'customer_' || g, (g % 500) + 0.99\nFROM generate_series(1, 1000) AS g;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE DATABASE\nYou are now connected to database \"wallab\" as user \"postgres\".\nCREATE TABLE\nINSERT 0 1000",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> <code class=\"inline-code\">SELECT count(*) FROM orders;</code> returns 1000. The LSNs and file numbers in the following steps come from a freshly created cluster. Yours will be different, but the pattern will be the same."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Look at the WAL settings and files",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Check the WAL settings",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres.</b> The <code class=\"inline-code\">context</code> column tells you how a setting can be changed (Part 5): <code class=\"inline-code\">postmaster</code> needs a restart, <code class=\"inline-code\">sighup</code> needs a reload, <code class=\"inline-code\">internal</code> was fixed when the cluster was created."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, unit, context\n  FROM pg_settings\n WHERE name IN ('wal_level','wal_segment_size','wal_block_size',\n                'min_wal_size','max_wal_size','wal_keep_size',\n                'wal_buffers','full_page_writes','wal_compression',\n                'fsync','synchronous_commit','max_wal_senders',\n                'archive_mode')\n ORDER BY name;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "        name        | setting  | unit |  context\n--------------------+----------+------+------------\n archive_mode       | off      |      | postmaster\n fsync              | on       |      | sighup\n full_page_writes   | on       |      | sighup\n max_wal_senders    | 10       |      | postmaster\n max_wal_size       | 1024     | MB   | sighup\n min_wal_size       | 80       | MB   | sighup\n synchronous_commit | on       |      | user\n wal_block_size     | 8192     |      | internal\n wal_buffers        | 512      | 8kB  | postmaster\n wal_compression    | off      |      | superuser\n wal_keep_size      | 0        | MB   | sighup\n wal_level          | replica  |      | postmaster\n wal_segment_size   | 16777216 | B    | internal\n(13 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "These are the PostgreSQL 18 defaults on a fresh cluster. <code class=\"inline-code\">wal_buffers</code> shows 512 blocks of 8 kB, which is 4 MB: the default of -1 picks 1/32 of shared_buffers (128 MB here), with a floor of 64 kB and a ceiling of one WAL segment. <code class=\"inline-code\">SHOW wal_buffers;</code> prints it as 4MB."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Look inside pg_wal",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user in the shell.</b> WAL lives in the <code class=\"inline-code\">pg_wal</code> directory inside the data directory."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo ls -l /var/lib/postgresql/18/main/pg_wal",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "total 16392\n-rw------- 1 postgres postgres 16777216 Nov 10 12:47 000000010000000000000001\ndrwx------ 2 postgres postgres     4096 Nov 10 12:47 archive_status\ndrwx------ 2 postgres postgres     4096 Nov 10 12:47 summaries",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "One 16 MB segment so far. <code class=\"inline-code\">archive_status</code> holds the .ready and .done marker files used by WAL archiving (Part 19), and <code class=\"inline-code\">summaries</code> is used by WAL summarization for incremental backups. You can list the same files from SQL without shell access:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, size, modification FROM pg_ls_waldir() ORDER BY name;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "           name           |   size   |      modification\n--------------------------+----------+------------------------\n 000000010000000000000001 | 16777216 | 2026-11-10 12:47:46+00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_ls_waldir()</code> is restricted to superusers and members of the pg_monitor role by default, so it is a good choice for monitoring scripts."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "LSNs: addresses inside the WAL",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Read the current LSN and find its file",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres, connected to wallab.</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_current_wal_lsn(), pg_current_wal_insert_lsn(),\n       pg_current_wal_flush_lsn();\nSELECT pg_walfile_name(pg_current_wal_lsn());\nSELECT * FROM pg_walfile_name_offset(pg_current_wal_lsn());\nSELECT * FROM pg_split_walfile_name('000000010000000000000001');",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_current_wal_lsn | pg_current_wal_insert_lsn | pg_current_wal_flush_lsn\n--------------------+---------------------------+--------------------------\n 0/1BCC3B0          | 0/1BCC3B0                 | 0/1BCC3B0\n(1 row)\n\n     pg_walfile_name\n--------------------------\n 000000010000000000000001\n(1 row)\n\n        file_name         | file_offset\n--------------------------+-------------\n 000000010000000000000001 |    12370864\n(1 row)\n\n segment_number | timeline_id\n----------------+-------------\n              1 |           1\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Function",
+      "What it returns (from the documentation)"
+     ],
+     [
+      "pg_current_wal_insert_lsn()",
+      "The insert location: the logical end of the WAL right now."
+     ],
+     [
+      "pg_current_wal_lsn()",
+      "The write location: the end of what has been written out from the server's internal buffers."
+     ],
+     [
+      "pg_current_wal_flush_lsn()",
+      "The flush location: the end of what is known to be on durable storage."
+     ],
+     [
+      "pg_walfile_name(lsn)",
+      "The name of the WAL file holding that location."
+     ],
+     [
+      "pg_walfile_name_offset(lsn)",
+      "The file name plus the byte offset inside that file."
+     ],
+     [
+      "pg_split_walfile_name(name)",
+      "The segment number and timeline ID from a WAL file name."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On an idle server all three LSNs are equal. Under load the insert LSN runs slightly ahead of the write and flush LSNs."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read 0/1BCC3B0 as two hexadecimal numbers. 0x1BCC3B0 is 29,148,080 bytes from the start of the WAL. Segment 1 covers bytes 16,777,216 up to 33,554,431, so the record sits 29,148,080 minus 16,777,216 = 12,370,864 bytes into that file, exactly the <code class=\"inline-code\">file_offset</code> shown."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The 24-character file name is three 8-character hex fields: the <b>timeline</b> (00000001, which changes after a point-in-time recovery or a standby promotion, Parts 20 and 36), then the part of the LSN before the slash (00000000), then the segment number within that 4 GB range (00000001). File names never wrap around; they just keep increasing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Measure the WAL of one UPDATE, twice",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres, connected to wallab.</b> <code class=\"inline-code\">\\gset</code> is a psql meta-command (Part 4) that stores a query result in a psql variable, so you can subtract two LSNs with <code class=\"inline-code\">pg_wal_lsn_diff()</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CHECKPOINT;\nSELECT pg_current_wal_lsn() AS before_lsn \\gset\nUPDATE orders SET status = 'paid' WHERE order_id = 42;\nSELECT pg_current_wal_lsn() AS after_lsn \\gset\nSELECT :'before_lsn' AS before_lsn, :'after_lsn' AS after_lsn,\n       pg_wal_lsn_diff(:'after_lsn', :'before_lsn') AS wal_bytes;\n\nSELECT pg_current_wal_lsn() AS before_lsn \\gset\nUPDATE orders SET status = 'shipped' WHERE order_id = 43;\nSELECT pg_current_wal_lsn() AS after_lsn \\gset\nSELECT :'before_lsn' AS before_lsn, :'after_lsn' AS after_lsn,\n       pg_wal_lsn_diff(:'after_lsn', :'before_lsn') AS wal_bytes;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " before_lsn | after_lsn | wal_bytes\n------------+-----------+-----------\n 0/1BCC4B8  | 0/1BD0DB0 |     18680\n(1 row)\n\n before_lsn | after_lsn | wal_bytes\n------------+-----------+-----------\n 0/1BD0DB0  | 0/1BD0F08 |       344\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two almost identical one-row updates: the first wrote 18,680 bytes of WAL, the second only 344. The difference is <b>full page writes</b>. The <code class=\"inline-code\">CHECKPOINT</code> command forced a checkpoint, and the first change to each page after a checkpoint copies the whole 8 kB page into the WAL. The second update touched the same pages again, so only the small change records were needed."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Why bother? A crash in the middle of writing an 8 kB page can leave a page that is half old and half new, called a torn page. A small change record cannot repair that, but a full page image can. Because replay always starts at a checkpoint, one image per page per checkpoint cycle is enough. This is why checkpoints that run too often make WAL volume grow, which is the subject of Part 16."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> <code class=\"inline-code\">SELECT order_id, status FROM orders WHERE order_id IN (42, 43);</code> shows paid and shipped."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Read the WAL records with pg_waldump",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as the postgres operating system user.</b> pg_waldump prints WAL records in readable form. It needs read access to the data directory, so run it as postgres. It lives in the version's bin directory and is not on the default PATH on Ubuntu."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres /usr/lib/postgresql/18/bin/pg_waldump \\\n  -p /var/lib/postgresql/18/main/pg_wal \\\n  -s 0/1BCC4B8 -e 0/1BD0F08",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-p path",
+      "Directory to search for WAL segment files."
+     ],
+     [
+      "-s start",
+      "WAL location at which to start reading."
+     ],
+     [
+      "-e end",
+      "Stop reading at this WAL location instead of the end of the log."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "rmgr: Heap        len (rec/tot):     59/  8243, tx:        755, lsn: 0/01BCC4B8, prev 0/01BCC440, desc: LOCK xmax: 755, off: 42, infobits: [LOCK_ONLY, EXCL_LOCK], flags: 0x00, blkref #0: rel 1663/16384/16386 blk 0 FPW\nrmgr: Heap        len (rec/tot):     73/  2885, tx:        755, lsn: 0/01BCE508, prev 0/01BCC4B8, desc: UPDATE old_xmax: 755, old_off: 42, old_infobits: [], flags: 0x00, new_xmax: 0, new_off: 41, blkref #0: rel 1663/16384/16386 blk 8 FPW, blkref #1: rel 1663/16384/16386 blk 0\nrmgr: Btree       len (rec/tot):     53/  7453, tx:        755, lsn: 0/01BCF050, prev 0/01BCE508, desc: INSERT_LEAF off: 44, blkref #0: rel 1663/16384/16398 blk 1 FPW\nrmgr: Transaction len (rec/tot):     34/    34, tx:        755, lsn: 0/01BD0D88, prev 0/01BCF050, desc: COMMIT 2026-11-10 12:48:53.626145 UTC\nrmgr: Heap2       len (rec/tot):     56/    56, tx:          0, lsn: 0/01BD0DB0, prev 0/01BD0D88, desc: PRUNE_ON_ACCESS snapshotConflictHorizon: 755, isCatalogRel: F, nplans: 0, nredirected: 0, ndead: 1, nunused: 0, dead: [42], blkref #0: rel 1663/16384/16386 blk 0\nrmgr: Heap        len (rec/tot):     54/    54, tx:        756, lsn: 0/01BD0DE8, prev 0/01BD0DB0, desc: LOCK xmax: 756, off: 43, infobits: [LOCK_ONLY, EXCL_LOCK], flags: 0x00, blkref #0: rel 1663/16384/16386 blk 0\nrmgr: Heap        len (rec/tot):    122/   122, tx:        756, lsn: 0/01BD0E20, prev 0/01BD0DE8, desc: UPDATE old_xmax: 756, old_off: 43, old_infobits: [], flags: 0x00, new_xmax: 0, new_off: 42, blkref #0: rel 1663/16384/16386 blk 8, blkref #1: rel 1663/16384/16386 blk 0\nrmgr: Btree       len (rec/tot):     64/    64, tx:        756, lsn: 0/01BD0EA0, prev 0/01BD0E20, desc: INSERT_LEAF off: 46, blkref #0: rel 1663/16384/16398 blk 1\nrmgr: Transaction len (rec/tot):     34/    34, tx:        756, lsn: 0/01BD0EE0, prev 0/01BD0EA0, desc: COMMIT 2026-11-10 12:48:53.626989 UTC",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "How to read it:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>rmgr</b> is the resource manager, the part of PostgreSQL that wrote the record: Heap for table rows, Btree for the primary key index, Transaction for the commit.",
+      "items": []
+     },
+     {
+      "content": "<b>tx</b> is the transaction ID (Part 11). Transaction 755 is the first UPDATE and 756 the second.",
+      "items": []
+     },
+     {
+      "content": "<b>rel 1663/16384/16386</b> is tablespace OID / database OID / file number, the same numbers you saw as the path base/16384/16386 in Part 3. 16386 is orders and 16398 its primary key index.",
+      "items": []
+     },
+     {
+      "content": "<b>FPW</b> marks a record that carries a full page image. Transaction 755 has three (heap block 0, heap block 8 and index block 1), and the total length jumps to thousands of bytes. Transaction 756 has none.",
+      "items": []
+     },
+     {
+      "content": "Block 0 was full, so the new row version went to block 8 and needed a new index entry. In Part 13 terms this was not a HOT update.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">COMMIT</code> record is what the client waited for. Once that record was flushed, the UPDATE was durable, even though block 8 itself was still only in memory."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Measure a bulk insert and summarise it",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres, connected to wallab.</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CHECKPOINT;\nSELECT pg_current_wal_lsn() AS before_lsn \\gset\nINSERT INTO orders (customer, amount)\nSELECT 'customer_' || g, (g % 500) + 0.99\nFROM generate_series(1001, 101000) AS g;\nSELECT pg_current_wal_lsn() AS after_lsn \\gset\nSELECT :'before_lsn' AS before_lsn, :'after_lsn' AS after_lsn,\n       pg_size_pretty(pg_wal_lsn_diff(:'after_lsn', :'before_lsn')) AS wal_generated,\n       pg_size_pretty(pg_relation_size('orders')) AS table_size,\n       pg_size_pretty(pg_indexes_size('orders')) AS index_size;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " before_lsn | after_lsn | wal_generated | table_size | index_size\n------------+-----------+---------------+------------+------------\n 0/1BD5C80  | 0/2C6B198 | 17 MB         | 7544 kB    | 2224 kB\n(1 row)",
+    "caption": "Output (table_size and index_size were run as two queries and combined here)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "100,000 rows produced 17 MB of WAL for about 9.6 MB of table plus index. That surprises many people, but every row is logged once for the table and once for the index, and each record has its own header. Now ask pg_waldump for a summary instead of individual records (run as postgres in the shell):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres /usr/lib/postgresql/18/bin/pg_waldump \\\n  -p /var/lib/postgresql/18/main/pg_wal \\\n  -s 0/1BD5C80 -e 0/2C6B198 -z",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-z, --stats",
+      "Display summary statistics (number and size of records and full-page images) instead of individual records."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "WAL statistics between 0/1BD5C80 and 0/2C6B198:\nType            N      (%)    Record size      (%)   FPI size      (%)   Combined size      (%)\n----            -      ---    -----------      ---   --------      ---   -------------      ---\nXLOG            1 (  0.00)             49 (  0.00)       8192 ( 49.09)            8241 (  0.05)\nTransaction     1 (  0.00)             34 (  0.00)          0 (  0.00)              34 (  0.00)\n...\nHeap       100000 ( 49.19)       10298375 ( 59.85)       2964 ( 17.76)        10301339 ( 59.81)\nBtree      100273 ( 49.32)        6607458 ( 38.40)       5532 ( 33.15)         6612990 ( 38.40)\n...\nSequence     3031 (  1.49)         300069 (  1.74)          0 (  0.00)          300069 (  1.74)\n...\nTotal      203306                17205985 [99.90%]      16688 [0.10%]        17222673 [100%]",
+    "caption": "Output (rows with zero records replaced by ..., and spacing narrowed to fit a phone screen)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "One Heap record per row, one Btree record per index entry (plus a few page splits), and Sequence records for the identity column. Full page images are almost nothing here, because new pages created by an insert do not need an earlier image. The <code class=\"inline-code\">-z</code> summary is the quickest way to answer \"what is generating all this WAL?\" on a real server."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> <code class=\"inline-code\">SELECT name, size FROM pg_ls_waldir() ORDER BY name;</code> now lists two segments, 000000010000000000000001 and 000000010000000000000002, because the insert filled the first one."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Watch WAL volume with pg_stat_wal and pg_stat_io",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres.</b> The cumulative statistics views give you WAL totals for the whole server without reading any files. Here the counters were reset, a workload was run, and the views were read from a new session."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_stat_reset_shared('wal');\n\\c wallab\nINSERT INTO orders (customer, amount)\nSELECT 'customer_' || g, 10.00 FROM generate_series(1, 50000) AS g;\nUPDATE orders SET status = 'paid' WHERE order_id <= 20000;\n\\c postgres\nSELECT wal_records, wal_fpi, pg_size_pretty(wal_bytes) AS wal_bytes,\n       wal_buffers_full\n  FROM pg_stat_wal;\nSELECT backend_type, writes, pg_size_pretty(write_bytes) AS written, fsyncs\n  FROM pg_stat_io\n WHERE object = 'wal' AND writes > 0\n ORDER BY write_bytes DESC;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " wal_records | wal_fpi | wal_bytes | wal_buffers_full\n-------------+---------+-----------+------------------\n      158267 |     266 | 14 MB     |              835\n(1 row)\n\n  backend_type  | writes |  written   | fsyncs\n----------------+--------+------------+--------\n client backend |    839 | 15 MB      |      3\n checkpointer   |      1 | 8192 bytes |      1\n walwriter      |      1 | 8192 bytes |      1\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">wal_fpi</code> counts full page images and <code class=\"inline-code\">wal_buffers_full</code> counts how often WAL had to be written to disk because the WAL buffers were full. Here two large statements filled the 4 MB of WAL buffers 835 times, so the client backend wrote the WAL itself, as the pg_stat_io row shows. On a busy server with many committing clients, a steadily rising <code class=\"inline-code\">wal_buffers_full</code> is the signal to consider a larger <code class=\"inline-code\">wal_buffers</code> (a restart setting)."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Changed in PostgreSQL 18",
+    "text": "PostgreSQL 18 removed the columns <code class=\"inline-code\">wal_write</code>, <code class=\"inline-code\">wal_sync</code>, <code class=\"inline-code\">wal_write_time</code> and <code class=\"inline-code\">wal_sync_time</code> from <code class=\"inline-code\">pg_stat_wal</code>. WAL write and sync activity is now in <code class=\"inline-code\">pg_stat_io</code> rows where <code class=\"inline-code\">object = 'wal'</code>, and <code class=\"inline-code\">track_wal_io_timing</code> now controls timing there. Monitoring queries written for PostgreSQL 17 or older that read those columns will fail on 18."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Segments: switching, recycling and size",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Switch to a new segment with pg_switch_wal()",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres.</b> <code class=\"inline-code\">pg_switch_wal()</code> forces the server to close the current segment and start a new one, so the closed file can be archived. You will use it when testing WAL archiving in Part 19."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_walfile_name(pg_current_wal_lsn()) AS current_file;\nSELECT pg_switch_wal();\nSELECT pg_walfile_name(pg_current_wal_lsn()) AS current_file;\nSELECT pg_switch_wal();\nSELECT name, size FROM pg_ls_waldir() ORDER BY name;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "       current_file\n--------------------------\n 000000010000000000000005\n(1 row)\n\n pg_switch_wal\n---------------\n 0/57D59F0\n(1 row)\n\n       current_file\n--------------------------\n 000000010000000000000006\n(1 row)\n\n pg_switch_wal\n---------------\n 0/6000000\n(1 row)\n\n           name           |   size\n--------------------------+----------\n 000000010000000000000005 | 16777216\n 000000010000000000000006 | 16777216\n 000000010000000000000007 | 16777216\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The first call returned the end of segment 5, and the server moved to segment 6. The second call found no new WAL since the switch, so, as the documentation says, it did nothing and returned the start of the current file (0/6000000). Segments 1 to 4 are gone: once a checkpoint no longer needs them, old segments are removed or <b>recycled</b>, which means renamed to become future segments. That is why segment 7 already exists before any WAL has been written to it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every switched segment is still 16 MB on disk, even if it holds only a few bytes of WAL. Do not call <code class=\"inline-code\">pg_switch_wal()</code> in a tight loop."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Set how much WAL is kept between checkpoints",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The number of segment files in pg_wal depends on <code class=\"inline-code\">min_wal_size</code>, <code class=\"inline-code\">max_wal_size</code> and how much WAL recent checkpoint cycles generated:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "Default",
+      "What it does"
+     ],
+     [
+      "max_wal_size",
+      "1GB",
+      "Maximum size to let WAL grow during automatic checkpoints. A soft limit: heavy load, a failing archive_command or a high wal_keep_size can push past it. Larger values mean longer crash recovery."
+     ],
+     [
+      "min_wal_size",
+      "80MB",
+      "While WAL disk use stays below this, old files are always recycled for future use instead of removed."
+     ],
+     [
+      "wal_keep_size",
+      "0",
+      "Minimum size of past WAL kept for standby servers that may need it (Part 33)."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All three can be changed with a reload. <b>On db1, as a sudo user</b>, edit the file:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo nano /etc/postgresql/18/main/postgresql.conf",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before\nmax_wal_size = 1GB\nmin_wal_size = 80MB\n\n# after\nmax_wal_size = 4GB\nmin_wal_size = 80MB",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Apply it with a reload (no restart needed), then check:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main\nsudo -u postgres psql -c \"SELECT name, setting, unit, pending_restart FROM pg_settings WHERE name IN ('max_wal_size', 'min_wal_size');\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "     name     | setting | unit | pending_restart\n--------------+---------+------+-----------------\n max_wal_size | 4096    | MB   | f\n min_wal_size | 80      | MB   | f\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The server log also confirms it: <code class=\"inline-code\">LOG:  parameter \"max_wal_size\" changed to \"4GB\"</code>. Ubuntu's postgresql.conf already contains uncommented <code class=\"inline-code\">max_wal_size = 1GB</code> and <code class=\"inline-code\">min_wal_size = 80MB</code> lines, so edit those rather than adding a second copy at the end of the file. How to size <code class=\"inline-code\">max_wal_size</code> from your checkpoint pattern is covered in Part 16."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> set the line back to <code class=\"inline-code\">max_wal_size = 1GB</code> and reload again. <code class=\"inline-code\">SHOW max_wal_size;</code> returns 1GB."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Choose a segment size when you create a cluster",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">wal_segment_size</code> showed context <code class=\"inline-code\">internal</code> in Step 2. The documentation for initdb's <code class=\"inline-code\">--wal-segsize</code> option says the size must be a power of 2 between 1 and 1024 MB, can only be set during initialization, and cannot be changed later. Bigger segments mean fewer files on servers that generate a lot of WAL. On Ubuntu, options after <code class=\"inline-code\">--</code> are passed to initdb. <b>On db1, as a sudo user</b>, create a throwaway cluster to see it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_createcluster 18 segtest --port 5434 -- --wal-segsize=64\nsudo pg_ctlcluster 18 segtest start\nsudo -u postgres psql -p 5434 -c \"SHOW wal_segment_size;\"\nsudo ls -l /var/lib/postgresql/18/segtest/pg_wal",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "18 segtest",
+      "PostgreSQL version and the new cluster's name."
+     ],
+     [
+      "--port 5434",
+      "Port for the new cluster, so it does not clash with 18 main on 5432."
+     ],
+     [
+      "-- --wal-segsize=64",
+      "Everything after -- goes to initdb; this sets 64 MB WAL segments."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " wal_segment_size\n------------------\n 64MB\n(1 row)\n\ntotal 65544\n-rw------- 1 postgres postgres 67108864 Nov 10 12:50 000000010000000000000001\ndrwx------ 2 postgres postgres     4096 Nov 10 12:50 archive_status\ndrwx------ 2 postgres postgres     4096 Nov 10 12:50 summaries",
+    "caption": "Output (pg_createcluster's own messages left out)"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Cleanup: deletes the test cluster",
+    "text": "The next command deletes the segtest cluster and all its data. Check the cluster name twice; never point it at 18 main."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_dropcluster 18 segtest --stop\npg_lsclusters",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> <code class=\"inline-code\">pg_lsclusters</code> no longer lists segtest."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "wal_level: how much the WAL records",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation describes three levels. Each level includes everything logged by the levels below it."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "wal_level",
+      "What it logs",
+      "Use it when"
+     ],
+     [
+      "minimal",
+      "Only what is needed to recover from a crash or immediate shutdown. Skips row data for tables created or rewritten in the same transaction (CREATE TABLE, TRUNCATE, CLUSTER, REINDEX and similar).",
+      "Single servers with no archiving and no replication, for example a throwaway data-loading server. Needs max_wal_senders = 0."
+     ],
+     [
+      "replica (default)",
+      "Enough for WAL archiving, point-in-time recovery and streaming replication, including read-only queries on a standby.",
+      "Almost every production server."
+     ],
+     [
+      "logical",
+      "Everything in replica, plus what logical decoding needs to extract row changes.",
+      "Logical replication (Part 37) and change data capture tools."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">wal_level</code> can only be set at server start. The old values <code class=\"inline-code\">archive</code> and <code class=\"inline-code\">hot_standby</code> from before PostgreSQL 9.6 are still accepted and mapped to replica. The documentation also warns that switching to minimal makes earlier base backups unusable for point-in-time recovery and for standby servers."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Measure full page images with and without wal_compression",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before changing <code class=\"inline-code\">wal_level</code>, take a baseline at replica. This also shows <code class=\"inline-code\">wal_compression</code>, which compresses the full page images in WAL (off by default; the methods are pglz, lz4 and zstd, and the PGDG packages are built with lz4 and zstd support). A superuser can set it per session, so you can compare without touching the configuration. <b>On db1, in psql as postgres, connected to wallab:</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders_a AS SELECT * FROM orders WHERE order_id <= 101000;\nCREATE TABLE orders_b AS SELECT * FROM orders WHERE order_id <= 101000;\nVACUUM orders_a, orders_b;\n\nCHECKPOINT;\nSELECT pg_current_wal_lsn() AS before_lsn \\gset\nUPDATE orders_a SET amount = amount + 1 WHERE order_id % 10 = 0;\nSELECT pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), :'before_lsn'))\n       AS wal_compression_off;\n\nSET wal_compression = lz4;\nCHECKPOINT;\nSELECT pg_current_wal_lsn() AS before_lsn \\gset\nUPDATE orders_b SET amount = amount + 1 WHERE order_id % 10 = 0;\nSELECT pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), :'before_lsn'))\n       AS wal_compression_lz4;\nRESET wal_compression;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " wal_compression_off\n---------------------\n 2619 kB\n(1 row)\n\n wal_compression_lz4\n---------------------\n 2041 kB\n(1 row)",
+    "caption": "Output (SELECT/VACUUM/CHECKPOINT/UPDATE tags left out)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The two tables are identical copies of the first 101,000 orders, and each update touches every page right after a checkpoint, so the WAL is mostly full page images. With lz4 the same update wrote about 22% less WAL. The documentation describes the trade-off: less WAL without extra risk of corruption, paid for with CPU for compression when writing WAL and decompression during replay. Your saving depends on how compressible your pages are, so measure it on your own data before setting it in postgresql.conf (it is reloadable). Keep orders_a and orders_b for now: 2619 kB is the baseline for Step 14."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Change wal_level to logical (restart required)",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user.</b> Edit the configuration file. On Ubuntu the line is commented out, which means the default (replica) is in use."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before\n#wal_level = replica\t\t\t# minimal, replica, or logical\n\n# after\nwal_level = logical\t\t\t# minimal, replica, or logical",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A reload is not enough. If you try it, the server log says <code class=\"inline-code\">LOG:  parameter \"wal_level\" cannot be changed without restarting the server</code> and pg_settings shows <code class=\"inline-code\">pending_restart</code> as true:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main\nsudo -u postgres psql -c \"SELECT name, setting, pending_restart FROM pg_settings WHERE name = 'wal_level';\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "   name    | setting | pending_restart\n-----------+---------+-----------------\n wal_level | replica | t\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Restart the cluster. This disconnects every session, so on a real server plan it in a maintenance window:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl restart postgresql@18-main\nsudo -u postgres psql -c \"SHOW wal_level;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " wal_level\n-----------\n logical\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: Measure the extra WAL at logical",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres, connected to wallab.</b> Repeat Step 12's update on a third identical copy. <code class=\"inline-code\">REPLICA IDENTITY FULL</code> makes the WAL carry the complete old row for every UPDATE and DELETE, which logical decoding uses when a table has no primary key. The documentation names it as the main reason logical produces more WAL."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders_c AS SELECT * FROM orders WHERE order_id <= 101000;\nALTER TABLE orders_c REPLICA IDENTITY FULL;\nVACUUM orders_c;\nCHECKPOINT;\nSELECT pg_current_wal_lsn() AS before_lsn \\gset\nUPDATE orders_c SET amount = amount + 1 WHERE order_id % 10 = 0;\nSELECT pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), :'before_lsn'))\n       AS wal_logical_full;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " wal_logical_full\n------------------\n 3110 kB\n(1 row)",
+    "caption": "Output (command tags left out)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same update wrote 3110 kB at logical with REPLICA IDENTITY FULL, against 2619 kB at replica in Step 12, about 19% more. With a primary key and the default replica identity the difference is smaller. Only use logical when something actually reads logical changes."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Clean up the copies:</b> <code class=\"inline-code\">DROP TABLE orders_a, orders_b, orders_c;</code>"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: Undo: return wal_level to replica",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user.</b> Put the comment marker back (or write <code class=\"inline-code\">wal_level = replica</code>), then restart and check:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "#wal_level = replica\t\t\t# minimal, replica, or logical",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl restart postgresql@18-main\nsudo -u postgres psql -c \"SHOW wal_level;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " wal_level\n-----------\n replica\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On a server that uses logical replication, lowering <code class=\"inline-code\">wal_level</code> breaks it: logical slots need logical. Before lowering it, check <code class=\"inline-code\">SELECT slot_name, slot_type FROM pg_replication_slots;</code> for rows with slot_type logical. Part 34 covers slots."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "See WAL do its job: crash recovery",
+    "level": 2
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Lab only",
+    "text": "Step 16 stops PostgreSQL with immediate mode, which kills the server processes without a clean shutdown, exactly like a crash. Every connected session is dropped. Never run it on a production server just to test."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 16: Commit a row and crash the server",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres, connected to wallab:</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CHECKPOINT;\nINSERT INTO orders (customer, amount) VALUES ('crash_test', 250.00);\nSELECT customer, amount FROM orders WHERE customer = 'crash_test';\nSELECT pg_current_wal_lsn();",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CHECKPOINT\nINSERT 0 1\n  customer  | amount\n------------+--------\n crash_test | 250.00\n(1 row)\n\n pg_current_wal_lsn\n--------------------\n 0/B5AAA80\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The INSERT committed after the last checkpoint, so its data page has very likely not been written to the table file yet. Its only durable copy is in the WAL. <b>On db1, as a sudo user</b>, crash the cluster and read the control file with pg_controldata:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_ctlcluster 18 main stop -m immediate\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_controldata -D /var/lib/postgresql/18/main \\\n  | grep -E \"cluster state|Latest checkpoint location|REDO location|wal_level setting|Bytes per WAL segment\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "stop -m immediate",
+      "pg_ctlcluster passes the shutdown mode to pg_ctl; immediate aborts all server processes without a shutdown checkpoint."
+     ],
+     [
+      "-D",
+      "pg_controldata: the data directory whose pg_control file to read."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Database cluster state:               in production\nLatest checkpoint location:           0/B5A7298\nLatest checkpoint's REDO location:    0/B5A7240\nwal_level setting:                    replica\nBytes per WAL segment:                16777216",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The server is down but the control file still says \"in production\": it was never shut down cleanly. The REDO location (0/B5A7240) is where replay will start. Our INSERT is after it, before 0/B5AAA80."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 17: Start the server and read the recovery messages",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user:</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl start postgresql@18-main\nsudo tail -8 /var/log/postgresql/postgresql-18-main.log",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-10 12:56:08.845 UTC [3468] LOG:  database system was interrupted; last known up at 2026-11-10 12:56:08 UTC\n2026-11-10 12:56:08.891 UTC [3468] LOG:  database system was not properly shut down; automatic recovery in progress\n2026-11-10 12:56:08.892 UTC [3468] LOG:  redo starts at 0/B5A7240\n2026-11-10 12:56:08.893 UTC [3468] LOG:  invalid record length at 0/B5AAA80: expected at least 24, got 0\n2026-11-10 12:56:08.893 UTC [3468] LOG:  redo done at 0/B5AAA58 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s\n2026-11-10 12:56:08.895 UTC [3466] LOG:  checkpoint starting: end-of-recovery immediate wait\n2026-11-10 12:56:08.898 UTC [3466] LOG:  checkpoint complete: wrote 4 buffers (0.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.005 s; sync files=6, longest=0.001 s, average=0.001 s; distance=14 kB, estimate=14 kB; lsn=0/B5AAA80, redo lsn=0/B5AAA80\n2026-11-10 12:56:08.900 UTC [3462] LOG:  database system is ready to accept connections",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>redo starts at 0/B5A7240</b>: exactly the REDO location from pg_controldata.",
+      "items": []
+     },
+     {
+      "content": "<b>invalid record length at 0/B5AAA80 ... got 0</b>: this looks alarming but is normal. Replay reads until it finds no more valid records, and 0/B5AAA80 is the LSN we noted before the crash.",
+      "items": []
+     },
+     {
+      "content": "<b>redo done</b> and an <b>end-of-recovery checkpoint</b>: replayed changes are now in the data files.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> the committed row survived."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT customer, amount FROM orders WHERE customer = 'crash_test';",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  customer  | amount\n------------+--------\n crash_test | 250.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "One side effect: an immediate shutdown or crash resets the cumulative statistics, so <code class=\"inline-code\">pg_stat_wal</code> starts again from zero after this step."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Put WAL on its own disk",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation recommends keeping WAL on a different disk from the data files: WAL writes are sequential and every commit waits for them, so they should not compete with random data-file I/O. A separate volume also keeps a WAL pile-up from filling the data disk. For a new cluster, pass initdb's <code class=\"inline-code\">--waldir</code> option (for example <code class=\"inline-code\">sudo pg_createcluster 18 main -- --waldir=/pgwal/18-main</code>). For an existing cluster, the documented method is to move pg_wal while the server is shut down and leave a symbolic link behind."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 18: Move pg_wal to /pgwal and link it",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Server must be stopped",
+    "text": "Moving pg_wal while PostgreSQL is running corrupts the cluster. Stop the cluster first, and on a production server take a backup and plan a maintenance window. In this lab /pgwal is a directory on the same disk; on a real server it would be the mount point of a separate disk."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user</b> (the mv and ln commands run as the postgres user so the files keep their owner):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl stop postgresql@18-main\nsudo mkdir -p /pgwal\nsudo chown postgres:postgres /pgwal\nsudo chmod 700 /pgwal\nsudo -u postgres mv /var/lib/postgresql/18/main/pg_wal /pgwal/18-main\nsudo -u postgres ln -s /pgwal/18-main /var/lib/postgresql/18/main/pg_wal\nsudo ls -ld /var/lib/postgresql/18/main/pg_wal\nsudo systemctl start postgresql@18-main\npg_lsclusters",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "lrwxrwxrwx 1 postgres postgres 14 Nov 10 12:50 /var/lib/postgresql/18/main/pg_wal -> /pgwal/18-main\nVer Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "pg_wal is now a symbolic link and the cluster is online. <b>Check:</b> <code class=\"inline-code\">sudo ls -l /pgwal/18-main</code> lists the segment files, and <code class=\"inline-code\">SELECT count(*) FROM pg_ls_waldir();</code> in psql still returns them through the link."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo</b> (lab): stop the cluster, remove the link, move the directory back, start again."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl stop postgresql@18-main\nsudo -u postgres rm /var/lib/postgresql/18/main/pg_wal\nsudo -u postgres mv /pgwal/18-main /var/lib/postgresql/18/main/pg_wal\nsudo systemctl start postgresql@18-main",
+    "caption": ""
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Deleting files from pg_wal to free disk space",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "pg_wal looks like a folder of old logs, but PostgreSQL needs every file from the last checkpoint onwards to start. On a throwaway cluster that was stopped uncleanly, removing its segment files gave this at startup:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "PANIC:  could not locate a valid checkpoint record at 0/175EC38\npg_ctl: could not start server",
+    "caption": "Server log"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> never delete or move files in pg_wal by hand. PostgreSQL removes and recycles them itself after checkpoints. If pg_wal is growing, find what is holding WAL back (next mistake). If the files are already gone, restore from backup; Part 47 covers disk-full emergencies."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "WAL files are not being removed",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation lists what keeps old segments in pg_wal: a failing or slow <code class=\"inline-code\">archive_command</code>, a replication slot whose consumer is behind or gone, a large <code class=\"inline-code\">wal_keep_size</code>, and WAL summarization that has not caught up. Check the first two:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT archived_count, failed_count, last_failed_wal FROM pg_stat_archiver;\nSELECT slot_name, active, wal_status,\n       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained\n  FROM pg_replication_slots;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " archived_count | failed_count | last_failed_wal\n----------------+--------------+-----------------\n              0 |            0 |\n(1 row)\n\n slot_name | active | wal_status | retained\n-----------+--------+------------+----------\n(0 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> a rising <code class=\"inline-code\">failed_count</code> means fix the archive command (Part 19). An inactive slot with a large <code class=\"inline-code\">retained</code> value is a stale slot; drop it only when you are sure nothing will use it (Part 34)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: WAL streaming (\"max_wal_senders\" > 0) requires \"wal_level\" to be \"replica\" or \"logical\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Setting <code class=\"inline-code\">wal_level = minimal</code> and restarting gave this, and the cluster stayed down:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "FATAL:  WAL streaming (\"max_wal_senders\" > 0) requires \"wal_level\" to be \"replica\" or \"logical\"\npg_ctl: could not start server",
+    "caption": "Output of the restart"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> minimal also needs <code class=\"inline-code\">max_wal_senders = 0</code> (a restart setting). On most servers the real fix is to go back to <code class=\"inline-code\">wal_level = replica</code> and start again. Archiving needs replica as well: <code class=\"inline-code\">archive_mode</code> cannot be enabled at minimal."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: logical decoding requires \"wal_level\" >= \"logical\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Creating a logical replication slot at the default level fails:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_create_logical_replication_slot('test_slot', 'pgoutput');",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  logical decoding requires \"wal_level\" >= \"logical\"",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> set <code class=\"inline-code\">wal_level = logical</code> and restart, as in Step 13. Logical replication subscriptions and change data capture tools give the same error for the same reason."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_waldump: error: could not locate WAL file",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Running pg_waldump on a segment that has already been removed or recycled:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_waldump: error: could not locate WAL file \"000000010000000000000001\"",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> use <code class=\"inline-code\">SELECT name FROM pg_ls_waldir() ORDER BY name;</code> to see which segments still exist, or start from the current position with <code class=\"inline-code\">-s</code>. Also remember that pg_waldump needs the postgres OS user, and the documentation notes it can give wrong results when the server is running, so treat output from a live server as a guide."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Turning off fsync or full_page_writes for speed",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both settings are reloadable, which makes them tempting. The documentation is clear that turning off <code class=\"inline-code\">fsync</code> can cause unrecoverable data corruption after a power failure or OS crash, and that turning off <code class=\"inline-code\">full_page_writes</code> carries similar risks. Only do it for a database you can rebuild completely from elsewhere. If you need faster commits for non-critical data, <code class=\"inline-code\">SET synchronous_commit = off</code> in that session is the documented safer alternative: a crash may lose the last few commits (at most three times <code class=\"inline-code\">wal_writer_delay</code>), but the database stays consistent."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "In wallab, run <code class=\"inline-code\">CHECKPOINT;</code>, then <code class=\"inline-code\">UPDATE orders SET status = 'cancelled' WHERE order_id BETWEEN 5001 AND 6000;</code> and measure the WAL it generated with <code class=\"inline-code\">pg_current_wal_lsn()</code>, <code class=\"inline-code\">\\gset</code> and <code class=\"inline-code\">pg_wal_lsn_diff()</code>. Run the same UPDATE again straight away and measure again. Which run wrote more WAL, and why?",
+      "items": []
+     },
+     {
+      "content": "Find the WAL file name and byte offset of your current LSN, and confirm that the file appears in <code class=\"inline-code\">pg_ls_waldir()</code>.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "1. The first run writes clearly more (in our lab 387,200 bytes against 247,504). It is the first change to those pages after the checkpoint, so each page is logged once as a full 8 kB image. The second run still logs one record per row, plus an image of any page it touches for the first time since the checkpoint (for example pages that receive new row versions), but pages already logged in full are not imaged again. Run pg_waldump with -z over each LSN range and compare the FPI size column to confirm. 2. <code class=\"inline-code\">SELECT * FROM pg_walfile_name_offset(pg_current_wal_lsn());</code> gives the name and offset; <code class=\"inline-code\">SELECT name FROM pg_ls_waldir() WHERE name = 'file_name_from_step_1';</code> returns one row."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# WAL settings and their context (restart, reload, fixed)\nsudo -u postgres psql -c \"SELECT name, setting, unit, context FROM pg_settings WHERE name LIKE '%wal%' ORDER BY name;\"\n\n# List WAL segment files (shell or SQL)\nsudo ls -l /var/lib/postgresql/18/main/pg_wal\nsudo -u postgres psql -c \"SELECT name, size FROM pg_ls_waldir() ORDER BY name;\"\n\n# Current LSN, its file and offset\nsudo -u postgres psql -c \"SELECT pg_current_wal_lsn(), * FROM pg_walfile_name_offset(pg_current_wal_lsn());\"\n\n# WAL bytes between two LSNs\nsudo -u postgres psql -c \"SELECT pg_wal_lsn_diff('0/1BD0DB0', '0/1BCC4B8');\"\n\n# Read WAL records / summarise an LSN range\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_waldump -p /var/lib/postgresql/18/main/pg_wal -s 0/1BCC4B8 -e 0/1BD0F08\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_waldump -p /var/lib/postgresql/18/main/pg_wal -s 0/1BD5C80 -e 0/2C6B198 -z\n\n# Server-wide WAL statistics (PostgreSQL 18)\nsudo -u postgres psql -c \"SELECT wal_records, wal_fpi, wal_bytes, wal_buffers_full FROM pg_stat_wal;\"\nsudo -u postgres psql -c \"SELECT backend_type, writes, write_bytes, fsyncs FROM pg_stat_io WHERE object = 'wal';\"\n\n# Force a segment switch\nsudo -u postgres psql -c \"SELECT pg_switch_wal();\"\n\n# Reloadable WAL settings (max_wal_size, min_wal_size, wal_keep_size, wal_compression)\nsudo nano /etc/postgresql/18/main/postgresql.conf\nsudo systemctl reload postgresql@18-main\n\n# wal_level needs a restart\nsudo systemctl restart postgresql@18-main\nsudo -u postgres psql -c \"SHOW wal_level;\"\n\n# New cluster with 64 MB segments (throwaway) and its cleanup\nsudo pg_createcluster 18 segtest --port 5434 -- --wal-segsize=64\nsudo pg_dropcluster 18 segtest --stop\n\n# Control file: checkpoint and REDO locations\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_controldata -D /var/lib/postgresql/18/main\n\n# What is holding WAL back\nsudo -u postgres psql -c \"SELECT failed_count, last_failed_wal FROM pg_stat_archiver;\"\nsudo -u postgres psql -c \"SELECT slot_name, active, wal_status, restart_lsn FROM pg_replication_slots;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "WAL records every change before the data files are written; a commit waits only for its WAL to be flushed.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "WAL lives in /var/lib/postgresql/18/main/pg_wal as 16 MB segments named timeline + LSN high part + segment number.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "An LSN is a byte position; <code class=\"inline-code\">pg_wal_lsn_diff()</code> turns two LSNs into WAL bytes, and <code class=\"inline-code\">pg_walfile_name()</code> finds the file.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "The first change to a page after a checkpoint writes a full page image; <code class=\"inline-code\">wal_compression</code> can shrink those images.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "wal_level replica is the right default; logical adds data for logical decoding; both need a restart to change.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">pg_stat_wal</code> and, new in PostgreSQL 18, <code class=\"inline-code\">pg_stat_io</code> rows for WAL show how much WAL the server writes.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Never delete files from pg_wal; find the archive failure or stale slot that is holding them instead.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Crash recovery replays WAL from the REDO location in pg_control, and committed rows survive.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 16 we look at checkpoints and the background writer, and how to tune them for steady performance."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "A committed row in PostgreSQL can exist only in a 16 MB log file, not in the table yet. That file is the WAL.\n\nPart 15 of my PostgreSQL DBA series explains the write-ahead log, tested on PostgreSQL 18:\n\n1. A COMMIT waits only for its WAL record to reach disk. Table pages are written later by the checkpointer.\n2. WAL files live in pg_wal, 16 MB each. Never delete them by hand: in the lab, the server failed to start with \"could not locate a valid checkpoint record\".\n3. The first change to a page after a checkpoint copies the whole 8 kB page into WAL. One UPDATE wrote 18,680 bytes; the same UPDATE again wrote 344.\n4. Measure WAL from any statement: compare pg_current_wal_lsn() before and after with pg_wal_lsn_diff().\n5. wal_level replica is the default for backups and standbys. logical is for logical replication. Both need a restart to change.\n\nNew in PostgreSQL 18: WAL write and sync stats moved from pg_stat_wal to pg_stat_io.\n\nWhat fills your pg_wal faster: bulk loads, or a stuck replication slot?\n\nFollow the series for Part 16 on checkpoints.\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "PostgreSQL WAL Explained",
+    "body": "Part 15: the write-ahead log, wal_level and segments on PostgreSQL 18"
+   },
+   {
+    "title": "Log first, write data later",
+    "points": [
+     "Every change is written as a WAL record before the data file",
+     "COMMIT waits only for the WAL flush, not the table pages",
+     "After a crash, PostgreSQL replays WAL from the last checkpoint"
+    ]
+   },
+   {
+    "title": "Where WAL lives",
+    "points": [
+     "/var/lib/postgresql/18/main/pg_wal",
+     "16 MB segment files: timeline + LSN high part + segment",
+     "Never delete them by hand"
+    ],
+    "code": "SELECT name, size\n  FROM pg_ls_waldir()\n ORDER BY name;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Measure WAL from a statement",
+    "code": "SELECT pg_current_wal_lsn() AS b \\gset\nUPDATE orders SET status = 'paid'\n WHERE order_id = 42;\nSELECT pg_wal_lsn_diff(\n  pg_current_wal_lsn(), :'b');",
+    "lang": "postgresql",
+    "body": "Right after a checkpoint: 18,680 bytes. The same update again: 344 bytes."
+   },
+   {
+    "title": "Why the first change costs more",
+    "body": "The first change to a page after a checkpoint writes the full 8 kB page into WAL. It protects against half-written pages after a crash. wal_compression = lz4 cut this lab's WAL by about 22%."
+   },
+   {
+    "title": "wal_level in one slide",
+    "points": [
+     "minimal: crash recovery only, no archiving or replication",
+     "replica (default): backups, PITR, streaming standbys",
+     "logical: adds data for logical replication",
+     "Changing it needs a restart, not a reload"
+    ]
+   },
+   {
+    "title": "Find what is holding WAL",
+    "code": "SELECT slot_name, active,\n  pg_wal_lsn_diff(pg_current_wal_lsn(),\n                  restart_lsn) AS bytes\n  FROM pg_replication_slots;",
+    "lang": "postgresql",
+    "body": "Also check failed_count in pg_stat_archiver."
+   }
+  ]
+ }
+}
