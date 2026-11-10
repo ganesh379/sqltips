@@ -19,6 +19,10 @@ WORDS = {
     # product and tools
     "PostgreSQL": "Postgres-Q-L", "Postgresql": "Postgres-Q-L", "postgresql": "Postgres-Q-L",
     "POSTGRESQL": "Postgres-Q-L",
+    # data type names (ep 9)
+    "json": "jay-son", "uuid": "U-U-I-D", "uuidv7": "U-U-I-D version seven", "varchar": "var-char",
+    "timestamptz": "timestamp T-Z", "UTC": "U-T-C", "bigint": "big int", "smallint": "small int",
+    "gen_random_uuid": "gen random U-U-I-D",
     "psql": "P-S-Q-L", "PSQL": "P-S-Q-L", "appdb": "app D-B", "reportdb": "report D-B",
     "fdw": "F-D-W", "datname": "dat-name",
     "pg": "P-G", "PG": "P-G",

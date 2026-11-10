@@ -1,0 +1,832 @@
+{
+ "ep": 9,
+ "total": 140,
+ "title": "PostgreSQL Data Types You Should Know",
+ "phase": "Foundations",
+ "lines": [
+  {
+   "say": "Choosing the wrong data type can hurt you later.",
+   "cap": "The wrong *data* *type* can *hurt* later."
+  },
+  {
+   "say": "This is episode nine of the PostgreSQL DBA series. Today: the data types a DBA should know.",
+   "cap": "Episode 9: the *data* *types* to know."
+  },
+  {
+   "say": "A column's type decides the allowed values, the storage size, and which operations work.",
+   "cap": "A type decides *values,* *size* and *operations.*",
+   "cue": "operations"
+  },
+  {
+   "say": "Changing it later normally rewrites the whole table and its indexes. So choose well.",
+   "cap": "Changing it later *rewrites* the table.",
+   "cue": "rewrites"
+  },
+  {
+   "say": "Integers first. smallint is two bytes, integer four, bigint eight.",
+   "cap": "*smallint* 2, *integer* 4, *bigint* 8 bytes.",
+   "cue": "bigint"
+  },
+  {
+   "say": "The docs call integer the common choice. Use bigint when its range is not enough.",
+   "cap": "*integer* is the common choice. *bigint* for more range.",
+   "cue": "bigint"
+  },
+  {
+   "say": "Past about two point one billion, integer fails: integer out of range. bigint handles it.",
+   "cap": "Past 2,147,483,647: *integer* *out* *of* *range.*",
+   "cue": "bigint"
+  },
+  {
+   "say": "For money, use numeric: it is exact. real and double precision are inexact.",
+   "cap": "Money: *numeric* is exact. Floats are *inexact.*",
+   "cue": "real"
+  },
+  {
+   "say": "Zero point one plus zero point two as double precision is not exactly zero point three. With numeric, it is.",
+   "cap": "*float8:* 0.30000000000000004. *numeric:* 0.3.",
+   "cue": "numeric"
+  },
+  {
+   "say": "For strings, text and varchar perform the same in PostgreSQL.",
+   "cap": "*text* and *varchar:* same performance."
+  },
+  {
+   "say": "char of n pads with spaces, and is usually the slowest.",
+   "cap": "*char(n)* pads with spaces: usually *slowest.*"
+  },
+  {
+   "say": "varchar of n adds a length check. Too long, and you get: value too long for type character varying.",
+   "cap": "Too long: *value* *too* *long* for type varchar.",
+   "cue": "value"
+  },
+  {
+   "say": "boolean is one byte: true, false, or null for unknown.",
+   "cap": "*boolean:* 1 byte. true, false or *null.*"
+  },
+  {
+   "say": "For time, a common practice is timestamptz. It is stored as UTC, and shown in your session's time zone.",
+   "cap": "*timestamptz* is stored as *UTC.*",
+   "cue": "shown"
+  },
+  {
+   "say": "Here, seven thirty UTC shows as one PM in Asia Kolkata.",
+   "cap": "07:30 UTC shows as *13:00 +05:30.*"
+  },
+  {
+   "say": "A uuid is sixteen bytes. gen_random_uuid makes a random one.",
+   "cap": "*uuid:* 16 bytes. *gen_random_uuid()* = random v4.",
+   "cue": "gen_random_uuid"
+  },
+  {
+   "say": "PostgreSQL eighteen adds uuidv7, which is time-ordered.",
+   "cap": "PostgreSQL 18 adds *uuidv7():* time-ordered."
+  },
+  {
+   "say": "The docs say most apps should prefer jsonb. It is stored as binary, and much faster to process.",
+   "cap": "Prefer *jsonb:* binary and *faster* to process.",
+   "cue": "binary"
+  },
+  {
+   "say": "jsonb can also use GIN indexes. If a key appears twice, jsonb keeps only the last value.",
+   "cap": "*jsonb* keeps the *last* duplicate key.",
+   "cue": "twice"
+  },
+  {
+   "say": "Arrays hold a list in one column, numbered from one.",
+   "cap": "Arrays are numbered from *1.*"
+  },
+  {
+   "say": "But the docs warn: arrays are not sets. If you search inside them, a separate table often scales better.",
+   "cap": "Arrays are *not* *sets.* Consider a *table.*",
+   "cue": "separate"
+  },
+  {
+   "say": "DBA takeaway: typlen in pg_type shows the size of fixed-length types.",
+   "cap": "*pg_type.typlen* = size in bytes."
+  },
+  {
+   "say": "One byte for boolean, four for integer, eight for bigint, sixteen for uuid.",
+   "cap": "bool *1,* int4 *4,* int8 *8,* uuid *16.*"
+  },
+  {
+   "say": "Common mistake: storing dates or numbers as text. You lose validation, correct sorting, and date math.",
+   "cap": "*Never* store dates or numbers as *text.*"
+  },
+  {
+   "say": "Recap: integers for counts, numeric for money, text for strings, timestamptz for time, jsonb for JSON.",
+   "cap": "Recap: *bigint,* *numeric,* *text,* *timestamptz,* *jsonb.*",
+   "cue": "timestamptz"
+  },
+  {
+   "say": "Next up: psql, the essential PostgreSQL command-line tool. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *psql.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "The wrong *data* *type* can *hurt* later.",
+   "sub": "Episode 9 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 9 · FOUNDATIONS",
+   "title": "PostgreSQL Data Types You Should Know",
+   "sub": "And how to choose"
+  },
+  {
+   "type": "cards",
+   "from": 2,
+   "to": 4,
+   "heading": "What a data type decides",
+   "columns": 1,
+   "items": [
+    {
+     "at": 2,
+     "icon": "check",
+     "title": "Allowed values",
+     "text": "Bad input is rejected with an error",
+     "color": "green"
+    },
+    {
+     "at": 2,
+     "icon": "disk",
+     "title": "Storage size",
+     "text": "Bytes per value, in every row and index",
+     "color": "blue"
+    },
+    {
+     "at": 2,
+     "icon": "wrench",
+     "title": "Operations",
+     "text": "Math, date functions, sorting, operators",
+     "color": "cyan"
+    },
+    {
+     "at": 3,
+     "icon": "alert",
+     "title": "Changing it later",
+     "text": "Normally rewrites the table and its indexes",
+     "color": "red"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 4,
+   "to": 6,
+   "heading": "Integer types",
+   "columns": 1,
+   "items": [
+    {
+     "at": 4,
+     "icon": "chart",
+     "title": "smallint · 2 bytes",
+     "text": "-32,768 to +32,767",
+     "color": "cyan"
+    },
+    {
+     "at": 4,
+     "icon": "chart",
+     "title": "integer · 4 bytes",
+     "text": "-2,147,483,648 to +2,147,483,647",
+     "color": "green"
+    },
+    {
+     "at": 4,
+     "icon": "growth",
+     "title": "bigint · 8 bytes",
+     "text": "Up to about 9.2 quintillion",
+     "color": "orange"
+    },
+    {
+     "at": 5,
+     "icon": "book",
+     "title": "From the docs",
+     "text": "integer is the common choice; bigint when range is not enough",
+     "color": "blue"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 6,
+   "to": 7,
+   "heading": "Past the integer limit",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT 2147483647::int + 1;",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  integer out of range",
+     "at": 6
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT 2147483647::bigint + 1;",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "  ?column?",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "------------",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": " 2147483648",
+     "at": 6
+    }
+   ]
+  },
+  {
+   "type": "compare",
+   "from": 7,
+   "to": 8,
+   "heading": "Exact vs inexact numbers",
+   "left": {
+    "title": "numeric",
+    "color": "green",
+    "rows": [
+     "Exact results",
+     "Recommended for money",
+     "Slower than integers"
+    ]
+   },
+   "right": {
+    "title": "real / double",
+    "color": "red",
+    "rows": [
+     "Inexact, approximated",
+     "6 or 15 digits precision",
+     "Equality can surprise you"
+    ]
+   },
+   "at": [
+    7,
+    7,
+    7
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 8,
+   "to": 9,
+   "heading": "0.1 + 0.2",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT 0.1::float8",
+     "at": 8
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  + 0.2::float8;",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "      ?column?",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "---------------------",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": " 0.30000000000000004",
+     "at": 8
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT 0.1::numeric",
+     "at": 8
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  + 0.2::numeric;",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": " ?column?",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "----------",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "      0.3",
+     "at": 8
+    }
+   ]
+  },
+  {
+   "type": "compare",
+   "from": 9,
+   "to": 11,
+   "heading": "Character types",
+   "left": {
+    "title": "text / varchar",
+    "color": "green",
+    "rows": [
+     "Same performance",
+     "text: any length",
+     "varchar(n): length check"
+    ]
+   },
+   "right": {
+    "title": "char(n)",
+    "color": "red",
+    "rows": [
+     "Padded with spaces",
+     "Extra storage",
+     "Usually the slowest"
+    ]
+   },
+   "at": [
+    9,
+    10,
+    10
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 11,
+   "to": 12,
+   "heading": "varchar(n) checks length",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "CREATE TABLE users (",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  name varchar(5));",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "CREATE TABLE",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "INSERT INTO users",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  VALUES ('too long');",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  value too long for type",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "character varying(5)",
+     "at": 11
+    }
+   ]
+  },
+  {
+   "type": "stat",
+   "from": 12,
+   "to": 13,
+   "value": "1 byte",
+   "label": "boolean: true, false or null",
+   "text": "null means unknown",
+   "color": "cyan"
+  },
+  {
+   "type": "diagram",
+   "from": 13,
+   "to": 14,
+   "heading": "How timestamptz works",
+   "nodes": [
+    {
+     "id": "in",
+     "label": "Input",
+     "sub": "any time zone",
+     "x": 540,
+     "y": 520,
+     "w": 380,
+     "h": 130,
+     "icon": "clock",
+     "color": "blue",
+     "at": 13
+    },
+    {
+     "id": "st",
+     "label": "Stored as UTC",
+     "sub": "8 bytes",
+     "x": 540,
+     "y": 830,
+     "w": 380,
+     "h": 130,
+     "icon": "database",
+     "color": "orange",
+     "shape": "db",
+     "at": 13
+    },
+    {
+     "id": "outp",
+     "label": "Output",
+     "sub": "session TimeZone",
+     "x": 540,
+     "y": 1140,
+     "w": 380,
+     "h": 130,
+     "icon": "eye",
+     "color": "green",
+     "at": 13
+    }
+   ],
+   "edges": [
+    {
+     "from": "in",
+     "to": "st",
+     "label": "convert",
+     "at": 13,
+     "flow": true
+    },
+    {
+     "from": "st",
+     "to": "outp",
+     "label": "display",
+     "at": 13,
+     "flow": true,
+     "color": "green"
+    }
+   ],
+   "focus": [
+    {
+     "at": 13,
+     "id": "st"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 14,
+   "to": 15,
+   "heading": "Same instant, local display",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SET timezone = 'Asia/Kolkata';",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "SET",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT '2026-11-11 07:30+00'",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  ::timestamptz;",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "        timestamptz",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "---------------------------",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": " 2026-11-11 13:00:00+05:30",
+     "at": 14
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 15,
+   "to": 17,
+   "heading": "The uuid type",
+   "columns": 1,
+   "items": [
+    {
+     "at": 15,
+     "icon": "key",
+     "title": "128 bits, 16 bytes",
+     "text": "Unique beyond one database, unlike sequences",
+     "color": "blue"
+    },
+    {
+     "at": 15,
+     "icon": "sync",
+     "title": "gen_random_uuid()",
+     "text": "Version 4: random",
+     "color": "cyan"
+    },
+    {
+     "at": 16,
+     "icon": "clock",
+     "title": "uuidv7() in PG 18",
+     "text": "Version 7: time-ordered. From the PostgreSQL 18 docs",
+     "color": "orange"
+    }
+   ]
+  },
+  {
+   "type": "compare",
+   "from": 17,
+   "to": 18,
+   "heading": "json vs jsonb",
+   "left": {
+    "title": "json",
+    "color": "blue",
+    "rows": [
+     "Exact copy of the text",
+     "Reparsed on every use",
+     "Keeps key order"
+    ]
+   },
+   "right": {
+    "title": "jsonb",
+    "color": "green",
+    "rows": [
+     "Decomposed binary",
+     "Much faster to process",
+     "Supports GIN indexes"
+    ]
+   },
+   "at": [
+    17,
+    17,
+    17
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 18,
+   "to": 19,
+   "heading": "Duplicate keys",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- jsonb supports GIN indexes",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT '{\"b\": 1, \"a\": 2, \"a\": 3}'",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  ::json;",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " {\"b\": 1, \"a\": 2, \"a\": 3}",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT '{\"b\": 1, \"a\": 2, \"a\": 3}'",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  ::jsonb;",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " {\"a\": 3, \"b\": 1}",
+     "at": 18
+    },
+    {
+     "kind": "comment",
+     "text": "-- headers trimmed",
+     "at": 18
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 19,
+   "to": 20,
+   "heading": "Arrays start at 1",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT (ARRAY[10, 20, 30])[1];",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": " array",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "-------",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "    10",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT (ARRAY[10, 20, 30])[0];",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": " array",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "-------",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "",
+     "at": 19
+    },
+    {
+     "kind": "comment",
+     "text": "-- index 0 returns NULL",
+     "at": 19
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "tip",
+   "title": "Arrays are not sets",
+   "text": "From the docs: searching inside arrays can be a sign of misdesign. A separate table is easier to search and scales better."
+  },
+  {
+   "type": "terminal",
+   "from": 21,
+   "to": 23,
+   "heading": "Bytes per value: typlen",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT typname, typlen",
+     "at": 21
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  FROM pg_type WHERE typname IN",
+     "at": 21
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  ('bool','int4','int8','uuid')",
+     "at": 21
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "  ORDER BY typlen;",
+     "at": 21
+    },
+    {
+     "kind": "out",
+     "text": " typname | typlen",
+     "at": 22
+    },
+    {
+     "kind": "out",
+     "text": "---------+--------",
+     "at": 22
+    },
+    {
+     "kind": "out",
+     "text": " bool    |      1",
+     "at": 22
+    },
+    {
+     "kind": "out",
+     "text": " int4    |      4",
+     "at": 22
+    },
+    {
+     "kind": "out",
+     "text": " int8    |      8",
+     "at": 22
+    },
+    {
+     "kind": "out",
+     "text": " uuid    |     16",
+     "at": 22
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 23,
+   "to": 24,
+   "kind": "warning",
+   "title": "Dates and numbers as text",
+   "text": "You lose validation, correct sorting and date math. '10' sorts before '9' as text."
+  },
+  {
+   "type": "checklist",
+   "from": 24,
+   "to": 25,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 24,
+     "title": "integer or bigint for counts"
+    },
+    {
+     "at": 24,
+     "title": "numeric for money"
+    },
+    {
+     "at": 24,
+     "title": "text or varchar for strings"
+    },
+    {
+     "at": 24,
+     "title": "timestamptz for points in time"
+    },
+    {
+     "at": 24,
+     "title": "jsonb for JSON documents"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 25,
+   "to": 26,
+   "next": "Ep 10 · psql essentials"
+  }
+ ]
+}

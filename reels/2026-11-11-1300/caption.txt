@@ -1,0 +1,13 @@
+The wrong PostgreSQL data type is easy to pick and hard to change later.
+
+Integers: smallint is 2 bytes, integer 4, bigint 8. The docs call integer the common choice; use bigint when its range is not enough. Past 2147483647 an integer column fails with "ERROR: integer out of range".
+
+For money, use numeric: it is exact. In our test, 0.1 + 0.2 as double precision returned 0.30000000000000004, while numeric returned 0.3. text and varchar have no performance difference; varchar(n) only adds a length check ("value too long for type character varying").
+
+timestamptz is stored as UTC and shown in your session time zone. uuid is 16 bytes, and PostgreSQL 18 adds uuidv7() for time-ordered UUIDs. Most apps should prefer jsonb over json: it is faster to process and supports GIN indexes. PostgreSQL DBA tip: never store dates or numbers as text.
+
+Episode 9 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql
