@@ -40,7 +40,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain logical rows versus physical heap pages and tuple storage at a conceptual level.
   - Format: Storage visualization · Level: Beginner
   - Hook: A table is not stored as one giant file.
-- [ ] Ep 009 | 2026-11-12 | PostgreSQL Data Types You Should Know
+- [x] Ep 009 | 2026-11-12 | PostgreSQL Data Types You Should Know (posted 2026-11-11 13:00, Buffer 6af2aead05af22d7260bdcce)
   - Objective: Cover numeric, text, boolean, date/time, UUID, JSONB and arrays; selection considerations.
   - Format: Type comparison · Level: Beginner
   - Hook: Choosing the wrong data type can hurt later.
