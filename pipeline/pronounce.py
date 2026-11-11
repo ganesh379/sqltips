@@ -25,6 +25,8 @@ WORDS = {
     "gen_random_uuid": "gen random U-U-I-D",
     "psql": "P-S-Q-L", "PSQL": "P-S-Q-L", "appdb": "app D-B", "reportdb": "report D-B",
     "fdw": "F-D-W", "datname": "dat-name",
+    # psql meta-commands (ep 10)
+    "conninfo": "conn-info", "du": "D-U", "dt": "D-T",
     "pg": "P-G", "PG": "P-G",
     "pgBouncer": "P-G Bouncer", "PgBouncer": "P-G Bouncer", "pgbouncer": "P-G Bouncer",
     "pgAdmin": "P-G Admin", "pgadmin": "P-G Admin",

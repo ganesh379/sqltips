@@ -1,0 +1,843 @@
+{
+ "ep": 10,
+ "total": 140,
+ "title": "psql: The Essential PostgreSQL Command-Line Tool",
+ "phase": "Foundations",
+ "lines": [
+  {
+   "say": "Five psql commands every DBA should know.",
+   "cap": "Five *psql* commands every DBA should know."
+  },
+  {
+   "say": "This is episode ten of the PostgreSQL DBA series. Today: connect, explore a database, and get help in psql.",
+   "cap": "Episode 10: *connect,* *explore,* get *help.*",
+   "cue": "explore"
+  },
+  {
+   "say": "psql is the interactive terminal for PostgreSQL. You type a query, and psql sends it to the server.",
+   "cap": "psql sends your *SQL* to the *server.*",
+   "cue": "server"
+  },
+  {
+   "say": "Anything starting with a backslash is a meta-command, handled by psql itself.",
+   "cap": "*Backslash* commands run inside *psql* itself.",
+   "cue": "meta-command"
+  },
+  {
+   "say": "To connect: psql, dash capital U postgres, dash d appdb.",
+   "cap": "Connect: *-U* user, *-d* database.",
+   "cue": "dash"
+  },
+  {
+   "say": "No host given? psql uses a local Unix-domain socket. The server port is five four three two by default.",
+   "cap": "No host: *Unix* *socket.* Default port *5432.*",
+   "cue": "five"
+  },
+  {
+   "say": "No user given? psql uses your operating system user name, and the same name for the database.",
+   "cap": "Default user = *OS* *user.* Database = same name.",
+   "cue": "database"
+  },
+  {
+   "say": "Command one: backslash conninfo. It shows the database, user, socket and port. Check it before anything risky.",
+   "cap": "1. *\\conninfo:* where am I connected?",
+   "cue": "database"
+  },
+  {
+   "say": "Command two: backslash L lists the databases, with owner and encoding. Output trimmed. Add a plus for sizes.",
+   "cap": "2. *\\l* lists databases. *\\l+* adds sizes.",
+   "cue": "owner"
+  },
+  {
+   "say": "Command three: backslash du lists roles.",
+   "cap": "3. *\\du* lists *roles.*"
+  },
+  {
+   "say": "postgres is a superuser. app_user has no special attributes.",
+   "cap": "*postgres:* Superuser. *app_user:* none."
+  },
+  {
+   "say": "Command four: backslash d describes objects. backslash dt lists tables.",
+   "cap": "4. *\\d* describes. *\\dt* lists tables.",
+   "cue": "dt"
+  },
+  {
+   "say": "backslash d orders shows columns, types, nullability and the primary key index.",
+   "cap": "*\\d* *orders:* columns, types, *indexes.*",
+   "cue": "columns"
+  },
+  {
+   "say": "Command five: backslash x turns on expanded display.",
+   "cap": "5. *\\x:* expanded display."
+  },
+  {
+   "say": "Each column prints on its own line. Great for wide rows.",
+   "cap": "*One* *column* per line."
+  },
+  {
+   "say": "Forgot a command? backslash question mark lists them all.",
+   "cap": "*\\?* lists every *meta-command.*",
+   "cue": "question"
+  },
+  {
+   "say": "backslash h DROP DATABASE shows the SQL syntax, with a link to the docs.",
+   "cap": "*\\h* DROP DATABASE: SQL *syntax* help.",
+   "cue": "syntax"
+  },
+  {
+   "say": "Bonus: backslash timing shows each statement's time in milliseconds.",
+   "cap": "*\\timing* shows time in *ms.*",
+   "cue": "milliseconds"
+  },
+  {
+   "say": "Start psql with dash capital E to see the real query behind each backslash command.",
+   "cap": "*-E* shows the query behind *\\dt.*",
+   "cue": "real"
+  },
+  {
+   "say": "Common mistake: no semicolon. Nothing runs, and the prompt changes to dash hash.",
+   "cap": "No *semicolon?* Prompt becomes *appdb-#.*",
+   "cue": "prompt"
+  },
+  {
+   "say": "psql is waiting for more. Type the semicolon, and it runs. Meta-commands need none.",
+   "cap": "Type *;* to send it. Backslash needs none.",
+   "cue": "semicolon"
+  },
+  {
+   "say": "DBA takeaway: read your prompt. A hash means a superuser. A greater-than sign means a normal user.",
+   "cap": "*#* superuser. *>* normal user.",
+   "cue": "greater-than"
+  },
+  {
+   "say": "On a hash prompt, slow down: every command runs with full power.",
+   "cap": "On *#,* every command has *full* *power.*"
+  },
+  {
+   "say": "Recap: conninfo, L, du, d and x.",
+   "cap": "Recap: *\\conninfo,* *\\l,* *\\du,* *\\d,* *\\x.*",
+   "cue": "du"
+  },
+  {
+   "say": "And backslash q quits psql.",
+   "cap": "*\\q* quits psql."
+  },
+  {
+   "say": "Next up: the PostgreSQL configuration files. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *config* *files.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "Five *psql* commands every DBA should know.",
+   "sub": "Episode 10 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 10 · FOUNDATIONS",
+   "title": "psql: The Essential PostgreSQL Command-Line Tool",
+   "sub": "Connect, explore, get help"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 4,
+   "heading": "How psql works",
+   "nodes": [
+    {
+     "id": "you",
+     "label": "You",
+     "sub": "type SQL or \\cmd",
+     "x": 540,
+     "y": 500,
+     "w": 360,
+     "h": 130,
+     "icon": "users",
+     "color": "blue",
+     "at": 2
+    },
+    {
+     "id": "psql",
+     "label": "psql",
+     "sub": "interactive terminal",
+     "x": 540,
+     "y": 800,
+     "w": 360,
+     "h": 140,
+     "icon": "terminal",
+     "color": "orange",
+     "at": 2
+    },
+    {
+     "id": "srv",
+     "label": "PostgreSQL server",
+     "sub": "runs SQL",
+     "x": 290,
+     "y": 1170,
+     "w": 380,
+     "h": 140,
+     "icon": "database",
+     "color": "green",
+     "shape": "db",
+     "at": 2
+    },
+    {
+     "id": "meta",
+     "label": "Meta-commands",
+     "sub": "\\l \\du \\d \\x",
+     "x": 800,
+     "y": 1170,
+     "w": 340,
+     "h": 140,
+     "icon": "wrench",
+     "color": "cyan",
+     "at": 3
+    }
+   ],
+   "edges": [
+    {
+     "from": "you",
+     "to": "psql",
+     "label": "input",
+     "at": 2,
+     "flow": true
+    },
+    {
+     "from": "psql",
+     "to": "srv",
+     "label": "SQL query",
+     "at": 2,
+     "flow": true,
+     "color": "green"
+    },
+    {
+     "from": "psql",
+     "to": "meta",
+     "label": "handled locally",
+     "at": 3,
+     "flow": true,
+     "color": "cyan"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "srv"
+    },
+    {
+     "at": 3,
+     "id": "meta"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 4,
+   "to": 5,
+   "heading": "Connect",
+   "title": "shell",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "psql -U postgres -d appdb",
+     "at": 4
+    },
+    {
+     "kind": "out",
+     "text": "Type \"help\" for help.",
+     "at": 4
+    },
+    {
+     "kind": "comment",
+     "text": "-- version banner trimmed",
+     "at": 4
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "",
+     "at": 4
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 5,
+   "to": 7,
+   "heading": "Defaults if you omit them",
+   "columns": 1,
+   "items": [
+    {
+     "at": 5,
+     "icon": "server",
+     "title": "No -h host",
+     "text": "Local Unix-domain socket",
+     "color": "blue"
+    },
+    {
+     "at": 5,
+     "icon": "network",
+     "title": "Port",
+     "text": "Server port is 5432 by default",
+     "color": "cyan"
+    },
+    {
+     "at": 6,
+     "icon": "users",
+     "title": "No -U user",
+     "text": "Your operating system user name",
+     "color": "orange"
+    },
+    {
+     "at": 6,
+     "icon": "database",
+     "title": "No -d database",
+     "text": "Same name as the database user",
+     "color": "green"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 7,
+   "to": 8,
+   "heading": "1. \\conninfo",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\conninfo",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "You are connected to database \"appdb\"",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "as user \"postgres\" via socket in",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "\"/var/run/postgresql\" at port \"5432\".",
+     "at": 7
+    },
+    {
+     "kind": "comment",
+     "text": "-- one line, wrapped to fit",
+     "at": 7
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 8,
+   "to": 9,
+   "heading": "2. \\l lists databases",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\l",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "   Name    |  Owner   | Encoding",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "-----------+----------+----------",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": " appdb     | app_user | UTF8",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": " postgres  | postgres | UTF8",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": " template0 | postgres | UTF8",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": " template1 | postgres | UTF8",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "(4 rows)",
+     "at": 8
+    },
+    {
+     "kind": "comment",
+     "text": "-- more columns trimmed",
+     "at": 8
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 9,
+   "to": 11,
+   "heading": "3. \\du lists roles",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\du",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": " Role name | Attributes",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": "-----------+-----------",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": " app_user  |",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": " postgres  | Superuser, ...",
+     "at": 10
+    },
+    {
+     "kind": "comment",
+     "text": "-- postgres attributes in full:",
+     "at": 10
+    },
+    {
+     "kind": "comment",
+     "text": "-- Superuser, Create role,",
+     "at": 10
+    },
+    {
+     "kind": "comment",
+     "text": "-- Create DB, Replication, Bypass RLS",
+     "at": 10
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 11,
+   "to": 13,
+   "heading": "4. \\dt and \\d",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\dt",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": " Schema |  Name  | Type  |  Owner",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": " public | orders | table | app_user",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\d orders",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "  Column  |     Type      | Nullable",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": " id       | bigint        | not null",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": " customer | text          | not null",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": " amount   | numeric(10,2) |",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "Indexes:",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "    \"orders_pkey\" PRIMARY KEY,",
+     "at": 12
+    },
+    {
+     "kind": "comment",
+     "text": "-- columns trimmed",
+     "at": 12
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 13,
+   "to": 15,
+   "heading": "5. \\x expanded display",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\x",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "Expanded display is on.",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT * FROM orders",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "WHERE id = 1;",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "-[ RECORD 1 ]------",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "id       | 1",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "customer | cust_001",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "amount   | 499.00",
+     "at": 14
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 15,
+   "to": 17,
+   "heading": "Built-in help",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\?",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "General",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "  \\q                     quit psql",
+     "at": 15
+    },
+    {
+     "kind": "comment",
+     "text": "-- over 100 lines, trimmed",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\h DROP DATABASE",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "Command:     DROP DATABASE",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "Description: remove a database",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "Syntax:",
+     "at": 16
+    },
+    {
+     "kind": "comment",
+     "text": "-- syntax and docs URL follow",
+     "at": 16
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 17,
+   "to": 18,
+   "heading": "\\timing",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\timing",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "Timing is on.",
+     "at": 17
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT count(*) FROM orders;",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": " count",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "-------",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "     2",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "(1 row)",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "Time: 0.270 ms",
+     "at": 17
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 18,
+   "to": 19,
+   "heading": "-E: see the hidden query",
+   "title": "shell",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "psql -U postgres -d appdb -E",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\dt",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "********* QUERY **********",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "SELECT n.nspname as \"Schema\",",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "  c.relname as \"Name\",",
+     "at": 18
+    },
+    {
+     "kind": "comment",
+     "text": "-- query trimmed",
+     "at": 18
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 19,
+   "to": 21,
+   "heading": "The missing semicolon",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT count(*) FROM orders",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "",
+     "at": 19
+    },
+    {
+     "kind": "comment",
+     "text": "-- waiting for more input",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": ";",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": " count",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "-------",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "     2",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "(1 row)",
+     "at": 20
+    }
+   ]
+  },
+  {
+   "type": "compare",
+   "from": 21,
+   "to": 22,
+   "heading": "Read your prompt",
+   "left": {
+    "title": "Ends in #",
+    "color": "red",
+    "rows": [
+     "appdb=#",
+     "Superuser session",
+     "Full power: slow down"
+    ]
+   },
+   "right": {
+    "title": "Ends in >",
+    "color": "green",
+    "rows": [
+     "Normal user",
+     "Limited by privileges",
+     "Everyday work"
+    ]
+   },
+   "at": [
+    21,
+    21,
+    21
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 22,
+   "to": 23,
+   "kind": "warning",
+   "title": "On a # prompt, slow down",
+   "text": "From the docs: the prompt shows # when the session user is a superuser, otherwise >. Run \\conninfo first."
+  },
+  {
+   "type": "checklist",
+   "from": 23,
+   "to": 25,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 23,
+     "title": "\\conninfo: where am I?"
+    },
+    {
+     "at": 23,
+     "title": "\\l: list databases"
+    },
+    {
+     "at": 23,
+     "title": "\\du: list roles"
+    },
+    {
+     "at": 23,
+     "title": "\\d: describe objects"
+    },
+    {
+     "at": 23,
+     "title": "\\x: expanded rows"
+    },
+    {
+     "at": 24,
+     "title": "\\q: quit psql"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 25,
+   "to": 26,
+   "next": "Ep 11 · Configuration files"
+  }
+ ]
+}

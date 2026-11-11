@@ -1,0 +1,15 @@
+Five psql commands every PostgreSQL DBA should know, plus the prompt symbol that should make you slow down.
+
+psql is the interactive terminal for PostgreSQL. Connect with psql -U postgres -d appdb. Leave out the host and psql uses a local Unix-domain socket; leave out the user and it uses your operating system user name, which is also the default database name.
+
+The five: \conninfo shows which database, user, socket and port you are on. \l lists databases (\l+ adds sizes). \du lists roles and their attributes. \d describes a table, \dt lists tables. \x switches to expanded display for wide rows.
+
+Stuck? \? lists every meta-command and \h DROP DATABASE shows SQL syntax help. \timing shows statement time in milliseconds, and psql -E echoes the real catalog query behind each backslash command.
+
+Common mistake: no semicolon, so the prompt changes to appdb-# and nothing runs. PostgreSQL DBA tip: a # prompt means a superuser session; a > prompt means a normal user.
+
+Episode 10 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql
