@@ -43,3 +43,4 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-09 | 13:00 | Instagram | Series Ep 007 | PostgreSQL Data Directory: What Lives Inside PGDATA? | reels/2026-11-09-1300 | 6af00a2151492b796e1be2d0
 - 2026-11-10 | 13:00 | Instagram | Series Ep 008 | Tables, Rows, Pages and Tuples | reels/2026-11-10-1300 | 6af15c33e44ddbb57c34a925
 - 2026-11-11 | 13:00 | Instagram | Series Ep 009 | PostgreSQL Data Types You Should Know | reels/2026-11-11-1300 | 6af2aead05af22d7260bdcce
+- 2026-11-12 | 13:00 | Instagram | Series Ep 010 | psql: The Essential PostgreSQL Command-Line Tool | reels/2026-11-12-1300 | 6af4006d7ffe799078d42aa5

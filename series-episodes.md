@@ -44,7 +44,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Cover numeric, text, boolean, date/time, UUID, JSONB and arrays; selection considerations.
   - Format: Type comparison · Level: Beginner
   - Hook: Choosing the wrong data type can hurt later.
-- [ ] Ep 010 | 2026-11-13 | psql: The Essential PostgreSQL Command-Line Tool
+- [x] Ep 010 | 2026-11-13 | psql: The Essential PostgreSQL Command-Line Tool (posted 2026-11-12 13:00, Buffer 6af4006d7ffe799078d42aa5)
   - Objective: Connect, list databases/roles, describe objects, change output and use help/meta-commands.
   - Format: Live terminal demo · Level: Beginner
   - Hook: Five psql commands every DBA should know.
