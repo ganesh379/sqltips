@@ -50,3 +50,4 @@
 - 2026-11-10 [Oracle] oracle dbms_scheduler create_job example -> _drafts/2026-11-10-oracle-oracle-dbms-scheduler-create-job-example.json
 - 2026-11-10 [PostgreSQL] postgresql wal -> _drafts/2026-11-10-postgresql-postgresql-dba-part-15-wal-write-ahead-log.json
 - 2026-11-11 [Oracle] ora-06502 pl/sql numeric or value error -> _drafts/2026-11-11-oracle-ora-06502-pl-sql-numeric-or-value-error.json
+- 2026-11-11 [PostgreSQL] postgresql checkpoint tuning -> _drafts/2026-11-11-postgresql-postgresql-dba-part-16-checkpoints-background-writer.json

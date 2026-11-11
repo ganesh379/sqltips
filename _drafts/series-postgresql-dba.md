@@ -14,3 +14,4 @@
 - Part 13 | postgresql-dba-part-13-table-index-bloat | 2026-11-05
 - Part 14 | postgresql-dba-part-14-transaction-id-wraparound-freezing | 2026-11-06
 - Part 15 | postgresql-dba-part-15-wal-write-ahead-log | 2026-11-10
+- Part 16 | postgresql-dba-part-16-checkpoints-background-writer | 2026-11-11

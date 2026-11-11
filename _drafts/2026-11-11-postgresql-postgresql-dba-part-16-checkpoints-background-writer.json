@@ -1,0 +1,1684 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 16: Checkpoints and Background Writer Tuning",
+ "slug": "postgresql-dba-part-16-checkpoints-background-writer",
+ "category": "postgresql",
+ "description": "How PostgreSQL 18 checkpoints and the background writer work: read checkpoint logs, fix checkpoints occurring too frequently, tune max_wal_size.",
+ "focusKeyword": "postgresql checkpoint tuning",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "checkpoint",
+  "background-writer",
+  "performance"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/",
+  "/posts/postgresql/postgresql-dba-part-1-dba-role-and-architecture/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 28.5 WAL Configuration",
+   "url": "https://www.postgresql.org/docs/current/wal-configuration.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.5 Write Ahead Log (Checkpoints settings)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-wal.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.4 Resource Consumption (Background Writer, I/O)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-resource.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 27.2 Cumulative Statistics System (pg_stat_checkpointer, pg_stat_bgwriter, pg_stat_io, wait events, pg_stat_reset_shared)",
+   "url": "https://www.postgresql.org/docs/current/monitoring-stats.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CHECKPOINT",
+   "url": "https://www.postgresql.org/docs/current/sql-checkpoint.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.8 Error Reporting and Logging (log_checkpoints)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-logging.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 9.27 System Information Functions (pg_control_checkpoint)",
+   "url": "https://www.postgresql.org/docs/current/functions-info.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_buffercache",
+   "url": "https://www.postgresql.org/docs/current/pgbuffercache.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pgbench",
+   "url": "https://www.postgresql.org/docs/current/pgbench.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes (num_done, slru_written)",
+   "url": "https://www.postgresql.org/docs/current/release-18.html"
+  },
+  {
+   "title": "PostgreSQL 17 release notes (pg_stat_checkpointer created, buffers_backend removed)",
+   "url": "https://www.postgresql.org/docs/17/release-17.html"
+  },
+  {
+   "title": "PostgreSQL 16 docs: pg_stat_bgwriter (old column names)",
+   "url": "https://www.postgresql.org/docs/16/monitoring-stats.html"
+  },
+  {
+   "title": "PostgreSQL 15 release notes (log_checkpoints default on)",
+   "url": "https://www.postgresql.org/docs/15/release-15.html"
+  }
+ ],
+ "reviewNotes": "Series part 16. Part 15 (postgresql-dba-part-15-wal-write-ahead-log) is not live yet: it is named without a link in the intro and prerequisites. Publish Part 15 first. Tested on PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) from the PGDG repository on Ubuntu 24.04.5 LTS; followed the PostgreSQL 18 documentation (docs/current pages in sources), plus the 15, 16 and 17 pages for the version-history notes. All outputs are real; PIDs, LSNs, timestamps and pgbench numbers will differ for readers. SANDBOX CAVEATS: (1) postgresql-18 depends on liburing2 from archive.ubuntu.com, which is blocked here; I installed an empty liburing2 package with a stub library (only affects io_method=io_uring, not the default worker). (2) No systemd in the sandbox: where the article shows 'sudo systemctl reload postgresql@18-main' I ran 'pg_ctlcluster 18 main reload' (same SIGHUP); config edits were made with sed rather than nano; the before/after lines shown are the real file lines. (3) A leftover PostgreSQL 16 cluster in the image was moved to port 5416 and left down; it does not appear in any output. (4) Step 8: the \\watch output was collected by an equivalent shell loop every 30 s (same columns, wait_event via a subquery); I reformatted those real values into psql's aligned layout and removed idle rows (caption says so). I ran the article's exact \\watch query separately to confirm it works. (5) Step 10 was run twice: the first run (12:57) after Step 9, and a second identical run (13:02) to capture the pct_requested query; the outputs shown are all from the second run (orders had 1.2M rows before it instead of 200k). The log block is an excerpt (caption says so). (6) pgbench runs are single 60 s runs on a shared 4-vCPU VM. Step 13's run had checkpoint_timeout=15min/max_wal_size=4GB as shown. The '2,895 tps' and '3,804/3,874 tps' figures quoted in Step 15 are from additional runs: one with bgwriter 1000/4.0 but checkpoint_timeout still 5min (no checkpoint fell inside the 60 s, so equivalent), and two with default bgwriter settings and max_wal_size 4GB. (7) Practice answer numbers are from a real run with max_wal_size=128MB. (8) The 'shutdown' row in the trigger table and the description of the estimate= field are paraphrased from the docs' description of the moving-average WAL estimate; the log fields are not documented field by field, please check the wording. EDITOR CHECKS: tps comparisons are deliberately presented as noisy and not as evidence of a gain; the example values 4GB / 15min are labelled as lab examples, not recommendations. Length is above the 3,200-word target because of the 16 steps and full outputs; easy cuts are Step 3's pg_controldata block and Step 15.",
+ "generatedAt": "2026-11-11T13:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 16 of the PostgreSQL DBA series. A <b>checkpoint</b> is the moment PostgreSQL makes sure every change recorded in the WAL so far has also been written to the real table and index files. Checkpoints decide how long crash recovery takes, how much WAL your server writes and whether your disks see a smooth stream of writes or sudden bursts. The <b>background writer</b> is a helper process that cleans dirty pages in memory so your queries do not have to."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 15 (WAL explained: write-ahead log, wal_level and segments) you saw that WAL is the notebook PostgreSQL writes in before it touches the data files. By the end of this part you will be able to read every number in a checkpoint log line, tell scheduled checkpoints from forced ones, fix the <i>checkpoints are occurring too frequently</i> warning, tune <code class=\"inline-code\">max_wal_size</code> and <code class=\"inline-code\">checkpoint_timeout</code>, and check whether the background writer is doing its job. Every command was run on PostgreSQL 18 on Ubuntu and the outputs are real."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "What a checkpoint does, what triggers one, and why PostgreSQL spreads its writes over several minutes.",
+      "items": []
+     },
+     {
+      "content": "How to read the checkpoint lines in the server log and the <code class=\"inline-code\">pg_stat_checkpointer</code> view (both changed in PostgreSQL 17 and 18).",
+      "items": []
+     },
+     {
+      "content": "How a small <code class=\"inline-code\">max_wal_size</code> causes forced checkpoints and more than doubles WAL volume, and how to fix it.",
+      "items": []
+     },
+     {
+      "content": "What the background writer does, and how to see who writes dirty pages with <code class=\"inline-code\">pg_stat_bgwriter</code> and <code class=\"inline-code\">pg_stat_io</code>.",
+      "items": []
+     },
+     {
+      "content": "Which settings need only a reload, their defaults, and how to undo every change.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 15 of this series, especially <a href=\"/posts/postgresql/postgresql-dba-part-1-dba-role-and-architecture/\">Part 1</a> (server processes and memory), <a href=\"/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/\">Part 5</a> (postgresql.conf, reload vs restart) and Part 15 (WAL, LSNs and full page writes).",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server (we call it db1) with PostgreSQL 18 installed from the PGDG repository as in Part 2, cluster <b>18 main</b> running on port 5432.",
+      "items": []
+     },
+     {
+      "content": "A user with sudo rights. SQL runs as the postgres operating system user through psql.",
+      "items": []
+     },
+     {
+      "content": "About 2 GB of free disk space for the test database and the extra WAL.",
+      "items": []
+     },
+     {
+      "content": "A lab server, not production. Several steps deliberately set bad values to show the symptoms.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a query changes a row, PostgreSQL changes the 8 kB page in <b>shared buffers</b> (its memory cache) and writes a WAL record. The page in memory is now newer than the copy on disk. Such a page is called a <b>dirty page</b> or dirty buffer. PostgreSQL does not rush to write it: the WAL already protects the change, and the same page may be changed again a moment later."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Dirty pages cannot stay in memory forever. If the server crashed, recovery would have to replay WAL all the way back to the oldest unwritten change. A <b>checkpoint</b> puts a limit on that. The checkpointer process writes every dirty page to the data files, asks the operating system to flush them to disk (fsync), then writes a checkpoint record into the WAL and saves its position in the control file <code class=\"inline-code\">global/pg_control</code>. After that, crash recovery only needs to start from the checkpoint's <b>redo point</b>, and older WAL segments can be recycled or removed."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A simple comparison: WAL is the notebook PostgreSQL writes in first, and the checkpoint is the moment it copies the notebook into the real ledger and draws a line. Anything above the line no longer needs the notebook."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A checkpoint starts for one of these reasons, and the log line names the reason:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Reason in the log",
+      "What triggered it"
+     ],
+     [
+      "time",
+      "checkpoint_timeout passed since the last checkpoint (default 5min). If no WAL was written since the previous checkpoint, it is skipped."
+     ],
+     [
+      "wal",
+      "The WAL written since the last checkpoint is about to exceed max_wal_size (default 1GB)."
+     ],
+     [
+      "immediate force wait",
+      "Someone ran the CHECKPOINT command."
+     ],
+     [
+      "shutdown",
+      "A clean server stop always ends with a checkpoint."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Writing thousands of pages at once would flood the disks and slow every query. So a scheduled checkpoint is <b>throttled</b>: the checkpointer spreads the writes so that it finishes when about <code class=\"inline-code\">checkpoint_completion_target</code> (default 0.9) of the interval has passed. A slow checkpoint is normal. A checkpoint that writes for 4 minutes out of 5 is working as designed."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Checkpoints also have a hidden cost. With <code class=\"inline-code\">full_page_writes</code> on (the default, see Part 15), the first change to a page after each checkpoint writes the whole 8 kB page into the WAL. More frequent checkpoints mean more of these <b>full page images</b>, so more WAL, more archive space and more replication traffic."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <b>background writer</b> (bgwriter) is a separate process with a different job. Every <code class=\"inline-code\">bgwriter_delay</code> (200ms) it looks ahead in shared buffers and writes some dirty pages that are likely to be reused soon, so that a session that needs a free buffer finds a clean one. If no clean buffer is available, the session (a <b>client backend</b>) must write the dirty page itself before it can read new data, and the query waits for that write. The background writer does not replace checkpoints; it only reduces how often queries write pages themselves."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Three processes write data pages, and you will measure each of them in this part:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Process",
+      "When it writes",
+      "Where you see it"
+     ],
+     [
+      "checkpointer",
+      "Every checkpoint: all dirty pages",
+      "pg_stat_checkpointer, pg_stat_io (backend_type checkpointer), checkpoint log lines"
+     ],
+     [
+      "background writer",
+      "Every 200ms: a few pages likely to be reused soon",
+      "pg_stat_bgwriter, pg_stat_io (backend_type background writer)"
+     ],
+     [
+      "client backend",
+      "When a query needs a buffer and only dirty ones are free",
+      "pg_stat_io (backend_type client backend, column writes)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Changed in PostgreSQL 17 and 18",
+    "text": "Before PostgreSQL 17, checkpoint counters lived in <code class=\"inline-code\">pg_stat_bgwriter</code> (checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_backend). PostgreSQL 17 moved them to the new <code class=\"inline-code\">pg_stat_checkpointer</code> view and dropped buffers_backend and buffers_backend_fsync (use <code class=\"inline-code\">pg_stat_io</code> instead). PostgreSQL 18 added <code class=\"inline-code\">num_done</code> and <code class=\"inline-code\">slru_written</code> to pg_stat_checkpointer and shows SLRU buffers separately in the checkpoint log line. Since PostgreSQL 15, <code class=\"inline-code\">log_checkpoints</code> is on by default."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Look at the checkpointer and its settings",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Check the current checkpoint and background writer settings",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user</b>, list the settings this part is about, with their current value, unit, context and built-in default:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -X -c \"SELECT name, setting, unit, context, boot_val FROM pg_settings WHERE name IN ('checkpoint_timeout','checkpoint_completion_target','checkpoint_flush_after','checkpoint_warning','max_wal_size','min_wal_size','log_checkpoints','bgwriter_delay','bgwriter_lru_maxpages','bgwriter_lru_multiplier','bgwriter_flush_after','shared_buffers','full_page_writes') ORDER BY name;\"",
+    "caption": "List checkpoint and bgwriter settings"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "             name             | setting | unit |  context   | boot_val\n------------------------------+---------+------+------------+----------\n bgwriter_delay               | 200     | ms   | sighup     | 200\n bgwriter_flush_after         | 64      | 8kB  | sighup     | 64\n bgwriter_lru_maxpages        | 100     |      | sighup     | 100\n bgwriter_lru_multiplier      | 2       |      | sighup     | 2\n checkpoint_completion_target | 0.9     |      | sighup     | 0.9\n checkpoint_flush_after       | 32      | 8kB  | sighup     | 32\n checkpoint_timeout           | 300     | s    | sighup     | 300\n checkpoint_warning           | 30      | s    | sighup     | 30\n full_page_writes             | on      |      | sighup     | on\n log_checkpoints              | on      |      | sighup     | on\n max_wal_size                 | 1024    | MB   | sighup     | 1024\n min_wal_size                 | 80      | MB   | sighup     | 80\n shared_buffers               | 16384   | 8kB  | postmaster | 16384\n(13 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every checkpoint and background writer setting has context <b>sighup</b>: it can be set only in postgresql.conf (or on the server command line) and takes effect on a <b>reload</b>, no restart needed. Only shared_buffers (context postmaster) needs a restart. Some values are shown in 8 kB pages: checkpoint_flush_after 32 means 256kB and bgwriter_flush_after 64 means 512kB, the Linux defaults."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Parameter",
+      "Default",
+      "What it controls"
+     ],
+     [
+      "checkpoint_timeout",
+      "5min (range 30s to 1d)",
+      "Maximum time between automatic checkpoints."
+     ],
+     [
+      "max_wal_size",
+      "1GB",
+      "WAL allowed to build up between checkpoints before one is forced. A soft limit."
+     ],
+     [
+      "min_wal_size",
+      "80MB",
+      "Below this much WAL, old segments are always recycled rather than removed."
+     ],
+     [
+      "checkpoint_completion_target",
+      "0.9",
+      "Fraction of the interval over which checkpoint writes are spread."
+     ],
+     [
+      "checkpoint_warning",
+      "30s",
+      "Log a warning if WAL-triggered checkpoints come closer together than this. 0 disables."
+     ],
+     [
+      "checkpoint_flush_after",
+      "256kB on Linux",
+      "After this much checkpoint writing, ask the OS to flush to storage."
+     ],
+     [
+      "log_checkpoints",
+      "on",
+      "Log each checkpoint and restartpoint with statistics."
+     ],
+     [
+      "bgwriter_delay",
+      "200ms",
+      "Sleep between background writer rounds."
+     ],
+     [
+      "bgwriter_lru_maxpages",
+      "100",
+      "Most buffers the background writer writes per round. 0 disables background writing."
+     ],
+     [
+      "bgwriter_lru_multiplier",
+      "2.0",
+      "How far ahead of recent demand the background writer cleans buffers."
+     ],
+     [
+      "bgwriter_flush_after",
+      "512kB on Linux",
+      "After this much background writer output, ask the OS to flush."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On Ubuntu, /etc/postgresql/18/main/postgresql.conf already has uncommented lines <code class=\"inline-code\">max_wal_size = 1GB</code> and <code class=\"inline-code\">min_wal_size = 80MB</code>; the other settings are commented out (they use the default). Check with grep:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "grep -nE \"^#?(checkpoint|max_wal|min_wal|bgwriter|log_checkpoints)\" /etc/postgresql/18/main/postgresql.conf",
+    "caption": "Find the lines in postgresql.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "197:#bgwriter_delay = 200ms\t\t\t# 10-10000ms between rounds\n198:#bgwriter_lru_maxpages = 100\t\t# max buffers written/round, 0 disables\n199:#bgwriter_lru_multiplier = 2.0\t\t# 0-10.0 multiplier on buffers scanned/round\n200:#bgwriter_flush_after = 512kB\t\t# measured in pages, 0 disables\n267:#checkpoint_timeout = 5min\t\t# range 30s-1d\n268:#checkpoint_completion_target = 0.9\t# checkpoint target duration, 0.0 - 1.0\n269:#checkpoint_flush_after = 256kB\t\t# measured in pages, 0 disables\n270:#checkpoint_warning = 30s\t\t# 0 disables\n271:max_wal_size = 1GB\n272:min_wal_size = 80MB\n343:#max_wal_senders = 10\t\t# max number of walsender processes\n597:#log_checkpoints = on",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Find the checkpointer and background writer processes",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user</b>, list the server processes owned by postgres, then ask PostgreSQL for the same processes:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "ps -u postgres -o pid,cmd | grep -E \"18/main|postgres:\" | grep -v grep\nsudo -u postgres psql -X -c \"SELECT pid, backend_type FROM pg_stat_activity WHERE backend_type IN ('checkpointer','background writer','walwriter') ORDER BY backend_type;\"",
+    "caption": "Show the auxiliary processes"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " 2235 /usr/lib/postgresql/18/bin/postgres -D /var/lib/postgresql/18/main -c config_file=/etc/postgresql/18/main/postgresql.conf\n 2236 postgres: 18/main: io worker 0\n 2237 postgres: 18/main: io worker 1\n 2238 postgres: 18/main: io worker 2\n 2239 postgres: 18/main: checkpointer\n 2240 postgres: 18/main: background writer\n 2242 postgres: 18/main: walwriter\n 2243 postgres: 18/main: autovacuum launcher\n 2244 postgres: 18/main: logical replication launcher\n pid  |   backend_type\n------+-------------------\n 2240 | background writer\n 2239 | checkpointer\n 2242 | walwriter\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The checkpointer (PID 2239) and background writer (PID 2240) are separate processes started by the postmaster. The walwriter is different again: it writes WAL, not data pages. Remember PID 2239: every checkpoint line in the log carries it in square brackets."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Read where the last checkpoint is",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The control file records the latest checkpoint. <b>On db1, as a sudo user</b>, read it with SQL and with <code class=\"inline-code\">pg_controldata</code> (the binary is in /usr/lib/postgresql/18/bin/):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -X -c \"SELECT checkpoint_lsn, redo_lsn, redo_wal_file, checkpoint_time FROM pg_control_checkpoint();\"\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_controldata /var/lib/postgresql/18/main | grep -iE \"checkpoint|REDO|state\"",
+    "caption": "Read the latest checkpoint"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " checkpoint_lsn | redo_lsn  |      redo_wal_file       |    checkpoint_time\n----------------+-----------+--------------------------+------------------------\n 0/175EC38      | 0/175EC38 | 000000010000000000000001 | 2026-11-11 12:46:20+00\n(1 row)\n\nDatabase cluster state:               in production\nLatest checkpoint location:           0/175EC38\nLatest checkpoint's REDO location:    0/175EC38\nLatest checkpoint's REDO WAL file:    000000010000000000000001\nLatest checkpoint's TimeLineID:       1\nLatest checkpoint's PrevTimeLineID:   1\nLatest checkpoint's full_page_writes: on\nLatest checkpoint's NextXID:          0:752\nLatest checkpoint's NextOID:          13636\nLatest checkpoint's NextMultiXactId:  1\nLatest checkpoint's NextMultiOffset:  0\nLatest checkpoint's oldestXID:        744\nLatest checkpoint's oldestXID's DB:   1\nLatest checkpoint's oldestActiveXID:  0\nLatest checkpoint's oldestMultiXid:   1\nLatest checkpoint's oldestMulti's DB: 1\nLatest checkpoint's oldestCommitTsXid:0\nLatest checkpoint's newestCommitTsXid:0\nTime of latest checkpoint:            Wed Nov 11 12:46:20 2026",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <b>REDO location</b> is where crash recovery would start reading WAL. Here it equals the checkpoint location because nothing else was happening while the checkpoint ran; on a busy server the redo point is earlier, at the moment the checkpoint started. <code class=\"inline-code\">pg_control_checkpoint()</code> returns the same data as pg_controldata but works over a normal database connection."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Watch a checkpoint happen",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Create the lab database and an orders table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user</b>, create a database called lab, install the <code class=\"inline-code\">pg_buffercache</code> extension (a contrib module shipped in the postgresql-18 package that shows what is in shared buffers), and load 200,000 orders:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -X -c \"CREATE DATABASE lab;\"\nsudo -u postgres psql -X -d lab",
+    "caption": "Create the lab database and connect"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE EXTENSION pg_buffercache;\nCREATE TABLE orders (\n  order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  customer_id int     NOT NULL,\n  amount      numeric(10,2) NOT NULL,\n  status      text    NOT NULL DEFAULT 'new',\n  created_at  timestamptz NOT NULL DEFAULT now()\n);\nINSERT INTO orders (customer_id, amount)\nSELECT (random()*999)::int + 1, round((random()*5000)::numeric, 2)\nFROM generate_series(1, 200000);",
+    "caption": "Run in psql, connected to lab"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE DATABASE\nCREATE EXTENSION\nCREATE TABLE\nINSERT 0 200000",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Using pg_buffercache functions needs superuser or the <code class=\"inline-code\">pg_monitor</code> role; we run as postgres. To undo the whole lab later, <code class=\"inline-code\">DROP DATABASE lab;</code> (Step 16)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Create dirty pages and count them",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Still in psql on the lab database, start from a clean slate: run a checkpoint, reset the checkpointer and bgwriter counters with <code class=\"inline-code\">pg_stat_reset_shared()</code>, then update one order in ten and count dirty buffers with <code class=\"inline-code\">pg_buffercache_summary()</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CHECKPOINT;\nSELECT pg_stat_reset_shared('checkpointer');\nSELECT pg_stat_reset_shared('bgwriter');\nSELECT pg_size_pretty(pg_table_size('orders')) AS table_size;\nUPDATE orders SET status = 'paid' WHERE order_id % 10 = 0;\nSELECT buffers_used, buffers_dirty, buffers_unused\n  FROM pg_buffercache_summary();",
+    "caption": "Reset counters, then dirty some pages"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CHECKPOINT\n pg_stat_reset_shared\n----------------------\n\n(1 row)\n\n pg_stat_reset_shared\n----------------------\n\n(1 row)\n\n table_size\n------------\n 12 MB\n(1 row)\n\nUPDATE 20000\n buffers_used | buffers_dirty | buffers_unused\n--------------+---------------+----------------\n         4259 |          2171 |          12125\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The update changed 20,000 rows. The changes are safe in the WAL, but 2,171 buffers (about 17 MB) in shared buffers are now newer than the data files. Nothing has written them yet. pg_stat_reset_shared() takes a target name; 'checkpointer', 'bgwriter', 'io' and 'wal' are the ones used in this part, and calling it with no argument resets all of them."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Run CHECKPOINT and read the log line",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>In the same psql session</b>, force a checkpoint with timing on, and count dirty buffers again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\timing on\nCHECKPOINT;\nSELECT buffers_used, buffers_dirty FROM pg_buffercache_summary();",
+    "caption": "Force a checkpoint"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Timing is on.\nCHECKPOINT\nTime: 35.188 ms\n buffers_used | buffers_dirty\n--------------+---------------\n         4259 |             0\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Dirty buffers dropped to 0: the checkpoint wrote all of them. The pages are still in memory (buffers_used is unchanged), they are just clean now. A manual CHECKPOINT runs at full speed, without throttling, which is why it took only 35 ms here."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user</b>, read the last two lines of the server log:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo tail -n 2 /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Read the checkpoint log lines"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-11 12:48:15.577 UTC [2239] LOG:  checkpoint starting: immediate force wait\n2026-11-11 12:48:15.611 UTC [2239] LOG:  checkpoint complete: wrote 2171 buffers (13.3%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 1 recycled; write=0.019 s, sync=0.013 s, total=0.035 s; sync files=9, longest=0.012 s, average=0.002 s; distance=20402 kB, estimate=34050 kB; lsn=0/4E07338, redo lsn=0/4E072E0",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Because <code class=\"inline-code\">log_checkpoints</code> is on, every checkpoint writes these two lines. The checkpointer wrote exactly the 2,171 dirty buffers we counted. Here is what each part means:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Field",
+      "Meaning"
+     ],
+     [
+      "immediate force wait",
+      "Why it started: CHECKPOINT command, run at full speed, and the caller waited for it."
+     ],
+     [
+      "wrote 2171 buffers (13.3%)",
+      "Shared buffers written, and that number as a percentage of shared_buffers (16,384 buffers = 128MB)."
+     ],
+     [
+      "wrote 1 SLRU buffers",
+      "Small internal caches (such as transaction status) written. Shown separately since PostgreSQL 18."
+     ],
+     [
+      "0 WAL file(s) added, 0 removed, 1 recycled",
+      "What happened to old WAL segments now that they are no longer needed for crash recovery."
+     ],
+     [
+      "write=0.019 s",
+      "Time spent writing pages. For a scheduled checkpoint this is long on purpose (throttling)."
+     ],
+     [
+      "sync=0.013 s, sync files=9, longest, average",
+      "Time spent waiting for fsync, and how many files were synced. A long sync points to slow storage."
+     ],
+     [
+      "total=0.035 s",
+      "Whole checkpoint duration."
+     ],
+     [
+      "distance=20402 kB",
+      "WAL written since the previous checkpoint's redo point (about 20 MB)."
+     ],
+     [
+      "estimate=34050 kB",
+      "PostgreSQL's running estimate of WAL per checkpoint cycle, used to decide how many segments to keep."
+     ],
+     [
+      "lsn, redo lsn",
+      "Where the checkpoint record is in the WAL, and where recovery would start."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Read pg_stat_checkpointer",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>In psql</b>, read the checkpointer statistics since the reset in Step 5:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT num_timed, num_requested, num_done, buffers_written,\n       slru_written, write_time, sync_time\n  FROM pg_stat_checkpointer;",
+    "caption": "Checkpoint counters"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " num_timed | num_requested | num_done | buffers_written | slru_written | write_time | sync_time\n-----------+---------------+----------+-----------------+--------------+------------+-----------\n         0 |             1 |        1 |            2171 |            1 |         19 |        13\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "One requested checkpoint (our CHECKPOINT command), one done, 2,171 buffers written; write_time and sync_time are in milliseconds and match the log line. <code class=\"inline-code\">num_timed</code> and <code class=\"inline-code\">num_requested</code> count skipped checkpoints too (an idle server skips scheduled ones); <code class=\"inline-code\">num_done</code> counts only completed ones. The Step 5 checkpoint does not appear because it ran before the reset."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Scheduled and forced checkpoints",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Watch a scheduled checkpoint spread its writes",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now let the checkpointer work on its own schedule. <b>In psql on lab</b>, dirty the pages again, then watch the dirty buffer count and the checkpointer's wait event every 30 seconds with psql's <code class=\"inline-code\">\\watch</code> (i= sets the interval in seconds). Press Ctrl+C to stop it once the checkpoint has finished."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders SET status = 'shipped' WHERE order_id % 10 = 0;\n\nSELECT now()::time(0) AS at, s.buffers_dirty, a.wait_event\n  FROM pg_buffercache_summary() s, pg_stat_activity a\n WHERE a.backend_type = 'checkpointer' \\watch i=30",
+    "caption": "Dirty pages over time"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "UPDATE 20000\n    at    | buffers_dirty |      wait_event\n----------+---------------+----------------------\n 12:48:27 |          2198 | CheckpointerMain\n 12:49:27 |          2228 | CheckpointerMain\n 12:52:57 |          2228 | CheckpointerMain\n 12:53:27 |          2108 | CheckpointWriteDelay\n 12:53:57 |          1809 | CheckpointWriteDelay\n 12:54:27 |          1509 | CheckpointWriteDelay\n 12:54:57 |          1210 | CheckpointWriteDelay\n 12:55:27 |           910 | CheckpointWriteDelay\n 12:55:57 |           611 | CheckpointWriteDelay\n 12:56:27 |           311 | CheckpointWriteDelay\n 12:56:58 |            12 | CheckpointWriteDelay",
+    "caption": "Output (one row every 30 s, some idle rows removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For five minutes after the last checkpoint (12:48:15) nothing happened: the checkpointer waited in its main loop (wait event <code class=\"inline-code\">CheckpointerMain</code>). At 12:53:15, checkpoint_timeout expired and the checkpoint started. It then wrote about 300 buffers every 30 seconds, pausing between writes (wait event <code class=\"inline-code\">CheckpointWriteDelay</code>). That steady, gentle rate is the throttling controlled by checkpoint_completion_target. <b>As a sudo user</b>, check the log:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo grep -A1 \"checkpoint starting: time\" /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Find the scheduled checkpoint"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-11 12:53:15.695 UTC [2239] LOG:  checkpoint starting: time\n2026-11-11 12:56:58.773 UTC [2239] LOG:  checkpoint complete: wrote 2228 buffers (13.6%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 2 recycled; write=223.073 s, sync=0.002 s, total=223.079 s; sync files=14, longest=0.001 s, average=0.001 s; distance=22758 kB, estimate=32921 kB; lsn=0/6440E20, redo lsn=0/6440D90",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The reason is <b>time</b>, and write=223.073 s: about 17 MB was trickled out over almost four minutes, while the manual checkpoint in Step 6 wrote a similar amount in 19 milliseconds. A long write time on a scheduled checkpoint is not a problem; a long <b>sync</b> time is the number to watch. pg_stat_checkpointer now shows the two kinds side by side:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT num_timed, num_requested, num_done, buffers_written, write_time, sync_time\n  FROM pg_stat_checkpointer;",
+    "caption": "Counters after the scheduled checkpoint"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " num_timed | num_requested | num_done | buffers_written | write_time | sync_time\n-----------+---------------+----------+-----------------+------------+-----------\n         1 |             1 |        2 |            4399 |     223092 |        15\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Shrink max_wal_size to force WAL-triggered checkpoints (lab only)",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Lab only",
+    "text": "The next steps set max_wal_size to 64MB to show what goes wrong. Never do this on a production server: it forces a checkpoint every few seconds under load. Step 16 restores the default."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user</b>, edit /etc/postgresql/18/main/postgresql.conf (for example with <code class=\"inline-code\">sudo nano /etc/postgresql/18/main/postgresql.conf</code>) and change the max_wal_size line:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before\nmax_wal_size = 1GB\n\n# after\nmax_wal_size = 64MB",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "max_wal_size is reloadable, so reload the cluster and verify:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main\nsudo -u postgres psql -X -c \"SHOW max_wal_size;\"\nsudo grep 'parameter \"max_wal_size\"' /var/log/postgresql/postgresql-18-main.log | tail -n 1",
+    "caption": "Reload and verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " max_wal_size\n--------------\n 64MB\n(1 row)\n\n2026-11-11 12:57:12.734 UTC [2235] LOG:  parameter \"max_wal_size\" changed to \"64MB\"",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The postmaster (PID 2235) logged the change, and SHOW confirms the new value. <code class=\"inline-code\">SELECT pg_reload_conf();</code> as a superuser does the same as the systemctl reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Load data and read the warning",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>In psql on lab</b>, reset the checkpointer counters, insert one million orders, and then calculate what share of checkpoints were forced:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_stat_reset_shared('checkpointer');\n\nINSERT INTO orders (customer_id, amount)\nSELECT (random()*999)::int + 1, round((random()*5000)::numeric, 2)\nFROM generate_series(1, 1000000);\n\nSELECT num_timed, num_requested,\n       round(100.0 * num_requested / NULLIF(num_timed + num_requested, 0), 1) AS pct_requested,\n       buffers_written,\n       round((write_time + sync_time) / 1000) AS io_seconds,\n       stats_reset::timestamp(0)\n  FROM pg_stat_checkpointer;",
+    "caption": "Bulk load with a tiny max_wal_size"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INSERT 0 1000000\n num_timed | num_requested | pct_requested | buffers_written | io_seconds |     stats_reset\n-----------+---------------+---------------+-----------------+------------+---------------------\n         0 |             4 |         100.0 |            8041 |          2 | 2026-11-11 13:02:43\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "One insert of a million rows caused four checkpoints within seconds, all requested (pct_requested 100). <b>As a sudo user</b>, look at the log:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo grep -E \"checkpoint|HINT\" /var/log/postgresql/postgresql-18-main.log | tail -n 20",
+    "caption": "Read the warning"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-11 13:02:45.688 UTC [2239] LOG:  checkpoints are occurring too frequently (1 second apart)\n2026-11-11 13:02:45.688 UTC [2239] HINT:  Consider increasing the configuration parameter \"max_wal_size\".\n2026-11-11 13:02:45.688 UTC [2239] LOG:  checkpoint starting: wal\n2026-11-11 13:02:46.246 UTC [2239] LOG:  checkpoint complete: wrote 2350 buffers (14.3%), wrote 0 SLRU buffers; 0 WAL file(s) added, 2 removed, 0 recycled; write=0.495 s, sync=0.030 s, total=0.559 s; sync files=3, longest=0.019 s, average=0.010 s; distance=35952 kB, estimate=521292 kB; lsn=1/39A52208, redo lsn=1/37746C08\n2026-11-11 13:02:46.246 UTC [2239] LOG:  checkpoints are occurring too frequently (1 second apart)\n2026-11-11 13:02:46.246 UTC [2239] HINT:  Consider increasing the configuration parameter \"max_wal_size\".",
+    "caption": "Output (excerpt)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The reason is now <b>wal</b>, and because these checkpoints came closer together than checkpoint_warning (30s), PostgreSQL logged a warning with a hint telling you exactly what to change. The documentation's advice: an occasional warning (for example during a large one-off COPY) is not a cause for alarm, but if it appears often, raise the checkpoint settings. Notice also write=0.495 s: a WAL-triggered checkpoint is in a hurry, because max_wal_size is about to be exceeded, so its writes are much less spread out."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Measure what frequent checkpoints cost",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Create a pgbench test database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see the cost under a realistic write load, use <code class=\"inline-code\">pgbench</code>, the benchmark tool shipped with PostgreSQL. <b>On db1, as a sudo user</b>, create a separate database and fill it:"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Use a separate database",
+    "text": "pgbench -i drops and recreates tables named pgbench_accounts, pgbench_branches, pgbench_history and pgbench_tellers. Always point it at a test database like bench, never at an application database."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres createdb bench\nsudo -u postgres pgbench -i -s 50 -q bench",
+    "caption": "Initialise pgbench at scale 50"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-i",
+      "Initialization mode: create and fill the pgbench tables."
+     ],
+     [
+      "-s 50",
+      "Scale factor: multiply the rows generated by 50 (5,000,000 rows in pgbench_accounts)."
+     ],
+     [
+      "-q",
+      "Quiet logging: one progress message every 5 seconds instead of one per 100,000 rows."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "5000000 of 5000000 tuples (100%) of pgbench_accounts done (elapsed 4.12 s, remaining 0.00 s)\nvacuuming...\ncreating primary keys...\ndone in 5.75 s (drop tables 0.00 s, create tables 0.00 s, client-side generate 4.16 s, vacuum 0.33 s, primary keys 1.26 s).",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Verify the size with <code class=\"inline-code\">sudo -u postgres psql -X -d bench -c \"SELECT pg_size_pretty(pg_database_size('bench'));\"</code>. It returned 755 MB, far bigger than the 128MB of shared buffers, so pages are constantly read in and pushed out, as on a real server."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Run a write workload with max_wal_size = 64MB",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "max_wal_size is still 64MB from Step 9. <b>On db1, as a sudo user</b>, take a checkpoint, reset the counters, run 60 seconds of updates, then read the results. Run this same block again in Steps 13 and 15:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -X -q -d bench -c \"CHECKPOINT;\" -c \"SELECT pg_stat_reset_shared('checkpointer'); SELECT pg_stat_reset_shared('bgwriter'); SELECT pg_stat_reset_shared('wal'); SELECT pg_stat_reset_shared('io');\" > /dev/null\n\nsudo -u postgres pgbench -N -c 4 -j 2 -T 60 bench 2>&1 | grep -E \"^tps|latency average|actually processed\"\n\nsudo -u postgres psql -X -d bench \\\n  -c \"SELECT num_timed, num_requested, num_done, buffers_written FROM pg_stat_checkpointer;\" \\\n  -c \"SELECT wal_records, wal_fpi, pg_size_pretty(wal_bytes) AS wal_size FROM pg_stat_wal;\" \\\n  -c \"SELECT buffers_clean, maxwritten_clean, buffers_alloc FROM pg_stat_bgwriter;\" \\\n  -c \"SELECT backend_type, sum(writes) AS writes, sum(evictions) AS evictions, sum(fsyncs) AS fsyncs FROM pg_stat_io WHERE object = 'relation' AND backend_type IN ('client backend','checkpointer','background writer') GROUP BY backend_type ORDER BY backend_type;\"",
+    "caption": "Measurement block: reset, run 60 s, read statistics"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "pgbench option",
+      "What it does"
+     ],
+     [
+      "-N",
+      "Run the simple-update built-in script: skips updates of pgbench_tellers and pgbench_branches, avoiding contention on those small tables."
+     ],
+     [
+      "-c 4",
+      "Number of simulated clients (concurrent database sessions)."
+     ],
+     [
+      "-j 2",
+      "Number of worker threads in pgbench."
+     ],
+     [
+      "-T 60",
+      "Run for 60 seconds."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "number of transactions actually processed: 221387\nlatency average = 1.084 ms\ntps = 3689.990157 (without initial connection time)\n num_timed | num_requested | num_done | buffers_written\n-----------+---------------+----------+-----------------\n         0 |            57 |       56 |          220320\n(1 row)\n\n wal_records | wal_fpi | wal_size\n-------------+---------+----------\n     1105691 |  229712 | 1828 MB\n(1 row)\n\n buffers_clean | maxwritten_clean | buffers_alloc\n---------------+------------------+---------------\n          1290 |                0 |        304966\n(1 row)\n\n   backend_type    | writes | evictions | fsyncs\n-------------------+--------+-----------+--------\n background writer |   1290 |           |      0\n checkpointer      | 220320 |           |    253\n client backend    |      0 |    304468 |      0\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In one minute the server ran 57 checkpoints, nearly one a second. The checkpointer wrote 220,320 pages and made 253 fsync calls. The WAL tells the bigger story: 1,828 MB, of which 229,712 records were full page images, because every checkpoint restarts the \"first change to this page\" rule."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Raise max_wal_size and checkpoint_timeout, and measure again",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user</b>, edit /etc/postgresql/18/main/postgresql.conf again. These values are an example for this lab; the next section explains how to choose your own:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before\n#checkpoint_timeout = 5min\t\t# range 30s-1d\nmax_wal_size = 64MB\n\n# after\ncheckpoint_timeout = 15min\t\t# range 30s-1d\nmax_wal_size = 4GB",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main\nsudo -u postgres psql -X -c \"SELECT name, setting, unit, boot_val, pending_restart FROM pg_settings WHERE name IN ('checkpoint_timeout','max_wal_size');\"",
+    "caption": "Reload and verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "        name        | setting | unit | boot_val | pending_restart\n--------------------+---------+------+----------+-----------------\n checkpoint_timeout | 900     | s    | 300      | f\n max_wal_size       | 4096    | MB   | 1024     | f\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "pending_restart is f: both values are live without a restart. The log shows <code class=\"inline-code\">parameter \"checkpoint_timeout\" changed to \"15min\"</code> and <code class=\"inline-code\">parameter \"max_wal_size\" changed to \"4GB\"</code>. Now run the Step 12 measurement block again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "number of transactions actually processed: 221480\nlatency average = 1.084 ms\ntps = 3691.360711 (without initial connection time)\n num_timed | num_requested | num_done | buffers_written\n-----------+---------------+----------+-----------------\n         0 |             0 |        0 |               0\n(1 row)\n\n wal_records | wal_fpi | wal_size\n-------------+---------+----------\n      986191 |   87829 | 736 MB\n(1 row)",
+    "caption": "Output (first part)"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Measure (60 s, same workload)",
+      "max_wal_size 64MB",
+      "max_wal_size 4GB, timeout 15min"
+     ],
+     [
+      "Checkpoints",
+      "57 (all requested)",
+      "0"
+     ],
+     [
+      "Pages written by the checkpointer",
+      "220,320",
+      "0"
+     ],
+     [
+      "Full page images in WAL",
+      "229,712",
+      "87,829"
+     ],
+     [
+      "WAL generated",
+      "1828 MB",
+      "736 MB"
+     ],
+     [
+      "Transactions per second",
+      "3,690",
+      "3,691"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same amount of work produced 2.5 times more WAL with the small setting. Every extra megabyte of WAL must be written, archived (Part 19) and streamed to standbys (Part 33). On this test machine, with fast storage and lots of free memory for the operating system cache, throughput did not change; on busier or slower storage, frequent checkpoints also cost latency. To be fair to the large setting: a 60-second run simply ends before any checkpoint is due. In steady operation it still runs one every 15 minutes, spread over about 13.5 minutes."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How to choose checkpoint settings for steady performance",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation's guidance comes down to a few rules. These apply to production, after you have measured your own workload:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Most checkpoints should be timed.</b> Check pg_stat_checkpointer over a day or a week. If num_requested is a large share of all checkpoints, or the log shows <i>checkpoints are occurring too frequently</i> often, raise max_wal_size.",
+      "items": []
+     },
+     {
+      "content": "<b>Size max_wal_size from real WAL volume.</b> The distance= field in checkpoint log lines is the WAL written per checkpoint cycle. Set max_wal_size comfortably above the distance you see at busy times, so the timeout fires first.",
+      "items": []
+     },
+     {
+      "content": "<b>Balance checkpoint_timeout against crash recovery time.</b> A longer interval means fewer checkpoints and fewer full page images, but crash recovery may replay up to a full interval of WAL. The documentation warns that raising either checkpoint_timeout or max_wal_size can increase recovery time.",
+      "items": []
+     },
+     {
+      "content": "<b>Leave checkpoint_completion_target at 0.9.</b> The documentation does not recommend lowering it (it causes bursts of I/O), and setting it to 1.0 is likely to make checkpoints finish late.",
+      "items": []
+     },
+     {
+      "content": "<b>Plan disk space for pg_wal.</b> max_wal_size is a soft limit: under heavy load, a failing archive_command or a lagging replication slot, pg_wal can grow beyond it. Leave plenty of headroom.",
+      "items": []
+     },
+     {
+      "content": "<b>Leave checkpoint_flush_after at its default</b> unless testing shows a gain. It reduces the stall at the final fsync, but the documentation notes it can hurt workloads larger than shared_buffers but smaller than the OS page cache.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Restartpoints on standbys",
+    "text": "A standby cannot write its own checkpoints, so it performs <b>restartpoints</b> at checkpoint records it replays. They are counted in the restartpoints_timed, restartpoints_req and restartpoints_done columns of pg_stat_checkpointer. Part 33 sets up a standby where you will see them."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The background writer: who writes your dirty pages?",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: Read the background writer and pg_stat_io numbers",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Look at the rest of the output from the Step 13 run, with max_wal_size 4GB and the default background writer settings:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " buffers_clean | maxwritten_clean | buffers_alloc\n---------------+------------------+---------------\n         29301 |              293 |        308516\n(1 row)\n\n   backend_type    | writes | evictions | fsyncs\n-------------------+--------+-----------+--------\n background writer |  29301 |           |      0\n checkpointer      |      0 |           |      0\n client backend    | 166672 |    308184 |      0\n(3 rows)",
+    "caption": "Output (second part of the Step 13 run)"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Column",
+      "View",
+      "Meaning"
+     ],
+     [
+      "buffers_clean",
+      "pg_stat_bgwriter",
+      "Buffers written by the background writer."
+     ],
+     [
+      "maxwritten_clean",
+      "pg_stat_bgwriter",
+      "Times the background writer stopped a round because it hit bgwriter_lru_maxpages."
+     ],
+     [
+      "buffers_alloc",
+      "pg_stat_bgwriter",
+      "Buffers allocated (pages read into shared buffers)."
+     ],
+     [
+      "writes (client backend)",
+      "pg_stat_io",
+      "Pages that query sessions had to write themselves."
+     ],
+     [
+      "evictions",
+      "pg_stat_io",
+      "Times a block was pushed out of a buffer to make room for another."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With no checkpoints, someone still had to write dirty pages to make room for new ones. The background writer wrote 29,301, but the client backends, the sessions running your queries, wrote 166,672. maxwritten_clean = 293 means the background writer hit its limit of 100 pages per round 293 times in 60 seconds: it wanted to do more but was not allowed to."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation states it plainly: client backends should be able to rely on the checkpointer and background writer for most writes, and large numbers of writes by client backends could indicate a misconfiguration of shared buffers or of the checkpointer. Here the main cause is that the 755 MB database does not fit in 128MB of shared buffers; Part 28 covers shared_buffers sizing. The background writer settings are the other lever."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: Try a more active background writer, then measure",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user</b>, edit /etc/postgresql/18/main/postgresql.conf:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before\n#bgwriter_lru_maxpages = 100\t\t# max buffers written/round, 0 disables\n#bgwriter_lru_multiplier = 2.0\t\t# 0-10.0 multiplier on buffers scanned/round\n\n# after\nbgwriter_lru_maxpages = 1000\t\t# max buffers written/round, 0 disables\nbgwriter_lru_multiplier = 4.0\t\t# 0-10.0 multiplier on buffers scanned/round",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main\nsudo -u postgres psql -X -c \"SELECT name, setting FROM pg_settings WHERE name LIKE 'bgwriter_lru%';\"",
+    "caption": "Reload and verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "          name           | setting\n-------------------------+---------\n bgwriter_lru_maxpages   | 1000\n bgwriter_lru_multiplier | 4\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run the Step 12 measurement block again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "number of transactions actually processed: 280709\nlatency average = 0.855 ms\ntps = 4678.542205 (without initial connection time)\n num_timed | num_requested | num_done | buffers_written\n-----------+---------------+----------+-----------------\n         0 |             0 |        0 |               0\n(1 row)\n\n wal_records | wal_fpi | wal_size\n-------------+---------+----------\n     1212034 |   87738 | 746 MB\n(1 row)\n\n buffers_clean | maxwritten_clean | buffers_alloc\n---------------+------------------+---------------\n        257917 |              211 |        387224\n(1 row)\n\n   backend_type    | writes | evictions | fsyncs\n-------------------+--------+-----------+--------\n background writer | 257917 |           |      0\n checkpointer      |      0 |           |      0\n client backend    |   4083 |    386644 |      0\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The work moved: the background writer now wrote 257,917 pages and client backends only 4,083, down from 166,672. That is the effect you want, because a query that writes a page must wait for that write."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Treat the throughput numbers with care. This run showed 4,679 tps, but an earlier run with exactly the same background writer settings on the same machine gave 2,895 tps, while two default runs gave 3,804 and 3,874. On a shared test VM, run-to-run noise is larger than the effect. The documentation also warns that the background writer causes a net increase in total I/O, since a page dirtied repeatedly may be written several times instead of once per checkpoint. So change these settings only when pg_stat_io shows client backends doing many writes <i>and</i> query latency suffers, and confirm on your own hardware with several runs."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 16: Undo the lab changes",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user</b>, put postgresql.conf back to the Ubuntu defaults:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# restore these lines\n#checkpoint_timeout = 5min\t\t# range 30s-1d\nmax_wal_size = 1GB\n#bgwriter_lru_maxpages = 100\t\t# max buffers written/round, 0 disables\n#bgwriter_lru_multiplier = 2.0\t\t# 0-10.0 multiplier on buffers scanned/round",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main\nsudo -u postgres psql -X -c \"SELECT name, setting, unit, boot_val FROM pg_settings WHERE name IN ('checkpoint_timeout','max_wal_size','bgwriter_lru_maxpages','bgwriter_lru_multiplier') ORDER BY name;\"",
+    "caption": "Reload and check the defaults are back"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "          name           | setting | unit | boot_val\n-------------------------+---------+------+----------\n bgwriter_lru_maxpages   | 100     |      | 100\n bgwriter_lru_multiplier | 2       |      | 2\n checkpoint_timeout      | 300     | s    | 300\n max_wal_size            | 1024    | MB   | 1024\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a commented-out setting is reloaded, the log confirms it, for example <code class=\"inline-code\">parameter \"checkpoint_timeout\" removed from configuration file, reset to default</code>. Then remove the test databases:"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Destructive",
+    "text": "DROP DATABASE permanently deletes the database and its files. Check the name before you press Enter, and never run these on a server where bench or lab hold real data."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -X -c \"DROP DATABASE bench;\"\nsudo -u postgres psql -X -c \"DROP DATABASE lab;\"",
+    "caption": "Remove the lab databases"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "DROP DATABASE\nDROP DATABASE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "LOG: checkpoints are occurring too frequently",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  checkpoints are occurring too frequently (1 second apart)\nHINT:  Consider increasing the configuration parameter \"max_wal_size\".",
+    "caption": "Server log"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> raise max_wal_size in /etc/postgresql/18/main/postgresql.conf and reload (Step 13). If it appears only during a nightly bulk load, that is expected; if it appears all day, the setting is too small for your WAL volume."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: permission denied to execute CHECKPOINT command",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  permission denied to execute CHECKPOINT command\nDETAIL:  Only roles with privileges of the \"pg_checkpoint\" role may execute this command.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> only superusers and members of the predefined role pg_checkpoint can run CHECKPOINT. If a maintenance role really needs it, <code class=\"inline-code\">GRANT pg_checkpoint TO maint_user;</code> (undo with REVOKE). Better still, question why it needs to: the documentation says CHECKPOINT is not intended for use during normal operation. Running it from cron every minute adds I/O bursts and full page images and gains nothing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: column \"checkpoints_timed\" does not exist",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  column \"checkpoints_timed\" does not exist\nLINE 1: SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwri...\n               ^",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> monitoring queries written for PostgreSQL 16 or earlier break on 17 and 18. Use the new names: checkpoints_timed is now pg_stat_checkpointer.num_timed, checkpoints_req is num_requested, buffers_checkpoint is buffers_written, checkpoint_write_time and checkpoint_sync_time are write_time and sync_time. buffers_backend was removed; use the writes column of pg_stat_io for backend_type 'client backend'."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: 10 s is outside the valid range for parameter \"checkpoint_timeout\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  10 s is outside the valid range for parameter \"checkpoint_timeout\" (30 s .. 86400 s)",
+    "caption": "Output of ALTER SYSTEM SET checkpoint_timeout = '10s';"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> checkpoint_timeout accepts 30s to 1d. ALTER SYSTEM rejects a bad value immediately; if you type the same value into postgresql.conf, a reload logs the error and keeps the old value, so always check with SHOW after a reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reading a long write= time as a problem",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A scheduled checkpoint with write=223 s is healthy: it is throttled to finish around 90% of the interval. Look instead at sync= and longest= (slow storage), at a high share of requested checkpoints, and at client backend writes in pg_stat_io."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Setting checkpoint_timeout or max_wal_size very high without checking recovery time and disk",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fewer checkpoints means more WAL to replay after a crash and more WAL kept in pg_wal. Before raising them, make sure the recovery time is acceptable and that the disk holding /var/lib/postgresql/18/main/pg_wal has room well beyond max_wal_size."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "On your lab server, set max_wal_size to 128MB, reload, and load one million rows into a test table. How many checkpoints were requested, and what reason does the log show for them?",
+      "items": []
+     },
+     {
+      "content": "Write one query that shows, since the last reset, the share of requested checkpoints and the number of pages each of the three writer processes wrote. Restore max_wal_size = 1GB afterwards.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "1) Count with <code class=\"inline-code\">SELECT num_timed, num_requested FROM pg_stat_checkpointer;</code> after a <code class=\"inline-code\">pg_stat_reset_shared('checkpointer')</code>; the log lines say <i>checkpoint starting: wal</i>, usually with the <i>too frequently</i> warning. In our lab run this gave 2 requested checkpoints, against 4 with 64MB in Step 10, because each cycle can now hold about twice as much WAL. 2) <code class=\"inline-code\">SELECT c.num_requested, c.num_timed, round(100.0 * c.num_requested / NULLIF(c.num_timed + c.num_requested, 0), 1) AS pct_requested, (SELECT string_agg(backend_type || '=' || writes, ', ') FROM pg_stat_io WHERE object = 'relation' AND context = 'normal' AND backend_type IN ('checkpointer','background writer','client backend')) AS writes FROM pg_stat_checkpointer c;</code> Then set max_wal_size = 1GB in /etc/postgresql/18/main/postgresql.conf and run sudo systemctl reload postgresql@18-main."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Show checkpoint and background writer settings\nsudo -u postgres psql -X -c \"SELECT name, setting, unit, context, boot_val FROM pg_settings WHERE name LIKE 'checkpoint%' OR name LIKE 'bgwriter%' OR name IN ('max_wal_size','min_wal_size','log_checkpoints');\"\n\n# Find the checkpointer and background writer processes\nsudo -u postgres psql -X -c \"SELECT pid, backend_type FROM pg_stat_activity WHERE backend_type IN ('checkpointer','background writer');\"\n\n# Where is the last checkpoint and redo point?\nsudo -u postgres psql -X -c \"SELECT checkpoint_lsn, redo_lsn, redo_wal_file, checkpoint_time FROM pg_control_checkpoint();\"\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_controldata /var/lib/postgresql/18/main | grep -i checkpoint\n\n# Count dirty buffers (needs the pg_buffercache extension in that database)\nsudo -u postgres psql -X -d lab -c \"SELECT buffers_used, buffers_dirty FROM pg_buffercache_summary();\"\n\n# Force a checkpoint (superuser or pg_checkpoint; not for routine use)\nsudo -u postgres psql -X -c \"CHECKPOINT;\"\n\n# Read checkpoint log lines\nsudo grep -E \"checkpoint (starting|complete)|too frequently\" /var/log/postgresql/postgresql-18-main.log | tail -n 20\n\n# Checkpoint health: share of requested checkpoints\nsudo -u postgres psql -X -c \"SELECT num_timed, num_requested, round(100.0 * num_requested / NULLIF(num_timed + num_requested, 0), 1) AS pct_requested, buffers_written, stats_reset FROM pg_stat_checkpointer;\"\n\n# Who writes dirty pages?\nsudo -u postgres psql -X -c \"SELECT buffers_clean, maxwritten_clean, buffers_alloc FROM pg_stat_bgwriter;\"\nsudo -u postgres psql -X -c \"SELECT backend_type, sum(writes) AS writes, sum(fsyncs) AS fsyncs FROM pg_stat_io WHERE object = 'relation' GROUP BY backend_type ORDER BY writes DESC NULLS LAST;\"\n\n# WAL volume and full page images\nsudo -u postgres psql -X -c \"SELECT wal_records, wal_fpi, pg_size_pretty(wal_bytes) FROM pg_stat_wal;\"\n\n# Reset counters before a measurement\nsudo -u postgres psql -X -c \"SELECT pg_stat_reset_shared('checkpointer'); SELECT pg_stat_reset_shared('bgwriter'); SELECT pg_stat_reset_shared('io'); SELECT pg_stat_reset_shared('wal');\"\n\n# After editing max_wal_size, checkpoint_timeout or bgwriter_* in /etc/postgresql/18/main/postgresql.conf: reload (no restart needed)\nsudo systemctl reload postgresql@18-main\nsudo -u postgres psql -X -c \"SELECT name, setting, pending_restart FROM pg_settings WHERE name IN ('max_wal_size','checkpoint_timeout');\"",
+    "caption": "All commands from this part"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "A checkpoint writes every dirty page to the data files, syncs them and records a redo point; crash recovery starts there, and older WAL can be recycled.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Checkpoints start on time (checkpoint_timeout, default 5min), on WAL volume (max_wal_size, default 1GB), on CHECKPOINT, or at shutdown; the log line names the reason.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Scheduled checkpoints are throttled by checkpoint_completion_target (0.9); a long write= time is normal, a long sync= time is not.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "In PostgreSQL 17 and 18, checkpoint statistics are in pg_stat_checkpointer; backend writes are in pg_stat_io.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Frequent requested checkpoints and the <i>too frequently</i> warning mean max_wal_size is too small; in the lab it made 2.5 times more WAL.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "The background writer cleans buffers ahead of demand so queries do not write pages themselves; tune it only after measuring client backend writes.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "All checkpoint and bgwriter settings need only a reload; record the old value and know how to undo every change.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 17 we move to backup and recovery with logical backups using pg_dump, pg_dumpall and pg_restore."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "A checkpoint that writes for 223 seconds is healthy. One that runs every second is the real problem.\n\nPart 16 of the PostgreSQL DBA series covers checkpoints and the background writer, tested on PostgreSQL 18 on Ubuntu.\n\nWhat the tests showed:\n\n→ A checkpoint writes every dirty page to the data files and sets the point where crash recovery starts.\n\n→ Scheduled checkpoints are spread out on purpose. checkpoint_completion_target = 0.9 means \"finish at about 90% of the interval\". A long write= time in the log is normal.\n\n→ With max_wal_size = 64MB, a 60-second pgbench run caused 57 checkpoints and 1828 MB of WAL. With 4GB the same run wrote 736 MB. Each checkpoint forces fresh full page images into the WAL.\n\n→ The log tells you when to act: \"checkpoints are occurring too frequently\" with a hint to raise max_wal_size. Both settings need only a reload.\n\n→ Since PostgreSQL 17, checkpoint counters live in pg_stat_checkpointer, not pg_stat_bgwriter. Old monitoring queries fail with \"column checkpoints_timed does not exist\".\n\n→ pg_stat_io shows who writes your pages. If client backends do most writes, your queries are waiting on disk.\n\nWhat share of checkpoints on your production server are requested rather than timed?\n\nFollow the series for Part 17: pg_dump and pg_restore.\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "PostgreSQL checkpoints, tuned",
+    "body": "Part 16 of the PostgreSQL DBA series: checkpoints and the background writer"
+   },
+   {
+    "title": "What a checkpoint does",
+    "points": [
+     "Writes every dirty page to the data files",
+     "Syncs them and records a redo point",
+     "Crash recovery starts from that point",
+     "Older WAL segments can then be recycled"
+    ]
+   },
+   {
+    "title": "Step 1: check the settings",
+    "code": "SELECT name, setting, unit\n  FROM pg_settings\n WHERE name IN ('checkpoint_timeout',\n   'max_wal_size',\n   'checkpoint_completion_target');",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 2: timed or forced?",
+    "code": "SELECT num_timed, num_requested,\n       num_done, buffers_written\n  FROM pg_stat_checkpointer;",
+    "lang": "postgresql",
+    "points": [
+     "Most checkpoints should be timed",
+     "Many requested ones: max_wal_size too small"
+    ]
+   },
+   {
+    "title": "Step 3: read the warning",
+    "body": "The log says: checkpoints are occurring too frequently, with a HINT to raise max_wal_size. In our lab, 64MB gave 57 checkpoints and 1828 MB of WAL in 60 s; 4GB gave 736 MB."
+   },
+   {
+    "title": "Step 4: raise it and reload",
+    "code": "-- postgresql.conf\nmax_wal_size = 4GB\ncheckpoint_timeout = 15min\n\nSELECT pg_reload_conf();",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 5: who writes the pages?",
+    "code": "SELECT backend_type, sum(writes)\n  FROM pg_stat_io\n WHERE object = 'relation'\n GROUP BY backend_type;",
+    "lang": "postgresql",
+    "points": [
+     "Many client backend writes: queries wait on disk"
+    ]
+   }
+  ]
+ }
+}
