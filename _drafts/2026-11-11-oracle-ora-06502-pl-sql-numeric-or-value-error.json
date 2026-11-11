@@ -1,0 +1,866 @@
+{
+ "schemaVersion": 1,
+ "title": "ORA-06502 PL/SQL Numeric or Value Error: Causes and Fixes",
+ "slug": "ora-06502-pl-sql-numeric-or-value-error",
+ "category": "plsql",
+ "description": "Fix ORA-06502 PL/SQL numeric or value error: buffer too small, number precision, conversion and NULL cases, each with example code, output and the fix.",
+ "focusKeyword": "ora-06502 pl/sql numeric or value error",
+ "tags": [
+  "oracle",
+  "plsql",
+  "ora-errors",
+  "exceptions",
+  "troubleshooting"
+ ],
+ "related": [
+  "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/",
+  "/posts/plsql/pragma-autonomous-transaction-in-oracle/",
+  "/posts/interview-questions/plsql-developer-interview-questions/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle Database Error Help: ORA-06502",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-06502/"
+  },
+  {
+   "title": "Oracle 19c PL/SQL Language Reference: SQL Data Types (VARCHAR2 size, assigning too-long values)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/sql-data-types.html"
+  },
+  {
+   "title": "Oracle 19c PL/SQL Language Reference: PLS_INTEGER and BINARY_INTEGER Data Types (SIMPLE_INTEGER, subtypes)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/pls_integer-and-binary_integer-data-types.html"
+  },
+  {
+   "title": "Oracle 19c PL/SQL Language Reference: Predefined Exceptions",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/predefined-exceptions.html"
+  },
+  {
+   "title": "Oracle 19c PL/SQL Language Reference: %TYPE Attribute",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/TYPE-attribute.html"
+  },
+  {
+   "title": "Oracle 19c PL/SQL Packages: DBMS_UTILITY.FORMAT_ERROR_BACKTRACE",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_UTILITY.html"
+  },
+  {
+   "title": "Oracle Database Error Help: PLS-01907 (number precision)",
+   "url": "https://docs.oracle.com/en/error-help/db/pls-01907"
+  }
+ ],
+ "reviewNotes": "All examples written from the Oracle 19c docs and general PL/SQL behaviour; none were executed, so every block needs a test run and the outputs (marked expected output) must be replaced with real ones. Please verify: (1) exact ORA-06512 line numbers in each output, they depend on how the block is pasted; (2) the detail texts 'number precision too large', 'character to number conversion error' and 'NULL index table key value' come from widely reported messages, not from a docs page I could quote; (3) the docs error page also lists the message as 'PL/SQL: value or conversion error' (likely newer releases such as 23ai/26ai), confirm which release shows which wording; (4) the Devanagari examples assume an AL32UTF8 database and a client that sends UTF-8 correctly, otherwise the byte count differs, and the 12-byte count for 'पुणे' should be confirmed with LENGTHB; (5) the VALIDATE_CONVERSION / TO_NUMBER DEFAULT ON CONVERSION ERROR result table (NULL input returning 1 is from the 19c docs); (6) the FORMAT_ERROR_BACKTRACE example output (backtrace line number) and the stack the client shows after RAISE; (7) the statement that NLS_LENGTH_SEMANTICS defaults to BYTE and affects code compiled after a change is from general knowledge. The 'log_error' procedure on the last LinkedIn slide is a placeholder name, not a built-in.",
+ "generatedAt": "2026-11-11T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">ORA-06502: PL/SQL: numeric or value error</code> means a PL/SQL statement tried to put a value into a variable that cannot hold it. The usual causes are a string longer than the variable's declared size, a number with more digits than its precision allows, a failed text-to-number conversion, or a NULL assigned to a NOT NULL variable. The fix is to change the declaration, the data, or the way the code handles the data."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The text after the colon tells you which case you have, and the <code class=\"inline-code\">ORA-06512</code> line under it tells you where. This tutorial shows each variant on a small sample table, what output to expect, and the right fix for each one, so you stop guessing and stop wrapping everything in <code class=\"inline-code\">WHEN OTHERS</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What ORA-06502 means",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "ORA-06502 is the error behind the predefined PL/SQL exception <code class=\"inline-code\">VALUE_ERROR</code> (SQLCODE -6502). Oracle's error reference describes the cause as an arithmetic, numeric, string, conversion, or constraint error. Its two official examples are assigning NULL to a variable declared NOT NULL and assigning an integer larger than 99 to a variable declared <code class=\"inline-code\">NUMBER(2)</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PL/SQL never silently cuts a value to fit. If the value does not fit the target, the statement fails. That is a good thing: silent truncation would corrupt your data without anyone noticing."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The error usually arrives as a small stack. Read it from the top:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-06502: PL/SQL: numeric or value error: character string buffer too small\nORA-06512: at \"APP.LOAD_CUSTOMER\", line 12\nORA-06512: at line 1",
+    "caption": "A typical ORA-06502 error stack"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Line one is the error and its detail text. Each <code class=\"inline-code\">ORA-06512</code> line is a step in the call stack. The first one points at the object and line number where the bad assignment happened. Open that line first."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here are the detail texts you will meet most often:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Detail text after the colon",
+      "What went wrong"
+     ],
+     [
+      "character string buffer too small",
+      "A string is longer than the VARCHAR2 or CHAR variable"
+     ],
+     [
+      "number precision too large",
+      "A number has more digits than NUMBER(p,s) allows"
+     ],
+     [
+      "character to number conversion error",
+      "Text that is not a valid number was converted to a number in PL/SQL"
+     ],
+     [
+      "(no detail text)",
+      "Often a NULL assigned to a NOT NULL variable or a subtype like SIMPLE_INTEGER"
+     ],
+     [
+      "NULL index table key value",
+      "A NULL was used as the key of an associative array"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "Oracle's current error help page also lists the message as <code class=\"inline-code\">PL/SQL: value or conversion error</code>, so on newer releases the wording you see can differ slightly. The error number and the fixes are the same."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small customers table and a few rows. One customer has a long name and one has a phone number stored with spaces, which is exactly the kind of data that triggers ORA-06502 in real code."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE customers (\n  customer_id   NUMBER        PRIMARY KEY,\n  customer_name VARCHAR2(60)  NOT NULL,\n  city          VARCHAR2(30),\n  phone         VARCHAR2(20),\n  credit_limit  NUMBER(8,2)\n);\n\nINSERT INTO customers VALUES (1, 'Asha Rao', 'Pune', '9876543210', 50000);\nINSERT INTO customers VALUES (2, 'Venkata Subrahmanya Lakshmi Narasimha', 'Hyderabad', '98765 43211', 125000);\nINSERT INTO customers VALUES (3, 'Ravi Kumar', NULL, NULL, NULL);\nCOMMIT;",
+    "caption": "Sample table and data"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Turn on server output in SQL*Plus or SQL Developer before running the blocks below: <code class=\"inline-code\">SET SERVEROUTPUT ON</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Case 1: character string buffer too small",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the most common form. A VARCHAR2 variable is declared smaller than the value that lands in it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reproduce the error",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  v_name VARCHAR2(20);\nBEGIN\n  SELECT customer_name\n    INTO v_name\n    FROM customers\n   WHERE customer_id = 2;\n  DBMS_OUTPUT.PUT_LINE(v_name);\nEND;\n/",
+    "caption": "SELECT INTO a variable that is too small"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-06502: PL/SQL: numeric or value error: character string buffer too small\nORA-06512: at line 4",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The column can hold 60 bytes, but the variable holds only 20. Customer 1 works, so the code passes testing. Then a real customer with a long name arrives and the job fails in production."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix it with %TYPE",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Anchor the variable to the column with <code class=\"inline-code\">%TYPE</code>. The variable then gets the column's data type and size, and Oracle's documentation states that if the referenced declaration changes, the referencing declaration changes with it (after recompilation)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  v_name customers.customer_name%TYPE;\nBEGIN\n  SELECT customer_name\n    INTO v_name\n    FROM customers\n   WHERE customer_id = 2;\n  DBMS_OUTPUT.PUT_LINE(v_name);\nEND;\n/",
+    "caption": "Anchor the variable to the column"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Venkata Subrahmanya Lakshmi Narasimha",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">%TYPE</code> for every variable that holds a column value. For a whole row, use <code class=\"inline-code\">customers%ROWTYPE</code>. This removes the whole class of bug instead of fixing one variable at a time."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Concatenation that grows too big",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same error appears when you build a string in a loop, such as a comma-separated list, a CSV line or a dynamic SQL statement."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  v_list VARCHAR2(30);\nBEGIN\n  FOR r IN (SELECT customer_name FROM customers ORDER BY customer_id) LOOP\n    v_list := v_list || r.customer_name || ',';\n  END LOOP;\n  DBMS_OUTPUT.PUT_LINE(v_list);\nEND;\n/",
+    "caption": "The list outgrows its variable"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-06502: PL/SQL: numeric or value error: character string buffer too small\nORA-06512: at line 5",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A PL/SQL VARCHAR2 can be declared up to 32,767 bytes. If the result can never pass that, declare a bigger size. If it can, use a <code class=\"inline-code\">CLOB</code>, which has no such limit for this kind of work."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  v_list CLOB;\nBEGIN\n  FOR r IN (SELECT customer_name FROM customers ORDER BY customer_id) LOOP\n    v_list := v_list || r.customer_name || ',';\n  END LOOP;\n  DBMS_OUTPUT.PUT_LINE(RTRIM(v_list, ','));\nEND;\n/",
+    "caption": "Use a CLOB when the size is open-ended"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Asha Rao,Venkata Subrahmanya Lakshmi Narasimha,Ravi Kumar",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "If you only need a delimited list from a query, <code class=\"inline-code\">LISTAGG</code> in SQL is simpler than a loop. For long results in Oracle 12.2 and later use <code class=\"inline-code\">ON OVERFLOW TRUNCATE</code> or build a CLOB, because LISTAGG returns a VARCHAR2 and has its own size limit."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Case 2: bytes versus characters",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This one confuses many developers. <code class=\"inline-code\">VARCHAR2(10)</code> usually means 10 <b>bytes</b>, not 10 characters, because the default length semantics is BYTE unless <code class=\"inline-code\">NLS_LENGTH_SEMANTICS</code> is set to CHAR. In an AL32UTF8 database, an English letter takes 1 byte, but a Devanagari, Tamil or Telugu character takes 3 bytes."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  v_city VARCHAR2(10);       -- 10 bytes\nBEGIN\n  v_city := 'पुणे';           -- 4 characters, 12 bytes in AL32UTF8\n  DBMS_OUTPUT.PUT_LINE(v_city);\nEND;\n/",
+    "caption": "Four characters, but too many bytes"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-06502: PL/SQL: numeric or value error: character string buffer too small\nORA-06512: at line 4",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The string looks short, but it needs 12 bytes. Declare the length in characters instead. Oracle's PL/SQL reference recommends <code class=\"inline-code\">VARCHAR2(n CHAR)</code> when a variable must always hold n characters in any multibyte character set."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  v_city VARCHAR2(10 CHAR);  -- 10 characters\nBEGIN\n  v_city := 'पुणे';\n  DBMS_OUTPUT.PUT_LINE(v_city || ' bytes=' || LENGTHB(v_city));\nEND;\n/",
+    "caption": "Declare the size in characters"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "पुणे bytes=12",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">LENGTH</code> counts characters and <code class=\"inline-code\">LENGTHB</code> counts bytes. When a string fits on screen but fails in code, compare the two. Note that the 32,767 limit is always in bytes, whichever semantics you use."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Case 3: number precision too large",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A <code class=\"inline-code\">NUMBER(p,s)</code> variable allows p total digits with s of them after the decimal point. So <code class=\"inline-code\">NUMBER(8,2)</code> can hold up to 999999.99. A value with more digits before the decimal point fails."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  v_limit NUMBER(5,2);   -- max 999.99\nBEGIN\n  SELECT credit_limit\n    INTO v_limit\n    FROM customers\n   WHERE customer_id = 2;\nEND;\n/",
+    "caption": "The value has too many digits for the variable"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-06502: PL/SQL: numeric or value error: number precision too large\nORA-06512: at line 4",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Extra digits <i>after</i> the decimal point do not cause this error. Oracle rounds them to the scale. Assigning 123.456 to <code class=\"inline-code\">NUMBER(5,2)</code> stores 123.46. Only digits to the left of the decimal point can overflow."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  v_amt NUMBER(5,2);\nBEGIN\n  v_amt := 123.456;\n  DBMS_OUTPUT.PUT_LINE(v_amt);\nEND;\n/",
+    "caption": "Scale is rounded, not an error"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "123.46",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The fix is the same as for strings: anchor with <code class=\"inline-code\">customers.credit_limit%TYPE</code>, or declare an unconstrained <code class=\"inline-code\">NUMBER</code> for intermediate results such as totals, which often grow larger than any single column value."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Case 4: character to number conversion error",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When PL/SQL converts text to a number in a procedural statement and the text is not a valid number, you get ORA-06502 with the detail <code class=\"inline-code\">character to number conversion error</code>. Customer 2's phone number contains a space."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  v_phone_num NUMBER;\n  v_phone     customers.phone%TYPE;\nBEGIN\n  SELECT phone INTO v_phone FROM customers WHERE customer_id = 2;\n  v_phone_num := v_phone;     -- implicit conversion in PL/SQL\nEND;\n/",
+    "caption": "Implicit conversion of bad text"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-06502: PL/SQL: numeric or value error: character to number conversion error\nORA-06512: at line 6",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same bad conversion done inside a SQL statement raises a different error, <code class=\"inline-code\">ORA-01722: invalid number</code>. So the error number tells you where the conversion happened: ORA-06502 in PL/SQL code, ORA-01722 in SQL."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Do not store phone numbers, PIN codes or account numbers in NUMBER variables. They are identifiers, not quantities, and they can contain spaces, leading zeros or a plus sign. Keep them as VARCHAR2. When you really must convert untrusted text, Oracle 12.2 and later let you handle bad values without an exception:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT customer_id,\n       phone,\n       TO_NUMBER(phone DEFAULT NULL ON CONVERSION ERROR) AS phone_num,\n       VALIDATE_CONVERSION(phone AS NUMBER)               AS is_valid\n  FROM customers\n ORDER BY customer_id;",
+    "caption": "Safe conversion in Oracle 12.2 and later"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "CUSTOMER_ID",
+      "PHONE",
+      "PHONE_NUM",
+      "IS_VALID"
+     ],
+     [
+      "1",
+      "9876543210",
+      "9876543210",
+      "1"
+     ],
+     [
+      "2",
+      "98765 43211",
+      "",
+      "0"
+     ],
+     [
+      "3",
+      "",
+      "",
+      "1"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">VALIDATE_CONVERSION</code> returns 1 when the value converts and 0 when it does not. Oracle's documentation also says it returns 1 when the input is NULL, so customer 3 counts as valid. Use it to find bad rows before a load, and use <code class=\"inline-code\">DEFAULT ... ON CONVERSION ERROR</code> when a NULL is an acceptable result."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Case 5: NULL in a NOT NULL variable",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A variable declared <code class=\"inline-code\">NOT NULL</code>, or of a subtype with a NOT NULL constraint such as <code class=\"inline-code\">SIMPLE_INTEGER</code> or <code class=\"inline-code\">NATURALN</code>, raises ORA-06502 when it receives a NULL. Customer 3 has no credit limit."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  v_limit NUMBER NOT NULL := 0;\nBEGIN\n  SELECT credit_limit\n    INTO v_limit\n    FROM customers\n   WHERE customer_id = 3;\nEND;\n/",
+    "caption": "A NULL column value into a NOT NULL variable"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-06502: PL/SQL: numeric or value error\nORA-06512: at line 4",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice there is no detail text this time, which is a strong hint. Decide what NULL should mean for your logic and say it in the query, for example <code class=\"inline-code\">SELECT NVL(credit_limit, 0) INTO v_limit</code>. Keep the NOT NULL on the variable if your logic truly depends on it, because it catches bad data early."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Range-constrained subtypes behave the same way. <code class=\"inline-code\">POSITIVE</code> only accepts values of 1 or more, so assigning 0 or a negative number to it also raises ORA-06502."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How to find the exact line in a big package",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In a long procedure, the line number in <code class=\"inline-code\">ORA-06512</code> is your best clue. But many code bases catch errors and log only <code class=\"inline-code\">SQLERRM</code>, which hides the line. Log <code class=\"inline-code\">DBMS_UTILITY.FORMAT_ERROR_BACKTRACE</code> as well. Oracle documents that it shows the call stack at the point where the exception was raised, even when you call it from a handler in an outer scope."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "BEGIN\n  DECLARE\n    v_name VARCHAR2(20);\n  BEGIN\n    SELECT customer_name INTO v_name\n      FROM customers WHERE customer_id = 2;\n  END;\nEXCEPTION\n  WHEN VALUE_ERROR THEN\n    DBMS_OUTPUT.PUT_LINE(SQLERRM);\n    DBMS_OUTPUT.PUT_LINE(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);\n    RAISE;\nEND;\n/",
+    "caption": "Log the message and the line, then re-raise"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-06502: PL/SQL: numeric or value error: character string buffer too small\nORA-06512: at line 5",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The handler prints the message and the line where the error happened, then <code class=\"inline-code\">RAISE</code> passes the error on so the caller still knows it failed. After the printed lines, your client also shows the re-raised ORA-06502. In real code, write these two values to your error log table instead of DBMS_OUTPUT."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "Never catch <code class=\"inline-code\">VALUE_ERROR</code> or <code class=\"inline-code\">OTHERS</code> and carry on silently. The row is skipped, the job reports success, and nobody finds out until the totals are wrong. Log the error and re-raise, or handle one specific, expected case on purpose."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Hard-coding sizes.</b> <code class=\"inline-code\">VARCHAR2(50)</code> for a column that is later widened to 100 breaks every procedure that copied the old size. Use <code class=\"inline-code\">%TYPE</code>.",
+      "items": []
+     },
+     {
+      "content": "<b>Forgetting bytes versus characters.</b> Code that works on English names fails on Hindi or Tamil names. Use <code class=\"inline-code\">VARCHAR2(n CHAR)</code> for text from users.",
+      "items": []
+     },
+     {
+      "content": "<b>Assuming SUBSTR fixes everything.</b> <code class=\"inline-code\">SUBSTR(x, 1, 20)</code> returns 20 characters, which can still be more than 20 bytes. Use <code class=\"inline-code\">SUBSTRB</code> if the limit is in bytes, and only truncate when losing data is acceptable.",
+      "items": []
+     },
+     {
+      "content": "<b>Numbers for identifiers.</b> Phone numbers, PIN codes and Aadhaar-style IDs belong in VARCHAR2. Converting them to NUMBER invites conversion errors and loses leading zeros.",
+      "items": []
+     },
+     {
+      "content": "<b>Too-small OUT parameters on the caller side.</b> A procedure parameter declared <code class=\"inline-code\">OUT VARCHAR2</code> has no size of its own; it uses the caller's variable. If the caller passes a <code class=\"inline-code\">VARCHAR2(10)</code>, the procedure fails when it assigns a longer value.",
+      "items": []
+     },
+     {
+      "content": "<b>Totals in small variables.</b> A sum of many order amounts can exceed the precision of the column you copied. Use plain NUMBER for accumulators.",
+      "items": []
+     },
+     {
+      "content": "<b>Mixing up ORA-06502 and ORA-12899.</b> ORA-06502 is about a PL/SQL variable. If a value is too long for a table <i>column</i> on INSERT or UPDATE, you get <code class=\"inline-code\">ORA-12899: value too large for column</code> instead.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Best practices to prevent ORA-06502",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Declare variables with <code class=\"inline-code\">table.column%TYPE</code> or <code class=\"inline-code\">table%ROWTYPE</code> wherever they hold table data.",
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">CHAR</code> length semantics for user-facing text, either per declaration or by agreeing on <code class=\"inline-code\">NLS_LENGTH_SEMANTICS</code> for the team. Changing the session setting affects code compiled after the change, so agree on it before you build.",
+      "items": []
+     },
+     {
+      "content": "Use CLOB for strings with no fixed upper bound, such as generated reports, JSON or dynamic SQL.",
+      "items": []
+     },
+     {
+      "content": "Validate input before converting it, with <code class=\"inline-code\">VALIDATE_CONVERSION</code> or <code class=\"inline-code\">DEFAULT ... ON CONVERSION ERROR</code> in 12.2 and later.",
+      "items": []
+     },
+     {
+      "content": "Log <code class=\"inline-code\">SQLERRM</code> and <code class=\"inline-code\">DBMS_UTILITY.FORMAT_ERROR_BACKTRACE</code> in every top-level handler, then re-raise.",
+      "items": []
+     },
+     {
+      "content": "Add test data with the longest, widest and strangest values the column allows: maximum length names, multibyte text, NULLs and large amounts.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There is no real performance cost to anchored declarations or CHAR semantics. Using CLOB for small strings does add some overhead, so keep VARCHAR2 for values that have a known, reasonable maximum."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I fix ORA-06502 character string buffer too small?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Go to the line in the first <code class=\"inline-code\">ORA-06512</code> entry and find the variable being assigned. Make it big enough, ideally by declaring it with <code class=\"inline-code\">%TYPE</code>, use <code class=\"inline-code\">VARCHAR2(n CHAR)</code> if the text is multibyte, or switch to CLOB if the length has no fixed limit."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between ORA-06502 and ORA-01722?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both can come from a bad text-to-number conversion. ORA-01722 (invalid number) is raised when the conversion happens in a SQL statement. ORA-06502 is raised when it happens in a PL/SQL statement, such as an assignment."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Which exception catches ORA-06502 in PL/SQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The predefined exception <code class=\"inline-code\">VALUE_ERROR</code>. You can write <code class=\"inline-code\">WHEN VALUE_ERROR THEN</code> in your exception section. Catch it to log and re-raise, or to handle one known case, not to hide failures."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the maximum size of VARCHAR2 in PL/SQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "32,767 bytes for a PL/SQL variable. A VARCHAR2 table column is limited to 4,000 bytes by default, or 32,767 bytes when the database uses <code class=\"inline-code\">MAX_STRING_SIZE = EXTENDED</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why does my code work in testing but fail with ORA-06502 in production?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Production has data your test rows did not: longer names, multibyte characters, NULLs, or bigger amounts. Find the failing row by logging the key values in your exception handler, then fix the declaration rather than the single row."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Read the detail text after the colon to know which of the five cases you have",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Open the line in the first ORA-06512 entry",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Anchor variables with %TYPE and %ROWTYPE instead of hard-coded sizes",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use VARCHAR2(n CHAR) for multibyte text and CLOB for open-ended strings",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Keep phone numbers and IDs as VARCHAR2 and validate before converting",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Handle NULLs explicitly with NVL or COALESCE before NOT NULL variables",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Log SQLERRM plus DBMS_UTILITY.FORMAT_ERROR_BACKTRACE, then re-raise",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your PL/SQL job ran fine for months, then failed on one customer name. The cause is almost always ORA-06502.\n\nORA-06502 means a value does not fit the variable it is going into. PL/SQL never truncates silently, it fails.\n\nHow to fix it fast:\n\n1. Read the text after the colon. \"character string buffer too small\", \"number precision too large\" and \"character to number conversion error\" are three different bugs.\n2. Open the line in the first ORA-06512 entry. That is where the bad assignment is.\n3. Stop hard-coding sizes. Declare v_name customers.customer_name%TYPE and the variable follows the column.\n4. VARCHAR2(10) usually means 10 bytes. A 4-letter Hindi city name can need 12 bytes in AL32UTF8. Use VARCHAR2(10 CHAR).\n5. Keep phone numbers and PIN codes as VARCHAR2. Converting \"98765 43211\" to NUMBER in PL/SQL raises ORA-06502. In SQL the same bug shows as ORA-01722.\n\nAlso log DBMS_UTILITY.FORMAT_ERROR_BACKTRACE in your handler, not just SQLERRM, then re-raise.\n\nWhich of these five causes has bitten you the most in real projects?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #PLSQL #OracleSQL #SQLInterview",
+  "slides": [
+   {
+    "title": "ORA-06502: numeric or value error, fixed",
+    "body": "Five causes, how to spot each one, and the right fix"
+   },
+   {
+    "title": "What the error really means",
+    "points": [
+     "A value does not fit the variable it goes into",
+     "PL/SQL fails instead of truncating",
+     "The text after the colon names the cause",
+     "The first ORA-06512 line shows where"
+    ]
+   },
+   {
+    "title": "Buffer too small: use %TYPE",
+    "code": "DECLARE\n  v_name customers.customer_name%TYPE;\nBEGIN\n  SELECT customer_name INTO v_name\n    FROM customers\n   WHERE customer_id = 2;\nEND;\n/",
+    "lang": "plsql"
+   },
+   {
+    "title": "Bytes are not characters",
+    "points": [
+     "VARCHAR2(10) is usually 10 bytes",
+     "Hindi or Tamil letters take 3 bytes in AL32UTF8",
+     "Declare VARCHAR2(10 CHAR) for user text",
+     "Compare LENGTH and LENGTHB to check"
+    ]
+   },
+   {
+    "title": "Bad text to number",
+    "body": "Converting '98765 43211' to NUMBER in PL/SQL raises ORA-06502. In SQL the same bug is ORA-01722. Keep IDs as VARCHAR2 and test values first.",
+    "code": "SELECT phone,\n  VALIDATE_CONVERSION(\n    phone AS NUMBER) AS ok\n  FROM customers;",
+    "lang": "sql"
+   },
+   {
+    "title": "Log the line, then re-raise",
+    "code": "EXCEPTION\n  WHEN VALUE_ERROR THEN\n    log_error(SQLERRM,\n      DBMS_UTILITY\n        .FORMAT_ERROR_BACKTRACE);\n    RAISE;\nEND;",
+    "lang": "plsql"
+   }
+  ]
+ }
+}
