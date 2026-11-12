@@ -1,0 +1,963 @@
+{
+  "schemaVersion": 1,
+  "title": "Oracle SYS_REFCURSOR Example: Return Result Sets From PL/SQL",
+  "slug": "oracle-sys-refcursor-example",
+  "category": "plsql",
+  "description": "Oracle SYS_REFCURSOR examples: open, fetch and close, return it from a function or OUT parameter, dynamic SQL with binds, and the common errors.",
+  "focusKeyword": "oracle sys_refcursor example",
+  "tags": [
+    "oracle",
+    "plsql",
+    "cursors",
+    "ref-cursor",
+    "stored-procedures"
+  ],
+  "related": [
+    "/posts/plsql/oracle-bulk-collect-limit-example/",
+    "/posts/interview-questions/what-is-cursor-in-sql-types-examples-benefits/",
+    "/posts/plsql/ora-01555-snapshot-too-old/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: Cursor Variables",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/cursor-variables.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: Cursor Variable Declaration (restrictions)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/cursor-variable-declaration.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: OPEN FOR Statement",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/OPEN-FOR-statement.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: Predefined Exceptions",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/predefined-exceptions.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Packages: DBMS_SQL.RETURN_RESULT",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_SQL.html"
+    },
+    {
+      "title": "Oracle 19c SQL*Plus User's Guide: VARIABLE (REFCURSOR)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqpug/VARIABLE.html"
+    },
+    {
+      "title": "Oracle Database Error Help: ORA-01000",
+      "url": "https://docs.oracle.com/en/error-help/db/ora-01000/"
+    },
+    {
+      "title": "Oracle Data Provider for .NET: OracleRefCursor Class (OUT SYS_REFCURSOR example)",
+      "url": "https://docs.oracle.com/cd/B28359_01/win.111/b28375/OracleRefCursorClass.htm"
+    }
+  ],
+  "reviewNotes": "All examples were written from the Oracle 19c PL/SQL, DBMS_SQL and SQL*Plus docs and were NOT executed; every block needs a test run and the outputs marked expected output should be checked or replaced with real ones. Please verify: (1) the PL/SQL reference says a subprogram that opens a cursor variable parameter must use IN OUT, but OUT SYS_REFCURSOR (Example 3, used by Oracle's ODP.NET docs and most drivers) compiles and works; confirm and keep or reword the note callout; (2) the ORA-06504 detail text was left out on purpose, ORA-01001 'invalid cursor' wording should be confirmed; (3) ORA-01000 message wording differs by release ('maximum open cursors exceeded' in 19c, the 26ai error help page shows 'maximum open cursors for session exceeded'); (4) DBMS_SQL.RETURN_RESULT availability from 12.1 is from general knowledge, the 19c page documents it; the client may print its own header line before each implicit result set, which the tables do not show; (5) SQL*Plus PRINT column widths will be wider than the table blocks show; (6) the cursor FOR loop restriction is documented, but the exact PLS- compile error was not quoted. Related links are all from the published search index.",
+  "generatedAt": "2026-11-12T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A <code class=\"inline-code\">SYS_REFCURSOR</code> is Oracle's built-in cursor variable type. You use it to open a query in PL/SQL and hand the result set to someone else: another procedure, a function caller, or a client program written in Java, Python or .NET. The basic pattern is three statements: <code class=\"inline-code\">OPEN cur FOR SELECT ...</code>, <code class=\"inline-code\">FETCH cur INTO ...</code> in a loop, and <code class=\"inline-code\">CLOSE cur</code>."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This tutorial builds every common SYS_REFCURSOR example on one small orders table: a loop in an anonymous block, a function that returns a cursor, a procedure with an OUT cursor parameter, a dynamic query with bind variables, bulk fetching, and Oracle's implicit result sets. Each example shows the expected output and what it means, followed by the mistakes that cause INVALID_CURSOR, ROWTYPE_MISMATCH and ORA-01000."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is SYS_REFCURSOR in Oracle?",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A normal explicit cursor (<code class=\"inline-code\">CURSOR c IS SELECT ...</code>) is fixed to one query at compile time. A cursor variable is different. It is a <b>pointer</b> to a SQL work area, so you can open it for any query at run time, assign it to another variable, and pass it as a parameter. The Oracle documentation calls these cursor variables, and people often call them REF CURSORs."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "There are two ways to get one. You can define your own type with <code class=\"inline-code\">TYPE my_cur_t IS REF CURSOR</code>, or you can use the predefined type <code class=\"inline-code\">SYS_REFCURSOR</code>, which saves you the type declaration. SYS_REFCURSOR is a <b>weak</b> type: it has no RETURN clause, so it can point to any query with any columns."
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Feature",
+            "Explicit cursor",
+            "SYS_REFCURSOR (cursor variable)"
+          ],
+          [
+            "Query fixed at compile time",
+            "Yes",
+            "No, chosen at OPEN time"
+          ],
+          [
+            "Can be a parameter or function return value",
+            "No",
+            "Yes"
+          ],
+          [
+            "Can be returned to a client program",
+            "No",
+            "Yes"
+          ],
+          [
+            "Accepts cursor parameters",
+            "Yes",
+            "No, but the query can use variables"
+          ],
+          [
+            "Works in a cursor FOR loop",
+            "Yes",
+            "No"
+          ],
+          [
+            "Column check at compile time",
+            "Yes",
+            "No (weak type), checked at fetch time"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The trade-off is in that last row. Because a SYS_REFCURSOR can point to any query, PL/SQL cannot check at compile time that your <code class=\"inline-code\">FETCH ... INTO</code> variables match the columns. If they do not match, you find out at run time."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Strong vs weak REF CURSOR",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If you add a RETURN clause, the type becomes <b>strong</b>, and PL/SQL checks every query you open against it when the code compiles. (This block uses the orders table created in the next section.)"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  TYPE order_cur_t IS REF CURSOR RETURN orders%ROWTYPE;  -- strong\n  c_strong order_cur_t;\n  c_weak   SYS_REFCURSOR;                                -- weak\nBEGIN\n  OPEN c_strong FOR SELECT * FROM orders;  -- must return orders%ROWTYPE\n  OPEN c_weak   FOR SELECT city, COUNT(*) FROM orders GROUP BY city;  -- any query\n  CLOSE c_strong;\n  CLOSE c_weak;\nEND;\n/",
+        "caption": "A strong REF CURSOR type next to a weak SYS_REFCURSOR"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Use a strong type inside a package when the shape of the result never changes and you want the compiler to catch mistakes. Use SYS_REFCURSOR when the query varies, or when the cursor goes to a client program, which is the most common case."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup: an orders table",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Run this once. Every example below uses these six rows."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE orders (\n  order_id      NUMBER PRIMARY KEY,\n  customer_name VARCHAR2(50) NOT NULL,\n  city          VARCHAR2(30) NOT NULL,\n  amount        NUMBER(10,2) NOT NULL,\n  status        VARCHAR2(10) NOT NULL,\n  order_date    DATE         NOT NULL\n);\n\nINSERT INTO orders VALUES (101, 'Asha Rao',    'Pune',   2500, 'SHIPPED',   DATE '2026-10-01');\nINSERT INTO orders VALUES (102, 'Vikram Shah', 'Mumbai', 1200, 'PENDING',   DATE '2026-10-03');\nINSERT INTO orders VALUES (103, 'Meera Iyer',  'Pune',   4800, 'SHIPPED',   DATE '2026-10-05');\nINSERT INTO orders VALUES (104, 'Rahul Verma', 'Delhi',   750, 'CANCELLED', DATE '2026-10-06');\nINSERT INTO orders VALUES (105, 'Kiran Patel', 'Pune',   3100, 'PENDING',   DATE '2026-10-08');\nINSERT INTO orders VALUES (106, 'Sneha Nair',  'Mumbai', 5600, 'SHIPPED',   DATE '2026-10-09');\nCOMMIT;",
+        "caption": "Sample table and data"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In SQL*Plus or SQL Developer, run <code class=\"inline-code\">SET SERVEROUTPUT ON</code> first so you can see the <code class=\"inline-code\">DBMS_OUTPUT</code> lines in the examples."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 1: open, fetch and close a SYS_REFCURSOR",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Start with the simplest case: declare the cursor variable, open it for a query, fetch rows one at a time, then close it."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  c_orders  SYS_REFCURSOR;\n  v_id      orders.order_id%TYPE;\n  v_name    orders.customer_name%TYPE;\n  v_amount  orders.amount%TYPE;\nBEGIN\n  OPEN c_orders FOR\n    SELECT order_id, customer_name, amount\n      FROM orders\n     WHERE city = 'Pune'\n     ORDER BY order_id;\n\n  LOOP\n    FETCH c_orders INTO v_id, v_name, v_amount;\n    EXIT WHEN c_orders%NOTFOUND;\n    DBMS_OUTPUT.PUT_LINE(v_id || '  ' || RPAD(v_name, 12) || v_amount);\n  END LOOP;\n\n  DBMS_OUTPUT.PUT_LINE('Rows fetched: ' || c_orders%ROWCOUNT);\n  CLOSE c_orders;\nEND;\n/",
+        "caption": "Basic SYS_REFCURSOR loop"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "101  Asha Rao    2500\n103  Meera Iyer  4800\n105  Kiran Patel 3100\nRows fetched: 3",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Here is what each step does. <code class=\"inline-code\">OPEN ... FOR</code> runs the query, identifies the result set and positions the cursor before the first row. Each <code class=\"inline-code\">FETCH</code> moves one row into the variables. When there are no more rows, <code class=\"inline-code\">%NOTFOUND</code> becomes TRUE and the loop exits. <code class=\"inline-code\">%ROWCOUNT</code> is the number of rows fetched <b>so far</b>, which is 3 at the end."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The <code class=\"inline-code\">EXIT WHEN</code> line must come straight after the FETCH. If you put it after the PUT_LINE, the last row prints twice, because the variables still hold the previous row when the final fetch finds nothing."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You can also reuse the same variable for a different query. You do not need to close it before opening it again; the old query is simply dropped. Close it once at the end."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 2: a function that returns SYS_REFCURSOR",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The main reason SYS_REFCURSOR exists is to return a result set from a stored program. A function is the cleanest way to do that."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE FUNCTION get_orders_by_city (\n  p_city IN orders.city%TYPE\n) RETURN SYS_REFCURSOR\nIS\n  c_result SYS_REFCURSOR;\nBEGIN\n  OPEN c_result FOR\n    SELECT order_id, customer_name, amount\n      FROM orders\n     WHERE city = p_city\n     ORDER BY order_id;\n  RETURN c_result;   -- do NOT close it here\nEND get_orders_by_city;\n/",
+        "caption": "Function returning an open cursor"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Notice that the function opens the cursor and returns it <b>open</b>. The caller fetches the rows and the caller closes it. If you close it inside the function, the caller receives a closed cursor and the first fetch fails with INVALID_CURSOR."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Calling it from SQL*Plus or SQL Developer",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "SQL*Plus has a bind variable type for cursors, <code class=\"inline-code\">REFCURSOR</code>, and <code class=\"inline-code\">PRINT</code> fetches and displays all its rows. In SQL Developer, run these lines as a script (F5)."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "VARIABLE rc REFCURSOR\nEXEC :rc := get_orders_by_city('Mumbai');\nPRINT rc",
+        "caption": "Print the returned cursor in SQL*Plus"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output):"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "ORDER_ID",
+            "CUSTOMER_NAME",
+            "AMOUNT"
+          ],
+          [
+            "102",
+            "Vikram Shah",
+            "1200"
+          ],
+          [
+            "106",
+            "Sneha Nair",
+            "5600"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "SQL*Plus closes the cursor after PRINT. If you want to print it again, run the <code class=\"inline-code\">EXEC</code> line again first."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Calling it from PL/SQL",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  c        SYS_REFCURSOR;\n  v_id     orders.order_id%TYPE;\n  v_name   orders.customer_name%TYPE;\n  v_amount orders.amount%TYPE;\nBEGIN\n  c := get_orders_by_city('Delhi');\n  LOOP\n    FETCH c INTO v_id, v_name, v_amount;\n    EXIT WHEN c%NOTFOUND;\n    DBMS_OUTPUT.PUT_LINE(v_id || ' ' || v_name || ' ' || v_amount);\n  END LOOP;\n  CLOSE c;\nEND;\n/",
+        "caption": "Fetching from the function result"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "104 Rahul Verma 750",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 3: a procedure with an OUT SYS_REFCURSOR parameter",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Many application teams prefer procedures with OUT parameters, because a procedure can return a cursor and other values in one call. This is the form Java, .NET and Python drivers usually call to get a result set."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE PROCEDURE get_orders_by_status (\n  p_status IN  orders.status%TYPE,\n  p_total  OUT NUMBER,\n  p_result OUT SYS_REFCURSOR\n)\nIS\nBEGIN\n  SELECT NVL(SUM(amount), 0)\n    INTO p_total\n    FROM orders\n   WHERE status = p_status;\n\n  OPEN p_result FOR\n    SELECT order_id, customer_name, city, amount\n      FROM orders\n     WHERE status = p_status\n     ORDER BY amount DESC;\nEND get_orders_by_status;\n/",
+        "caption": "Procedure with an OUT cursor parameter"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "VARIABLE total NUMBER\nVARIABLE rc REFCURSOR\nEXEC get_orders_by_status('SHIPPED', :total, :rc);\nPRINT total\nPRINT rc",
+        "caption": "Call it with SQL*Plus bind variables"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output): PRINT total shows 12900 (2500 + 4800 + 5600), and PRINT rc shows the three shipped orders, largest first:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "ORDER_ID",
+            "CUSTOMER_NAME",
+            "CITY",
+            "AMOUNT"
+          ],
+          [
+            "106",
+            "Sneha Nair",
+            "Mumbai",
+            "5600"
+          ],
+          [
+            "103",
+            "Meera Iyer",
+            "Pune",
+            "4800"
+          ],
+          [
+            "101",
+            "Asha Rao",
+            "Pune",
+            "2500"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In a client program the idea is the same: register the third parameter as a cursor type, execute the call, and read the parameter as a normal result set. Close that result set when you are done."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "",
+        "text": "The PL/SQL Language Reference says a subprogram that opens a cursor variable parameter should declare it <code class=\"inline-code\">IN OUT</code>. <code class=\"inline-code\">OUT SYS_REFCURSOR</code>, as used here, is the form most driver documentation shows and works for this pattern. Use <code class=\"inline-code\">IN OUT</code> if the procedure also needs to read or fetch from a cursor the caller passed in."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 4: dynamic SQL with OPEN FOR and bind variables",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A cursor variable can also be opened for a query held in a string. This is how you build search screens where the sort order or the filters change at run time. Put values in the <code class=\"inline-code\">USING</code> clause as bind variables, never concatenate them into the string."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE FUNCTION search_orders (\n  p_city       IN VARCHAR2,\n  p_min_amount IN NUMBER,\n  p_sort       IN VARCHAR2   -- 'AMOUNT' or 'ID'\n) RETURN SYS_REFCURSOR\nIS\n  c_result SYS_REFCURSOR;\n  v_sql    VARCHAR2(500);\nBEGIN\n  v_sql := 'SELECT order_id, customer_name, amount\n              FROM orders\n             WHERE city = :city\n               AND amount >= :min_amt\n             ORDER BY '\n           || CASE p_sort\n                WHEN 'AMOUNT' THEN 'amount DESC'\n                ELSE 'order_id'\n              END;\n\n  OPEN c_result FOR v_sql USING p_city, p_min_amount;\n  RETURN c_result;\nEND search_orders;\n/",
+        "caption": "Dynamic query with binds and a whitelisted sort column"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "VARIABLE rc REFCURSOR\nEXEC :rc := search_orders('Pune', 3000, 'AMOUNT');\nPRINT rc",
+        "caption": "Pune orders of 3000 or more, biggest first"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output):"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "ORDER_ID",
+            "CUSTOMER_NAME",
+            "AMOUNT"
+          ],
+          [
+            "103",
+            "Meera Iyer",
+            "4800"
+          ],
+          [
+            "105",
+            "Kiran Patel",
+            "3100"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Two things make this safe. The city and amount are bind variables (<code class=\"inline-code\">:city</code>, <code class=\"inline-code\">:min_amt</code>), so a value like <code class=\"inline-code\">Pune' OR '1'='1</code> is treated as plain text, not SQL. And the ORDER BY column cannot be a bind variable, so the CASE expression picks from a fixed list instead of pasting the user's input into the query."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Binds also help the shared pool. Each sort option produces one fixed SQL text, whatever city and amount are passed, so Oracle can reuse the parsed statement instead of hard parsing a new one for each city and amount."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 5: fetch a SYS_REFCURSOR in batches with BULK COLLECT",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Fetching one row at a time is fine for a handful of rows. For thousands of rows, fetch in batches with <code class=\"inline-code\">BULK COLLECT ... LIMIT</code>. It works on cursor variables exactly as it does on explicit cursors."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  TYPE t_ids  IS TABLE OF orders.order_id%TYPE;\n  TYPE t_amts IS TABLE OF orders.amount%TYPE;\n  c      SYS_REFCURSOR;\n  l_ids  t_ids;\n  l_amts t_amts;\nBEGIN\n  OPEN c FOR SELECT order_id, amount FROM orders ORDER BY order_id;\n  LOOP\n    FETCH c BULK COLLECT INTO l_ids, l_amts LIMIT 4;\n    EXIT WHEN l_ids.COUNT = 0;\n    DBMS_OUTPUT.PUT_LINE('Batch of ' || l_ids.COUNT ||\n                         ' rows, first id ' || l_ids(1));\n  END LOOP;\n  CLOSE c;\nEND;\n/",
+        "caption": "Batch fetch from a cursor variable"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Batch of 4 rows, first id 101\nBatch of 2 rows, first id 105",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Note the exit test. With BULK COLLECT, check <code class=\"inline-code\">l_ids.COUNT = 0</code>, not <code class=\"inline-code\">%NOTFOUND</code>. On the second fetch only 2 of the requested 4 rows come back, so %NOTFOUND is already TRUE, and exiting on it would skip those 2 rows. In real code use a LIMIT of a few hundred; 4 is only to show two batches. The <a href=\"/posts/plsql/oracle-bulk-collect-limit-example/\">BULK COLLECT LIMIT tutorial</a> covers this pattern with FORALL."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 6: implicit result sets with DBMS_SQL.RETURN_RESULT",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "From Oracle Database 12c Release 1, a procedure can send result sets straight to the client without any OUT parameter, using <code class=\"inline-code\">DBMS_SQL.RETURN_RESULT</code>. This is handy for report procedures and for code migrated from SQL Server or Sybase, where procedures return results this way."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE PROCEDURE order_summary\nIS\n  rc1 SYS_REFCURSOR;\n  rc2 SYS_REFCURSOR;\nBEGIN\n  OPEN rc1 FOR\n    SELECT status, COUNT(*) AS orders\n      FROM orders GROUP BY status ORDER BY status;\n  DBMS_SQL.RETURN_RESULT(rc1);\n\n  OPEN rc2 FOR\n    SELECT city, SUM(amount) AS total_amount\n      FROM orders GROUP BY city ORDER BY city;\n  DBMS_SQL.RETURN_RESULT(rc2);\nEND order_summary;\n/\n\nEXEC order_summary",
+        "caption": "Two implicit result sets from one procedure"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Output (expected output), first result set:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "STATUS",
+            "ORDERS"
+          ],
+          [
+            "CANCELLED",
+            "1"
+          ],
+          [
+            "PENDING",
+            "2"
+          ],
+          [
+            "SHIPPED",
+            "3"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Second result set:"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "CITY",
+            "TOTAL_AMOUNT"
+          ],
+          [
+            "Delhi",
+            "750"
+          ],
+          [
+            "Mumbai",
+            "6800"
+          ],
+          [
+            "Pune",
+            "10400"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "After <code class=\"inline-code\">RETURN_RESULT</code>, the cursor belongs to the client, so do not fetch from it or close it in the procedure. The client must support implicit results; SQL*Plus and SQL Developer from 12c onward display them. The docs also note that implicit results cannot be returned over remote procedure calls."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes with SYS_REFCURSOR",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "1. Using a cursor FOR loop",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">FOR r IN c_orders LOOP</code> works for explicit cursors only. The documentation lists this as a restriction on cursor variables, and the code will not compile. Use the OPEN, FETCH, EXIT WHEN, CLOSE loop from Example 1, or BULK COLLECT."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "2. Closing the cursor before the caller uses it",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If a function closes the cursor before returning it, or a caller fetches after closing, PL/SQL raises the predefined exception <code class=\"inline-code\">INVALID_CURSOR</code> (ORA-01001). The same happens if you read any attribute other than <code class=\"inline-code\">%ISOPEN</code> on a cursor that is not open."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  c    SYS_REFCURSOR;\n  v_id NUMBER;\nBEGIN\n  OPEN c FOR SELECT order_id FROM orders;\n  CLOSE c;\n  FETCH c INTO v_id;   -- cursor is already closed\nEND;\n/",
+        "caption": "Fetching from a closed cursor"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-01001: invalid cursor",
+        "caption": "Error (expected output)"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "3. FETCH INTO variables that do not match the query",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "With a weak cursor, the column check happens at run time. If the query returns three columns and you fetch into two variables, or into variables of incompatible types, PL/SQL raises <code class=\"inline-code\">ROWTYPE_MISMATCH</code> (ORA-06504). Keep the SELECT list and the INTO list next to each other in reviews, or use a strong REF CURSOR type where the shape is fixed."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "4. Never closing the cursor",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Each open cursor uses a slot in the session. Code that opens cursors and never closes them, very often client code that forgets to close a result set, eventually hits ORA-01000 (maximum open cursors exceeded). The limit is the <code class=\"inline-code\">OPEN_CURSORS</code> initialization parameter. Raising it only delays the error; the fix is to close every cursor when you finish with it, including on the error path:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "EXCEPTION\n  WHEN OTHERS THEN\n    IF c_orders%ISOPEN THEN\n      CLOSE c_orders;\n    END IF;\n    RAISE;",
+        "caption": "Close the cursor in the exception handler, then re-raise"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "5. Expecting %ROWCOUNT to be the total row count",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Right after OPEN, <code class=\"inline-code\">%ROWCOUNT</code> is 0, because nothing has been fetched yet. Oracle does not know the total until the last row is read. If the caller needs a total up front, return it separately (as <code class=\"inline-code\">p_total</code> in Example 3) or add <code class=\"inline-code\">COUNT(*) OVER ()</code> as a column."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "6. Testing the cursor with IS NULL or =",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You cannot compare cursor variables for equality, inequality or nullity. To check whether a cursor is usable, test <code class=\"inline-code\">c%ISOPEN</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Performance tips and best practices",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Fetch in batches.</b> In PL/SQL use BULK COLLECT with LIMIT. In client code, set the driver's fetch size (for example the JDBC fetch size, or <code class=\"inline-code\">SET ARRAYSIZE</code> in SQL*Plus) so each network round trip brings back many rows.",
+            "items": []
+          },
+          {
+            "content": "<b>Use binds.</b> In static OPEN FOR queries, PL/SQL variables are bound automatically. In dynamic strings, pass values with USING so the statement is shared, not hard parsed each time.",
+            "items": []
+          },
+          {
+            "content": "<b>The result set is fixed at OPEN time.</b> Oracle evaluates the variables in the query when the cursor opens, and the rows you fetch are read consistent as of that point. A cursor that stays open while the client fetches slowly for a long time can hit <a href=\"/posts/plsql/ora-01555-snapshot-too-old/\">ORA-01555 snapshot too old</a>.",
+            "items": []
+          },
+          {
+            "content": "<b>Return only the columns the caller needs.</b> <code class=\"inline-code\">SELECT *</code> through a cursor sends every column over the network and breaks callers when the table changes.",
+            "items": []
+          },
+          {
+            "content": "<b>Do not pass cursors over database links.</b> The documentation states that cursor variables cannot be passed to or returned from subprograms called through a database link.",
+            "items": []
+          },
+          {
+            "content": "<b>Close what you open, in one place.</b> Decide which layer closes the cursor (usually the caller) and stick to it.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "",
+        "text": "If a procedure only needs the rows internally and never returns them, a plain explicit cursor or a cursor FOR loop is simpler and gets compile-time checks. Reach for SYS_REFCURSOR when the result set has to travel to another program."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between SYS_REFCURSOR and REF CURSOR?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "REF CURSOR is the general type of cursor variable; you declare your own type with <code class=\"inline-code\">TYPE t IS REF CURSOR</code>, optionally with a RETURN clause. SYS_REFCURSOR is a predefined weak REF CURSOR type, so you can use it directly without declaring a type. Weak REF CURSOR types and SYS_REFCURSOR are interchangeable."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can I use a cursor FOR loop with SYS_REFCURSOR?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "No. Cursor FOR loops accept explicit cursors and inline queries only. Fetch from a SYS_REFCURSOR with an explicit FETCH loop or BULK COLLECT."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I count the rows in a SYS_REFCURSOR?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You cannot know the count before fetching. <code class=\"inline-code\">%ROWCOUNT</code> tells you how many rows have been fetched so far, so after the loop finishes it holds the total. If you need the count first, run a separate COUNT(*) or include <code class=\"inline-code\">COUNT(*) OVER ()</code> in the query."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I see SYS_REFCURSOR output in SQL Developer?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Declare a bind variable with <code class=\"inline-code\">VARIABLE rc REFCURSOR</code>, assign the cursor with <code class=\"inline-code\">EXEC :rc := your_function(...)</code>, then <code class=\"inline-code\">PRINT rc</code>, and run all three lines as a script with F5. For a procedure that uses DBMS_SQL.RETURN_RESULT, just execute the procedure."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Who should close a SYS_REFCURSOR, the procedure or the caller?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The code that finishes fetching. When a function or procedure returns an open cursor, the caller must close it. Closing it inside the procedure makes it useless to the caller."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "SYS_REFCURSOR is a predefined weak cursor variable type: a pointer to a query result set.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Pattern: OPEN cur FOR query, FETCH in a loop with EXIT WHEN cur%NOTFOUND right after the fetch, then CLOSE.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Return it from a function or an OUT parameter to give result sets to callers and client programs; return it open.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "For dynamic queries, use OPEN FOR string USING binds, and whitelist anything that cannot be bound, like ORDER BY columns.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use BULK COLLECT LIMIT and exit on COUNT = 0 for large result sets.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Cursor FOR loops do not work on cursor variables; INVALID_CURSOR means it is closed, ROWTYPE_MISMATCH means the INTO list does not match.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Close every cursor, including in exception handlers, to avoid ORA-01000.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "From 12c, DBMS_SQL.RETURN_RESULT returns result sets to the client without OUT parameters.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your procedure needs to return 500 rows to a Java or Python app. In Oracle the standard answer is SYS_REFCURSOR.\n\nA SYS_REFCURSOR is a pointer to an open query. You open it in PL/SQL and the caller fetches the rows.\n\nWhat to get right:\n\n1. Open it and return it open: OPEN c FOR SELECT ...; RETURN c; The caller closes it, not the function.\n2. Put EXIT WHEN c%NOTFOUND straight after FETCH, or the last row prints twice.\n3. A cursor FOR loop does not work on a cursor variable. Use FETCH in a loop or BULK COLLECT ... LIMIT.\n4. For dynamic queries use OPEN c FOR v_sql USING p_city. Bind the values, and never paste user input into ORDER BY.\n5. Forget to close cursors and the session ends up with ORA-01000 maximum open cursors exceeded.\n\nBonus: from 12c, DBMS_SQL.RETURN_RESULT sends a result set to the client with no OUT parameter at all.\n\nDo you return result sets from functions or from procedures with OUT parameters in your projects?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #PLSQL #OracleSQL #SQLInterview",
+    "slides": [
+      {
+        "title": "SYS_REFCURSOR in Oracle, with examples",
+        "body": "Return query results from PL/SQL to any caller, safely"
+      },
+      {
+        "title": "What a SYS_REFCURSOR is",
+        "points": [
+          "A pointer to an open query result set",
+          "Weak type: any query, any columns",
+          "Can be a parameter or a function return",
+          "Clients read it as a normal result set"
+        ]
+      },
+      {
+        "title": "Return it open from a function",
+        "code": "CREATE OR REPLACE FUNCTION get_orders(\n  p_city VARCHAR2) RETURN SYS_REFCURSOR\nIS\n  c SYS_REFCURSOR;\nBEGIN\n  OPEN c FOR SELECT order_id, amount\n    FROM orders WHERE city = p_city;\n  RETURN c;  -- caller closes it\nEND;",
+        "lang": "plsql"
+      },
+      {
+        "title": "Fetch loop: exit right after FETCH",
+        "code": "LOOP\n  FETCH c INTO v_id, v_amount;\n  EXIT WHEN c%NOTFOUND;\n  DBMS_OUTPUT.PUT_LINE(v_id);\nEND LOOP;\nCLOSE c;",
+        "lang": "plsql"
+      },
+      {
+        "title": "Dynamic SQL: bind the values",
+        "code": "OPEN c FOR\n  'SELECT order_id FROM orders\n    WHERE city = :city'\n  USING p_city;",
+        "lang": "plsql",
+        "points": [
+          "Values go in USING, never in the string",
+          "Pick ORDER BY columns from a fixed list"
+        ]
+      },
+      {
+        "title": "Mistakes that cause errors",
+        "points": [
+          "Cursor FOR loop on it: will not compile",
+          "Fetch after CLOSE: ORA-01001 invalid cursor",
+          "INTO list does not match: ROWTYPE_MISMATCH",
+          "Never closing it: ORA-01000 open cursors"
+        ]
+      }
+    ]
+  }
+}
