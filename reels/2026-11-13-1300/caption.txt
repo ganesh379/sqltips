@@ -1,0 +1,13 @@
+Three PostgreSQL config files you must understand, and how to check a change before it bites.
+
+postgresql.conf holds server settings, pg_hba.conf decides who may connect (host-based authentication), and pg_ident.conf maps operating system users to database users. By default all three live in the data directory, but packages can move them, so ask the server: SHOW config_file; and SHOW hba_file;
+
+In postgresql.conf the last entry for a setting wins, include_dir reads .conf files in name order, and ALTER SYSTEM writes postgresql.auto.conf, which overrides postgresql.conf. Most changes need a reload with SELECT pg_reload_conf(); but postmaster settings like shared_buffers need a restart, and pg_settings shows pending_restart = t.
+
+In pg_hba.conf the first matching rule wins, with no fall-through. PostgreSQL DBA habit: check pg_file_settings and pg_hba_file_rules for errors (like invalid authentication method "trusst") before you reload. A broken pg_hba.conf is not reloaded and the old rules stay.
+
+Episode 11 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql

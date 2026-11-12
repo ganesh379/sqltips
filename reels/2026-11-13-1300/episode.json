@@ -1,0 +1,679 @@
+{
+ "ep": 11,
+ "total": 140,
+ "title": "PostgreSQL Configuration Files",
+ "phase": "Foundations",
+ "lines": [
+  {
+   "say": "Three PostgreSQL config files you must understand.",
+   "cap": "Three *PostgreSQL* *config* files you must understand."
+  },
+  {
+   "say": "This is episode eleven of the PostgreSQL DBA series. Today: the config files, and how to check them safely.",
+   "cap": "Episode 11: the *config* *files,* checked *safely.*",
+   "cue": "safely"
+  },
+  {
+   "say": "PostgreSQL has three hand-edited config files. By default, all three live in the data directory.",
+   "cap": "Three hand-edited files. Default home: the *data* *directory.*",
+   "cue": "data"
+  },
+  {
+   "say": "postgresql.conf holds server settings: memory, logging, connections and more.",
+   "cap": "*postgresql.conf:* the server *settings.*",
+   "cue": "settings"
+  },
+  {
+   "say": "pg_hba.conf decides who may connect. H B A means host-based authentication.",
+   "cap": "*pg_hba.conf:* who may *connect.*",
+   "cue": "host-based"
+  },
+  {
+   "say": "pg_ident.conf maps operating system users to database users, for methods like peer.",
+   "cap": "*pg_ident.conf:* OS user to *database* *user.*",
+   "cue": "peer"
+  },
+  {
+   "say": "Step one: don't guess where they are. Ask the server: SHOW config_file and SHOW hba_file.",
+   "cap": "Ask the server: *SHOW* *config_file.*",
+   "cue": "SHOW"
+  },
+  {
+   "say": "On this Ubuntu package, the files sit under slash etc, not in the data directory. Output trimmed.",
+   "cap": "Ubuntu package: config in */etc,* data in */var/lib.*",
+   "cue": "Output"
+  },
+  {
+   "say": "The format is simple: one setting per line, name equals value, and a hash starts a comment.",
+   "cap": "One *setting* per line. *#* starts a comment.",
+   "cue": "hash"
+  },
+  {
+   "say": "If the same setting appears twice, only the last one counts.",
+   "cap": "Same setting twice? The *last* one *wins.*",
+   "cue": "last"
+  },
+  {
+   "say": "include_dir pulls in every dot conf file in a folder, in name order.",
+   "cap": "*include_dir* reads *.conf* files in name order.",
+   "cue": "order"
+  },
+  {
+   "say": "ALTER SYSTEM writes postgresql.auto.conf, which overrides postgresql.conf. Don't edit it by hand.",
+   "cap": "*ALTER SYSTEM* writes *postgresql.auto.conf.*",
+   "cue": "overrides"
+  },
+  {
+   "say": "Most changes need only a reload: pg_ctl reload, or SELECT pg_reload_conf.",
+   "cap": "Apply with a *reload:* *pg_reload_conf().*",
+   "cue": "reload"
+  },
+  {
+   "say": "Some, like shared_buffers, need a restart. pg_settings then shows pending_restart true.",
+   "cap": "*shared_buffers* needs a *restart.*",
+   "cue": "pending_restart"
+  },
+  {
+   "say": "Safe inspection: pg_file_settings shows every entry in the files, and whether it could be applied.",
+   "cap": "*pg_file_settings:* was each entry *applied?*",
+   "cue": "applied"
+  },
+  {
+   "say": "The first row is false because a later entry overrides it. The second needs a restart.",
+   "cap": "Overridden or *needs* *restart:* both show *f.*",
+   "cue": "second"
+  },
+  {
+   "say": "Now pg_hba.conf. Each rule has a type, database, user, address and auth method.",
+   "cap": "Each rule: *type,* *database,* *user,* *address,* *method.*",
+   "cue": "method"
+  },
+  {
+   "say": "Rules are checked top to bottom, and the first match wins. If that login fails, no later rule is tried.",
+   "cap": "*First* *match* wins. *No* fall-through.",
+   "cue": "first"
+  },
+  {
+   "say": "pg_hba_file_rules shows the rules exactly as the server parsed them.",
+   "cap": "*pg_hba_file_rules:* the parsed rules.",
+   "cue": "parsed"
+  },
+  {
+   "say": "Common mistake: a typo, like trusst. The view shows the error before you reload.",
+   "cap": "A typo shows up in the *error* column.",
+   "cue": "error"
+  },
+  {
+   "say": "Reload anyway, and the log says pg_hba.conf was not reloaded. Old rules stay.",
+   "cap": "Bad file? *Not* *reloaded.* Old rules *stay.*",
+   "cue": "log"
+  },
+  {
+   "say": "DBA takeaway: a common practice is to back up the file, edit, check these views, then reload.",
+   "cap": "Back up, edit, *check* the views, then *reload.*",
+   "cue": "check"
+  },
+  {
+   "say": "Recap: postgresql.conf holds settings. pg_hba.conf controls access.",
+   "cap": "Recap: *settings* and *access.*",
+   "cue": "access"
+  },
+  {
+   "say": "pg_ident.conf maps names. Last entry wins, first match wins.",
+   "cap": "*Name* *maps.* *Last* entry, *first* match.",
+   "cue": "Last"
+  },
+  {
+   "say": "Next up: PostgreSQL versions and release types. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *versions* and releases. *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "Three *PostgreSQL* config files you must understand.",
+   "sub": "Episode 11 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 11 · FOUNDATIONS",
+   "title": "PostgreSQL Configuration Files",
+   "sub": "What each file does, how to check it"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 6,
+   "heading": "Three hand-edited files",
+   "nodes": [
+    {
+     "id": "dir",
+     "label": "Data directory",
+     "sub": "default location",
+     "x": 540,
+     "y": 500,
+     "w": 380,
+     "h": 140,
+     "icon": "folder",
+     "color": "blue",
+     "shape": "db",
+     "at": 2
+    },
+    {
+     "id": "conf",
+     "label": "postgresql.conf",
+     "sub": "server settings",
+     "x": 540,
+     "y": 800,
+     "w": 420,
+     "h": 140,
+     "icon": "wrench",
+     "color": "orange",
+     "at": 3
+    },
+    {
+     "id": "hba",
+     "label": "pg_hba.conf",
+     "sub": "who may connect",
+     "x": 290,
+     "y": 1170,
+     "w": 360,
+     "h": 140,
+     "icon": "lock",
+     "color": "green",
+     "at": 4
+    },
+    {
+     "id": "ident",
+     "label": "pg_ident.conf",
+     "sub": "OS user to DB user",
+     "x": 800,
+     "y": 1170,
+     "w": 360,
+     "h": 140,
+     "icon": "users",
+     "color": "cyan",
+     "at": 5
+    }
+   ],
+   "edges": [
+    {
+     "from": "dir",
+     "to": "conf",
+     "label": "settings",
+     "at": 3,
+     "flow": true
+    },
+    {
+     "from": "conf",
+     "to": "hba",
+     "label": "access",
+     "at": 4,
+     "flow": true,
+     "color": "green"
+    },
+    {
+     "from": "hba",
+     "to": "ident",
+     "label": "map=",
+     "at": 5,
+     "flow": true,
+     "color": "cyan"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "dir"
+    },
+    {
+     "at": 3,
+     "id": "conf"
+    },
+    {
+     "at": 4,
+     "id": "hba"
+    },
+    {
+     "at": 5,
+     "id": "ident"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 6,
+   "to": 8,
+   "heading": "Find the files",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SHOW config_file;",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "/etc/postgresql/16/main/postgresql.conf",
+     "at": 6
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SHOW hba_file;",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "/etc/postgresql/16/main/pg_hba.conf",
+     "at": 6
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SHOW data_directory;",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "/var/lib/postgresql/16/main",
+     "at": 7
+    },
+    {
+     "kind": "comment",
+     "text": "-- headers trimmed",
+     "at": 7
+    },
+    {
+     "kind": "comment",
+     "text": "-- Ubuntu package layout",
+     "at": 7
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 8,
+   "to": 11,
+   "heading": "postgresql.conf rules",
+   "columns": 1,
+   "items": [
+    {
+     "at": 8,
+     "icon": "file",
+     "title": "One setting per line",
+     "text": "shared_buffers = 128MB   # comment",
+     "color": "orange"
+    },
+    {
+     "at": 9,
+     "icon": "layers",
+     "title": "Last entry wins",
+     "text": "Earlier entries for the same name are ignored",
+     "color": "amber"
+    },
+    {
+     "at": 10,
+     "icon": "folder",
+     "title": "include_dir 'conf.d'",
+     "text": "Reads files ending in .conf, in file name order",
+     "color": "cyan"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 11,
+   "to": 12,
+   "kind": "warning",
+   "title": "postgresql.auto.conf",
+   "text": "Written by ALTER SYSTEM. Overrides postgresql.conf. Do not edit it by hand."
+  },
+  {
+   "type": "terminal",
+   "from": 12,
+   "to": 14,
+   "heading": "Reload vs restart",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "ALTER SYSTEM SET",
+     "at": 12
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "shared_buffers = '256MB';",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "ALTER SYSTEM",
+     "at": 12
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT pg_reload_conf();",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": " t",
+     "at": 12
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT setting, unit, context,",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "pending_restart FROM pg_settings",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "WHERE name = 'shared_buffers';",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": " 16384   | 8kB  | postmaster | t",
+     "at": 13
+    },
+    {
+     "kind": "comment",
+     "text": "-- header trimmed",
+     "at": 13
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 14,
+   "to": 16,
+   "heading": "pg_file_settings",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "\\a",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "Output format is unaligned.",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT setting, applied, error",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "FROM pg_file_settings",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "WHERE name = 'shared_buffers';",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "setting|applied|error",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "128MB|f|",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "256MB|f|setting could not be applied",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "(2 rows)",
+     "at": 15
+    }
+   ]
+  },
+  {
+   "type": "compare",
+   "from": 16,
+   "to": 18,
+   "heading": "How pg_hba.conf matches",
+   "left": {
+    "title": "One rule",
+    "color": "blue",
+    "rows": [
+     "host",
+     "all (database)",
+     "all (user)",
+     "127.0.0.1/32",
+     "scram-sha-256"
+    ]
+   },
+   "right": {
+    "title": "Matching",
+    "color": "orange",
+    "rows": [
+     "Read top to bottom",
+     "First match wins",
+     "Login fails? Denied",
+     "No fall-through",
+     "No match? Denied"
+    ]
+   },
+   "at": [
+    16,
+    16,
+    16,
+    17,
+    17
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 18,
+   "to": 19,
+   "heading": "pg_hba_file_rules",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT line_number, type,",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "auth_method",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "FROM pg_hba_file_rules;",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " line_number | type  |  auth_method",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "-------------+-------+---------------",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "         118 | local | peer",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "         123 | local | peer",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "         125 | host  | scram-sha-256",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "         127 | host  | scram-sha-256",
+     "at": 18
+    },
+    {
+     "kind": "comment",
+     "text": "-- 3 replication rules trimmed",
+     "at": 18
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 19,
+   "to": 21,
+   "heading": "Catch the typo first",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- new last line ends in: trusst",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT error",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "FROM pg_hba_file_rules",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb-# ",
+     "text": "WHERE error IS NOT NULL;",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": " invalid authentication method \"trusst\"",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "(1 row)",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SELECT pg_reload_conf();",
+     "at": 20
+    },
+    {
+     "kind": "comment",
+     "text": "-- server log, path trimmed:",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "LOG: .../pg_hba.conf was not reloaded",
+     "at": 20
+    }
+   ]
+  },
+  {
+   "type": "steps",
+   "from": 21,
+   "to": 22,
+   "heading": "Safe change routine",
+   "items": [
+    {
+     "at": 21,
+     "icon": "backup",
+     "title": "Back up the file"
+    },
+    {
+     "at": 21,
+     "icon": "wrench",
+     "title": "Make the edit"
+    },
+    {
+     "at": 21,
+     "icon": "search",
+     "title": "Check the views",
+     "text": "pg_file_settings, pg_hba_file_rules"
+    },
+    {
+     "at": 21,
+     "icon": "sync",
+     "title": "Reload, then verify"
+    }
+   ]
+  },
+  {
+   "type": "checklist",
+   "from": 22,
+   "to": 24,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 22,
+     "title": "postgresql.conf: settings"
+    },
+    {
+     "at": 22,
+     "title": "pg_hba.conf: who connects"
+    },
+    {
+     "at": 23,
+     "title": "pg_ident.conf: name maps"
+    },
+    {
+     "at": 23,
+     "title": "Settings: last entry wins"
+    },
+    {
+     "at": 23,
+     "title": "pg_hba: first match wins"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 24,
+   "to": 25,
+   "next": "Ep 12 · Versions and releases"
+  }
+ ]
+}
