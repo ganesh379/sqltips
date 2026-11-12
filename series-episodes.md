@@ -48,7 +48,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Connect, list databases/roles, describe objects, change output and use help/meta-commands.
   - Format: Live terminal demo · Level: Beginner
   - Hook: Five psql commands every DBA should know.
-- [ ] Ep 011 | 2026-11-14 | PostgreSQL Configuration Files
+- [x] Ep 011 | 2026-11-14 | PostgreSQL Configuration Files (posted 2026-11-13 13:00, Buffer 6af55415df70eccdaab5759b)
   - Objective: Explain postgresql.conf, pg_hba.conf, pg_ident.conf and include directives; show safe inspection.
   - Format: Config walkthrough · Level: Beginner
   - Hook: Three PostgreSQL config files you must understand.
