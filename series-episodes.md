@@ -52,7 +52,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain postgresql.conf, pg_hba.conf, pg_ident.conf and include directives; show safe inspection.
   - Format: Config walkthrough · Level: Beginner
   - Hook: Three PostgreSQL config files you must understand.
-- [ ] Ep 012 | 2026-11-15 | PostgreSQL Versions and Release Types
+- [x] Ep 012 | 2026-11-15 | PostgreSQL Versions and Release Types (posted 2026-11-14 13:00, Buffer 6af6a3cc5ec1c9d5be612049)
   - Objective: Explain major/minor releases, support lifecycle concepts, compatibility and upgrade planning; verify current version policy before publishing.
   - Format: Version explainer · Level: Beginner
   - Hook: Can you upgrade PostgreSQL by changing one number?

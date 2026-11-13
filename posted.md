@@ -45,3 +45,4 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-11 | 13:00 | Instagram | Series Ep 009 | PostgreSQL Data Types You Should Know | reels/2026-11-11-1300 | 6af2aead05af22d7260bdcce
 - 2026-11-12 | 13:00 | Instagram | Series Ep 010 | psql: The Essential PostgreSQL Command-Line Tool | reels/2026-11-12-1300 | 6af4006d7ffe799078d42aa5
 - 2026-11-13 | 13:00 | Instagram | Series Ep 011 | PostgreSQL Configuration Files | reels/2026-11-13-1300 | 6af55415df70eccdaab5759b
+- 2026-11-14 | 13:00 | Instagram | Series Ep 012 | PostgreSQL Versions and Release Types | reels/2026-11-14-1300 | 6af6a3cc5ec1c9d5be612049
