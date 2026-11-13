@@ -1,0 +1,1656 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 18: Physical Backups with pg_basebackup",
+ "slug": "postgresql-dba-part-18-pg-basebackup",
+ "category": "postgresql",
+ "description": "Take, verify and restore physical backups with pg_basebackup on PostgreSQL 18: plain and tar formats, pg_verifybackup and incremental backups.",
+ "focusKeyword": "pg_basebackup",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "pg-basebackup",
+  "backup",
+  "incremental-backup"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-3-data-directory-pgdata/",
+  "/posts/postgresql/postgresql-dba-part-6-pg-hba-conf-authentication/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: pg_basebackup",
+   "url": "https://www.postgresql.org/docs/current/app-pgbasebackup.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Continuous Archiving and Point-in-Time Recovery (base backups, incremental backups, recovery steps)",
+   "url": "https://www.postgresql.org/docs/current/continuous-archiving.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_verifybackup",
+   "url": "https://www.postgresql.org/docs/current/app-pgverifybackup.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_combinebackup",
+   "url": "https://www.postgresql.org/docs/current/app-pgcombinebackup.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Write Ahead Log settings (wal_level, summarize_wal, wal_summary_keep_time)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-wal.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Replication settings (max_wal_senders, max_replication_slots, wal_keep_size)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-replication.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes",
+   "url": "https://www.postgresql.org/docs/18/release-18.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Monitoring statistics (pg_stat_progress_basebackup)",
+   "url": "https://www.postgresql.org/docs/current/progress-reporting.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: The Password File (.pgpass)",
+   "url": "https://www.postgresql.org/docs/current/libpq-pgpass.html"
+  }
+ ],
+ "reviewNotes": "Series part 18. Part 17 (postgresql-dba-part-17-pg-dump-pg-restore) is not live yet: it is named without a link in the intro and not in related. Publish Part 17 first (Part 16 and 15 are also not live). Tested on PostgreSQL 18.7 (Ubuntu 18.7-1.pgdg24.04+2) from the PGDG repository on Ubuntu 24.04.5 LTS; followed the PostgreSQL 18 documentation (docs/current pages and the 18 release notes in sources). All outputs are real; system identifier, LSNs, OIDs, PIDs, sizes and timestamps will differ for readers. SANDBOX CAVEATS: (1) postgresql-18 depends on liburing2 from archive.ubuntu.com, which is blocked here. As in Parts 14-16 I installed an empty liburing2 package with a locally compiled stub liburing.so.2 (functions return ENOSYS); this only affects io_method=io_uring, the server ran with the default io_method=worker. (2) The sandbox had a leftover, stopped PostgreSQL 16 cluster (moved to port 5440); its line was removed from the pg_lsclusters outputs in Steps 9 and 18. Because a 16 cluster existed, the package did not auto-create 18 main, so I created it with pg_createcluster 18 main --port 5432; readers following Part 2 already have it. (3) No systemd in the sandbox: I applied pg_hba.conf and summarize_wal changes with SELECT pg_reload_conf() instead of systemctl reload postgresql@18-main (same effect). (4) cron is not installed: the crontab line in Step 17 was not run; the script itself was run and its output is real. (5) Trimmed outputs: Step 6 drops the intermediate progress line (a terminal overwrites it), Step 10 log lines have the timestamp and PID prefix removed (caption says so), Step 11 shows only the final progress line. (6) The two corruption errors in Step 8 come from a deliberately damaged copy (one byte changed in the orders file, one PG_VERSION file deleted). (7) The pg_hba error was reproduced by commenting out the 127.0.0.1 replication line temporarily; the permissions error by chmod 755 on the restore data directory; the REPLICATION error with a temporary role app_reader. (8) The practice answer (plain format with --compress=server-gzip:9) was run: backup succeeded, 56 MB on disk, verified. EDITOR CHECKS: 'verifying tar backups is new in PostgreSQL 18' and 'pg_combinebackup --link is new in 18' are from the 18 release notes; the claim that pg_verifybackup and pg_combinebackup are not on the PATH on Ubuntu was checked against /usr/bin (no pg_wrapper links for them in postgresql-common here). LENGTH: prose is at or slightly above the 3,200-word target because of 18 steps with option tables; easy cut is the FAQ section or Step 16.",
+ "generatedAt": "2026-11-13T13:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 18 of the PostgreSQL DBA series. <code class=\"inline-code\">pg_basebackup</code> takes a <b>physical backup</b> of a running PostgreSQL cluster: a copy of the data files themselves, taken over a normal database connection without stopping the server. By the end of this part you will be able to take a plain or compressed backup, check it with <code class=\"inline-code\">pg_verifybackup</code>, restore it into a second cluster and prove the data is there, and use the incremental backups that arrived in PostgreSQL 17."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 17 (Logical backups with pg_dump, pg_dumpall and pg_restore) we exported databases as SQL and archive files. A logical dump is a set of instructions to rebuild the data. A physical backup is a photocopy of the files. That photocopy restores much faster on a large database, and it is the starting point for WAL archiving, point-in-time recovery and replication in the next parts."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "The difference between a physical and a logical backup, and when each one fits",
+      "items": []
+     },
+     {
+      "content": "How to prepare the server: a REPLICATION role, pg_hba.conf and a .pgpass file",
+      "items": []
+     },
+     {
+      "content": "How to take plain and compressed tar backups with pg_basebackup and what each option does",
+      "items": []
+     },
+     {
+      "content": "How to verify a backup with pg_verifybackup and restore it into a second cluster",
+      "items": []
+     },
+     {
+      "content": "How incremental backups work with summarize_wal and pg_combinebackup",
+      "items": []
+     },
+     {
+      "content": "How to watch a running backup and schedule a nightly one",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 17 of this series, especially Part 3 (the data directory), Part 6 (pg_hba.conf), Part 7 (roles) and Part 15 (WAL).",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server with PostgreSQL 18 from the PGDG repository and the cluster 18 main running on port 5432, as installed in Part 2.",
+      "items": []
+     },
+     {
+      "content": "sudo rights, and about 200 MB of free disk space for the lab backups.",
+      "items": []
+     },
+     {
+      "content": "In production the backups go to a separate backup host or disk. In this lab one machine plays both roles, and the restore test runs in a second cluster on port 5433.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A physical backup copies the files under the data directory, <code class=\"inline-code\">/var/lib/postgresql/18/main</code>, byte for byte. Think of it as photocopying a notebook while someone is still writing in it. Some pages will be copied before a change and some after, so the copy is not consistent on its own."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL solves this with the write-ahead log (WAL) from Part 15. Every change is first written to WAL. <code class=\"inline-code\">pg_basebackup</code> asks the server for a checkpoint, notes the WAL position where the backup starts, copies all the files, and notes where it ends. When you start a server on the copy, it replays the WAL between those two positions and the half-copied pages become consistent again. That is why a backup without its WAL is useless."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By default <code class=\"inline-code\">pg_basebackup</code> opens two connections to the server. One streams the data files. The other streams the WAL generated while the copy runs, using a temporary <b>replication slot</b> (a marker that stops the server from deleting WAL the backup still needs). Both use the <b>replication protocol</b>, the same protocol a standby server uses, which is why the setup steps talk about replication."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "primary db1 (10.0.0.11:5432)  --data files + WAL (replication protocol)-->  backup host bk1 (10.0.0.13)\n                                                                               /var/lib/postgresql/backups/",
+    "caption": "The setup this part builds (in the lab both run on one machine)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Physical and logical backups solve different problems. Most production systems keep both."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "",
+      "Physical (pg_basebackup)",
+      "Logical (pg_dump)"
+     ],
+     [
+      "What it copies",
+      "The whole cluster: every database, roles, all files",
+      "One database (or the cluster with pg_dumpall), as SQL"
+     ],
+     [
+      "Restore speed",
+      "Fast: copy files and start the server",
+      "Slow on big databases: rows are reloaded, indexes rebuilt"
+     ],
+     [
+      "Single table restore",
+      "No",
+      "Yes"
+     ],
+     [
+      "Restore to another major version",
+      "No, same major version only",
+      "Yes"
+     ],
+     [
+      "Point-in-time recovery",
+      "Yes, together with archived WAL (Part 19 and 20)",
+      "No"
+     ],
+     [
+      "Server must be running",
+      "Yes, it connects like a client",
+      "Yes"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two files make a backup self-describing. <code class=\"inline-code\">backup_label</code> records where the WAL replay must start. <code class=\"inline-code\">backup_manifest</code> lists every file with its size and a checksum, so <code class=\"inline-code\">pg_verifybackup</code> can later prove that nothing is missing or damaged."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prepare the primary server",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Create sample data to back up",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as the postgres user.</b> We need some data so we can prove later that the restore worked. This creates a database with one table of 100,000 orders."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE shopdb;\n\\c shopdb\nCREATE TABLE orders (\n    order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer    text          NOT NULL,\n    amount      numeric(10,2) NOT NULL,\n    created_at  timestamptz   NOT NULL DEFAULT now()\n);\nINSERT INTO orders (customer, amount)\nSELECT 'customer_' || (g % 500), round((random() * 5000)::numeric, 2)\n  FROM generate_series(1, 100000) AS g;\nSELECT count(*) AS orders,\n       pg_size_pretty(pg_database_size('shopdb')) AS db_size\n  FROM orders;",
+    "caption": "Create shopdb and 100,000 orders"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " orders | db_size \n--------+---------\n 100000 | 16 MB\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The database holds exactly 100,000 rows. Remember that number: it is our check after every restore."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Check the settings pg_basebackup needs",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres.</b> The documentation lists the requirements: a role with the REPLICATION attribute, a pg_hba.conf entry for replication connections, and enough <code class=\"inline-code\">max_wal_senders</code> for one connection for the backup plus one for WAL streaming. <code class=\"inline-code\">wal_level</code> must be <code class=\"inline-code\">replica</code> or higher."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, context\n  FROM pg_settings\n WHERE name IN ('wal_level', 'max_wal_senders', 'max_replication_slots',\n                'summarize_wal', 'full_page_writes')\n ORDER BY name;",
+    "caption": "Check the backup-related settings"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "         name          | setting |  context   \n-----------------------+---------+------------\n full_page_writes      | on      | sighup\n max_replication_slots | 10      | postmaster\n max_wal_senders       | 10      | postmaster\n summarize_wal         | off     | sighup\n wal_level             | replica | postmaster\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "These are the PostgreSQL 18 defaults and they are already correct for backups. A context of <code class=\"inline-code\">postmaster</code> means the setting needs a restart; <code class=\"inline-code\">sighup</code> means a reload is enough (Part 5). If someone set <code class=\"inline-code\">wal_level = minimal</code> or <code class=\"inline-code\">max_wal_senders = 0</code>, change them in <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code> and run <code class=\"inline-code\">sudo systemctl restart postgresql@18-main</code>. We will turn on <code class=\"inline-code\">summarize_wal</code> later for incremental backups."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Create a dedicated backup role",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres.</b> You could run backups as the <code class=\"inline-code\">postgres</code> superuser, but a separate role with only the REPLICATION attribute is safer: if its password leaks, it cannot read or change tables through a normal connection."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE ROLE backup_user WITH LOGIN REPLICATION PASSWORD 'Backup#2026';\n\\du backup_user",
+    "caption": "Create the backup role"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE ROLE\n       List of roles\n  Role name  | Attributes  \n-------------+-------------\n backup_user | Replication",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">DROP ROLE backup_user;</code> Use your own strong password in production."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Allow replication connections in pg_hba.conf",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres.</b> A replication connection only matches pg_hba.conf lines whose database column is the keyword <code class=\"inline-code\">replication</code>. A line with <code class=\"inline-code\">all</code> does not cover it. Check what the Ubuntu package created:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT line_number, type, database, user_name, address, auth_method\n  FROM pg_hba_file_rules\n WHERE 'replication' = ANY(database);",
+    "caption": "List replication rules in pg_hba.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " line_number | type  |   database    | user_name |  address  |  auth_method  \n-------------+-------+---------------+-----------+-----------+---------------\n         130 | local | {replication} | {all}     |           | peer\n         131 | host  | {replication} | {all}     | 127.0.0.1 | scram-sha-256\n         132 | host  | {replication} | {all}     | ::1       | scram-sha-256\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Line 131 already allows our lab connection from 127.0.0.1 with a password. For a real backup host, add one line for it at the end of the file:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# /etc/postgresql/18/main/pg_hba.conf\n# TYPE  DATABASE     USER         ADDRESS          METHOD\nhost    replication  backup_user  10.0.0.13/32     scram-sha-256",
+    "caption": "Line to add on db1 for backup host bk1"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main",
+    "caption": "Apply pg_hba.conf changes (reload is enough)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A remote host also needs <code class=\"inline-code\">listen_addresses</code> to include the server's IP address, which needs a restart (Part 6). <b>Undo:</b> delete the line and reload again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Store the password and create the backup folder",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On the backup host (in the lab, db1), as the postgres OS user.</b> Backups run unattended, so nobody can type a password. A <code class=\"inline-code\">.pgpass</code> file in the home directory supplies it. For replication connections the database field must be the word <code class=\"inline-code\">replication</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres bash\ncd ~\necho \"127.0.0.1:5432:replication:backup_user:Backup#2026\" > ~/.pgpass\nchmod 600 ~/.pgpass\nmkdir -p /var/lib/postgresql/backups\nchmod 700 /var/lib/postgresql/backups",
+    "caption": "Run as postgres: .pgpass and backup folder"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The format is <code class=\"inline-code\">host:port:database:user:password</code>. libpq ignores the file if anyone other than the owner can read it, hence <code class=\"inline-code\">chmod 600</code>. On a separate backup host, use db1's address (10.0.0.11) instead of 127.0.0.1 here and in every command below. Verify that the role, pg_hba.conf and password all work by opening a replication connection and running <code class=\"inline-code\">IDENTIFY_SYSTEM</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql \"host=127.0.0.1 port=5432 user=backup_user dbname=replication replication=true\" -w -c \"IDENTIFY_SYSTEM;\"",
+    "caption": "Test a replication connection"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "      systemid       | timeline |  xlogpos   | dbname \n---------------------+----------+------------+--------\n 7707636659200669857 |        1 | 0/11000060 | \n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">systemid</code> is the unique identifier of this cluster. You will see the same number inside the backup manifest. Your number and WAL position will differ."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Take and verify a plain-format backup",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Run pg_basebackup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On the backup host, as postgres.</b> A plain-format backup is a ready-to-use copy of the data directory. Ubuntu puts <code class=\"inline-code\">pg_basebackup</code> on the PATH through its wrapper script, so you can call it directly."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "pg_basebackup -h 127.0.0.1 -p 5432 -U backup_user -w \\\n  -D /var/lib/postgresql/backups/base_2026_11_13 \\\n  -Fp -X stream -c fast \\\n  -l \"shopdb full 2026-11-13\" -P -v",
+    "caption": "Take a plain-format base backup"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-h, -p, -U",
+      "Server host, port and user name to connect as"
+     ],
+     [
+      "-w",
+      "Never prompt for a password; fail if none is available (from .pgpass). Right for scripts"
+     ],
+     [
+      "-D directory",
+      "Where to write the backup. Created if missing; if it exists it must be empty"
+     ],
+     [
+      "-Fp",
+      "Plain format: files with the same layout as the data directory (the default)"
+     ],
+     [
+      "-X stream",
+      "Stream the WAL generated during the backup over a second connection (the default), so the backup is self-contained"
+     ],
+     [
+      "-c fast",
+      "Request an immediate checkpoint. The default, spread, can make the backup wait for minutes before copying"
+     ],
+     [
+      "-l label",
+      "A label stored in backup_label. Default: pg_basebackup base backup"
+     ],
+     [
+      "-P",
+      "Show approximate progress"
+     ],
+     [
+      "-v",
+      "Verbose: print each start and finish stage"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_basebackup: initiating base backup, waiting for checkpoint to complete\npg_basebackup: checkpoint completed\npg_basebackup: write-ahead log start point: 0/3000028 on timeline 1\npg_basebackup: starting background WAL receiver\npg_basebackup: created temporary replication slot \"pg_basebackup_2337\"\n40507/40507 kB (100%), 1/1 tablespace                                         \npg_basebackup: write-ahead log end point: 0/3000120\npg_basebackup: waiting for background process to finish streaming ...\npg_basebackup: syncing data to disk ...\npg_basebackup: renaming backup_manifest.tmp to backup_manifest\npg_basebackup: base backup completed",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can see every stage from How it works: the checkpoint, the WAL start point, the temporary replication slot for WAL streaming, the file copy, the WAL end point and the manifest. The command returns exit code 0 on success, which is what a script should check."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Checkpoint fast or spread?",
+    "text": "<code class=\"inline-code\">-c fast</code> starts copying immediately but causes a burst of writes on the primary. On a busy production server you may prefer the default <code class=\"inline-code\">spread</code>, which spreads the checkpoint over <code class=\"inline-code\">checkpoint_completion_target</code> (Part 16). The backup then looks idle at \"waiting for checkpoint\" for a while. That is normal."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Look inside the backup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On the backup host, as postgres.</b> List the folder and read the label:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "cd /var/lib/postgresql/backups/base_2026_11_13\nls\ncat backup_label",
+    "caption": "Inspect the backup"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "PG_VERSION\t global        pg_multixact  pg_snapshots  pg_tblspc\tpostgresql.auto.conf\nbackup_label\t pg_commit_ts  pg_notify     pg_stat\t   pg_twophase\nbackup_manifest  pg_dynshmem   pg_replslot   pg_stat_tmp   pg_wal\nbase\t\t pg_logical    pg_serial     pg_subtrans   pg_xact\nSTART WAL LOCATION: 0/3000028 (file 000000010000000000000003)\nCHECKPOINT LOCATION: 0/3000080\nBACKUP METHOD: streamed\nBACKUP FROM: primary\nSTART TIME: 2026-11-13 12:48:03 UTC\nLABEL: shopdb full 2026-11-13\nSTART TIMELINE: 1",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It looks like the data directory from Part 3, plus <code class=\"inline-code\">backup_label</code> and <code class=\"inline-code\">backup_manifest</code>. <code class=\"inline-code\">pg_wal</code> holds the streamed WAL segment <code class=\"inline-code\">000000010000000000000003</code>. The files that only describe the running server, such as <code class=\"inline-code\">postmaster.pid</code>, are left out, and <code class=\"inline-code\">pg_replslot</code> is empty."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Ubuntu: the configuration files are not in the backup",
+    "text": "On Ubuntu, <code class=\"inline-code\">postgresql.conf</code>, <code class=\"inline-code\">pg_hba.conf</code> and <code class=\"inline-code\">pg_ident.conf</code> live in <code class=\"inline-code\">/etc/postgresql/18/main/</code>, outside the data directory, so pg_basebackup does not copy them. Only <code class=\"inline-code\">postgresql.auto.conf</code> (the ALTER SYSTEM file) is included. Back up <code class=\"inline-code\">/etc/postgresql/18/main/</code> separately; the script in Step 17 does this."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Verify the backup with pg_verifybackup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On the backup host, as postgres.</b> <code class=\"inline-code\">pg_verifybackup</code> reads <code class=\"inline-code\">backup_manifest</code>, checks that every listed file exists with the right size, recomputes the checksums, and checks that the WAL needed for recovery is present and can be parsed. Ubuntu's wrapper does not cover this tool, so use its full path:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "/usr/lib/postgresql/18/bin/pg_verifybackup /var/lib/postgresql/backups/base_2026_11_13",
+    "caption": "Verify the plain backup"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "backup successfully verified",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see what a failure looks like, we copied the backup, changed one byte in the orders table file and deleted one small file, then verified the copy:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_verifybackup: error: \"base/16385/PG_VERSION\" is present in the manifest but not on disk\npg_verifybackup: error: checksum mismatch for file \"base/16385/16387\"",
+    "caption": "Output (damaged copy, exit code 1)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It names each problem file and exits with code 1. Note the documentation's own warning: verification cannot run every check a real server would, so you should still do test restores. That is the next section."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Restore the backup into a second cluster",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A backup you have never restored is only a hope. We will restore it into a new cluster called <code class=\"inline-code\">18 restore</code> on port 5433, so the original <code class=\"inline-code\">18 main</code> keeps running. On a real recovery you would restore onto the replacement server instead."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Create an empty target cluster and replace its data directory",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On the restore server (in the lab, db1), as a sudo user.</b> First create the cluster. Ubuntu's tool also writes its configuration in /etc/postgresql/18/restore/ and picks port 5433."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_createcluster 18 restore --port 5433\npg_lsclusters",
+    "caption": "Create the restore cluster"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory                 Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main    /var/log/postgresql/postgresql-18-main.log\n18  restore 5433 down   postgres /var/lib/postgresql/18/restore /var/log/postgresql/postgresql-18-restore.log",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Check the path twice before rm -rf",
+    "text": "The next command deletes a data directory. Run it only against the new, stopped <code class=\"inline-code\">restore</code> cluster. Never point it at <code class=\"inline-code\">/var/lib/postgresql/18/main</code> on a live server."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres bash -c 'rm -rf /var/lib/postgresql/18/restore/*'\nsudo -u postgres cp -a /var/lib/postgresql/backups/base_2026_11_13/. /var/lib/postgresql/18/restore/\nsudo chmod 700 /var/lib/postgresql/18/restore\nsudo ls -ld /var/lib/postgresql/18/restore",
+    "caption": "Copy the backup into the empty data directory"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "drwx------ 19 postgres postgres 4096 Nov 13 12:48 /var/lib/postgresql/18/restore",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Command part",
+      "What it does"
+     ],
+     [
+      "rm -rf .../restore/*",
+      "Empties the new cluster's data directory, as the documentation's restore procedure requires"
+     ],
+     [
+      "cp -a",
+      "Copies recursively and keeps owner, permissions and timestamps"
+     ],
+     [
+      "chmod 700",
+      "PostgreSQL refuses to start unless the data directory is 0700 or 0750"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The files must be owned by <code class=\"inline-code\">postgres</code>, not root, which is why the copy runs as postgres."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Start the restored cluster and check the data",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On the restore server, as a sudo user.</b> To prove the restore returns the state at backup time, first add one row on the primary, which is not in the backup:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d shopdb -c \"INSERT INTO orders (customer, amount) VALUES ('after_backup', 99.00);\"",
+    "caption": "On db1: a change made after the backup"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The primary now has 100,001 rows. Start the restored cluster and read its log:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_ctlcluster 18 restore start\nsudo grep -E \"recovery|redo|ready\" /var/log/postgresql/postgresql-18-restore.log",
+    "caption": "Start the restored cluster"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  starting backup recovery with redo LSN 0/3000028, checkpoint LSN 0/3000080, on timeline ID 1\nLOG:  redo starts at 0/3000028\nLOG:  completed backup recovery with redo LSN 0/3000028 and end LSN 0/3000120\nLOG:  consistent recovery state reached at 0/3000120\nLOG:  redo done at 0/3000120 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s\nLOG:  checkpoint starting: end-of-recovery immediate wait\nLOG:  database system is ready to accept connections",
+    "caption": "Output (timestamps and PIDs removed from each line)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The server found <code class=\"inline-code\">backup_label</code> (\"starting backup recovery\"), replayed the WAL from 0/3000028 to 0/3000120 (the exact start and end points pg_basebackup printed), reached a consistent state and opened. Afterwards it renames the label to <code class=\"inline-code\">backup_label.old</code>. Now check the data:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -p 5433 -d shopdb -c \"SELECT count(*) AS orders, count(*) FILTER (WHERE customer = 'after_backup') AS after_backup FROM orders;\"",
+    "caption": "Count rows in the restored copy"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " orders | after_backup \n--------+--------------\n 100000 |            0\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All 100,000 rows are back, and the row added after the backup is not there. A base backup on its own restores the cluster as it was at the end of the backup. To replay changes made after it, up to any chosen moment, you need archived WAL, which is Parts 19 and 20."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Compressed tar backups",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Plain format is easy to restore but large. Tar format writes one archive file per tablespace, and it can be compressed, which suits copying to other storage."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Take a compressed tar backup and verify it",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On the backup host, as postgres.</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "pg_basebackup -h 127.0.0.1 -U backup_user -w \\\n  -D /var/lib/postgresql/backups/tar_2026_11_13 \\\n  -Ft -z -X stream -c fast -l \"shopdb tar 2026-11-13\" -P\nls -lh /var/lib/postgresql/backups/tar_2026_11_13",
+    "caption": "Tar format, gzip compressed"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-Ft",
+      "Tar format: base.tar for the data directory, one tar per extra tablespace (named by its OID), and pg_wal.tar for streamed WAL"
+     ],
+     [
+      "-z",
+      "gzip compression at the default level. Same as --compress=gzip. Use -Z / --compress for lz4 or zstd and a level, e.g. --compress=gzip:9"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "waiting for checkpoint\n40604/40604 kB (100%), 1/1 tablespace\ntotal 5.8M\n-rw------- 1 postgres postgres 178K Nov 13 12:48 backup_manifest\n-rw------- 1 postgres postgres 5.6M Nov 13 12:48 base.tar.gz\n-rw------- 1 postgres postgres  18K Nov 13 12:48 pg_wal.tar.gz",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same cluster took 56 MB in plain format and 5.8 MB here; our test data compresses unusually well, so expect less on real tables. Verifying tar backups is new in PostgreSQL 18. WAL parsing still works only for plain format, so add <code class=\"inline-code\">-n</code> (<code class=\"inline-code\">--no-parse-wal</code>) and <code class=\"inline-code\">-F t</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "/usr/lib/postgresql/18/bin/pg_verifybackup -F t -n /var/lib/postgresql/backups/tar_2026_11_13",
+    "caption": "Verify a tar backup"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "backup successfully verified",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Restore from tar files",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On the restore server, as postgres (after stopping the cluster with sudo).</b> A tar backup must be unpacked before the server can use it: base.tar into the data directory, pg_wal.tar into its pg_wal folder."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_ctlcluster 18 restore stop\nsudo -u postgres bash -c 'rm -rf /var/lib/postgresql/18/restore/*'\nsudo -u postgres tar -xzf /var/lib/postgresql/backups/tar_2026_11_13/base.tar.gz -C /var/lib/postgresql/18/restore\nsudo -u postgres tar -xzf /var/lib/postgresql/backups/tar_2026_11_13/pg_wal.tar.gz -C /var/lib/postgresql/18/restore/pg_wal\nsudo pg_ctlcluster 18 restore start\nsudo -u postgres psql -p 5433 -d shopdb -Atc \"SELECT count(*) FROM orders\"",
+    "caption": "Unpack and start"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "100001",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This backup was taken after the extra row was added, so the count is 100,001. With extra tablespaces you would unpack each OID-named tar into its tablespace location; the server recreates the links from the tablespace_map file inside base.tar."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Incremental backups (PostgreSQL 17 and later)",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A full backup copies every file every time. An <b>incremental backup</b> copies only the blocks that changed since an earlier backup. To know which blocks changed, the server runs a <b>WAL summarizer</b> process that writes small summary files into <code class=\"inline-code\">pg_wal/summaries</code>. You later glue the full backup and its incrementals into one normal backup with <code class=\"inline-code\">pg_combinebackup</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Turn on summarize_wal",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a sudo user.</b> <code class=\"inline-code\">summarize_wal</code> defaults to off and only needs a reload."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# /etc/postgresql/18/main/postgresql.conf\n# before\n#summarize_wal = off\t\t# run WAL summarizer process?\n# after\nsummarize_wal = on\t\t# run WAL summarizer process?",
+    "caption": "Edit postgresql.conf"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main\nsudo -u postgres psql -c \"SELECT * FROM pg_get_wal_summarizer_state();\"",
+    "caption": "Reload and check the summarizer"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " summarized_tli | summarized_lsn | pending_lsn | summarizer_pid \n----------------+----------------+-------------+----------------\n              1 | 0/5000000      | 0/6000060   |           2598\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A <code class=\"inline-code\">summarizer_pid</code> means the process is running. Summaries are kept for <code class=\"inline-code\">wal_summary_keep_time</code>, default 10 days, so take a full backup more often than that. <b>Undo:</b> set it back to off and reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: Take a full backup, change data, take an incremental",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On the backup host, as postgres.</b> The incremental needs WAL summaries covering everything since the full backup started, so take a <b>new</b> full backup after enabling the summarizer. Then add 2,000 rows on the primary and take the incremental."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "pg_basebackup -h 127.0.0.1 -U backup_user -w -c fast \\\n  -D /var/lib/postgresql/backups/full_mon -l \"full monday\"\n\npsql -d shopdb -c \"INSERT INTO orders (customer, amount) SELECT 'tuesday_' || g, 10 FROM generate_series(1, 2000) AS g;\"\n\npg_basebackup -h 127.0.0.1 -U backup_user -w -c fast \\\n  -D /var/lib/postgresql/backups/incr_tue -l \"incremental tuesday\" \\\n  -i /var/lib/postgresql/backups/full_mon/backup_manifest\ntail -n 2 /var/lib/postgresql/backups/incr_tue/backup_label\ndu -sh --exclude=pg_wal /var/lib/postgresql/backups/full_mon /var/lib/postgresql/backups/incr_tue",
+    "caption": "Full backup, then incremental"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-i manifest, --incremental=manifest",
+      "Take an incremental backup. The argument is the backup_manifest of the earlier backup it builds on (full or incremental). Needs a version 17 or later server"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INCREMENTAL FROM LSN: 0/8000028\nINCREMENTAL FROM TLI: 1\n40M\t/var/lib/postgresql/backups/full_mon\n7.7M\t/var/lib/postgresql/backups/incr_tue",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The label records which backup this one depends on. Without its WAL, the incremental is 7.7 MB against 40 MB for the full one; in this tiny test most of that is system catalog files, so on a large, mostly unchanged database the saving is much bigger. Changed tables appear as files named like <code class=\"inline-code\">INCREMENTAL.16387</code>, which hold only the changed blocks."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "An incremental backup cannot be started directly",
+    "text": "Never copy an incremental backup into a data directory. It must first be combined with every backup it depends on. PostgreSQL does not track that chain for you: keep the full backup and every incremental until you no longer need any restore point that uses them."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: Combine the backups and restore the result",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On the backup host, as postgres.</b> List the backups from oldest to newest: the full backup first, the incremental you want to restore last."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "/usr/lib/postgresql/18/bin/pg_combinebackup \\\n  /var/lib/postgresql/backups/full_mon \\\n  /var/lib/postgresql/backups/incr_tue \\\n  -o /var/lib/postgresql/backups/synthetic_tue\n/usr/lib/postgresql/18/bin/pg_verifybackup /var/lib/postgresql/backups/synthetic_tue",
+    "caption": "Build a synthetic full backup"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "backup directories",
+      "The full backup, then each incremental in order"
+     ],
+     [
+      "-o dir, --output=dir",
+      "Where to write the synthetic full backup (required)"
+     ],
+     [
+      "--copy (default), --clone, -k / --link",
+      "How files are written. --link (new in 18) uses hard links: fast, but the output then shares files with the inputs"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "backup successfully verified",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "pg_combinebackup writes a new manifest, so the result verifies like any plain backup. In a real restore you would first copy the backup folder to the target server (for example with rsync). Here it is on the same machine, so restore it exactly as in Steps 9 and 10 (stop the restore cluster, empty its data directory, copy synthetic_tue in, start), then check:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -p 5433 -d shopdb -c \"SELECT count(*) AS orders, count(*) FILTER (WHERE customer LIKE 'tuesday_%') AS tuesday_rows FROM orders;\"",
+    "caption": "Check the restored synthetic backup"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " orders | tuesday_rows \n--------+--------------\n 102001 |         2000\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The Tuesday rows are there, so the incremental carried the changes correctly."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Run backups in production",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 16: Watch a running backup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres, while a backup runs.</b> A backup of a large cluster can take hours. The view <code class=\"inline-code\">pg_stat_progress_basebackup</code> shows how far it is. We slowed a test backup with <code class=\"inline-code\">-r 2M</code> (<code class=\"inline-code\">--max-rate</code>, which limits the transfer rate to protect disks and network) to catch it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pid, phase,\n       pg_size_pretty(backup_streamed) AS streamed,\n       pg_size_pretty(backup_total)    AS total,\n       round(100.0 * backup_streamed / backup_total, 1) AS pct\n  FROM pg_stat_progress_basebackup;",
+    "caption": "Progress of a running backup"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  |          phase           | streamed | total | pct  \n------+--------------------------+----------+-------+------\n 3010 | streaming database files | 8434 kB  | 40 MB | 20.7\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The phase column moves through initializing, waiting for checkpoint to finish, estimating backup size, streaming database files and waiting for wal archiving to finish (plus transferring wal files when you use -X fetch). The sizes are counted before any server-side compression."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 17: Schedule a nightly backup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On the backup host, as postgres.</b> This script takes a compressed tar backup, verifies it, saves the Ubuntu configuration folder next to it, and removes backups older than 7 days. Save it as /var/lib/postgresql/scripts/basebackup_nightly.sh."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "#!/bin/bash\n# Nightly physical backup of cluster 18 main (run as postgres)\nset -euo pipefail\nBACKUP_ROOT=/var/lib/postgresql/backups\nTARGET=\"$BACKUP_ROOT/base_$(date +%Y%m%d_%H%M)\"\nKEEP_DAYS=7\n\npg_basebackup -h 127.0.0.1 -p 5432 -U backup_user -w \\\n  -D \"$TARGET\" -Ft -z -X stream -c fast \\\n  -l \"nightly $(date +%F)\"\n\n/usr/lib/postgresql/18/bin/pg_verifybackup -F t -n -q \"$TARGET\"\n\n# Ubuntu keeps the config files outside the data directory\nmkdir \"$TARGET-etc\"\ncp -a /etc/postgresql/18/main/. \"$TARGET-etc\"/\n\nfind \"$BACKUP_ROOT\" -maxdepth 1 -name \"base_2*\" \\\n  -mtime +\"$KEEP_DAYS\" -exec rm -rf {} +\necho \"backup OK: $TARGET\"",
+    "caption": "basebackup_nightly.sh"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "chmod 700 ~/scripts/basebackup_nightly.sh\n~/scripts/basebackup_nightly.sh",
+    "caption": "Run it once by hand"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "backup OK: /var/lib/postgresql/backups/base_20261113_1250",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">set -e</code> stops the script at the first failing command, so \"backup OK\" only prints when the backup and the verification both succeeded. The config copy goes into a separate <code class=\"inline-code\">-etc</code> folder because pg_verifybackup rejects extra files inside a tar backup folder. Then schedule it with <code class=\"inline-code\">crontab -e</code> as postgres:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "30 1 * * * /var/lib/postgresql/scripts/basebackup_nightly.sh >> /var/lib/postgresql/backups/basebackup.log 2>&1",
+    "caption": "crontab entry: every night at 01:30"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Keeping backups on the same disk as the database protects against mistakes, not against losing the disk. Copy them to another server or object storage as well. Part 21 covers pgBackRest, which handles retention, remote storage and parallelism for you."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 18: Clean up the lab",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Lab only",
+    "text": "These commands delete the test cluster and test backups. Do not run them on a production server."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_dropcluster 18 restore --stop\nsudo -u postgres rm -rf /var/lib/postgresql/backups/full_mon /var/lib/postgresql/backups/incr_tue /var/lib/postgresql/backups/synthetic_tue\npg_lsclusters",
+    "caption": "Remove the restore cluster and incremental test backups"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Keep <code class=\"inline-code\">backup_user</code> and its pg_hba.conf entry: Part 19 builds on them. If you do not want incremental backups, set <code class=\"inline-code\">summarize_wal</code> back to off and reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_basebackup: error: directory \"...\" exists but is not empty",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_basebackup: error: directory \"/var/lib/postgresql/backups/full_mon\" exists but is not empty",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "pg_basebackup never overwrites. Use a new folder name for every backup, for example with the date and time as in the script."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: permission denied to start WAL sender",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_basebackup: error: connection to server at \"127.0.0.1\", port 5432 failed: FATAL:  permission denied to start WAL sender\nDETAIL:  Only roles with the REPLICATION attribute may start a WAL sender process.",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The role lacks REPLICATION. Fix: <code class=\"inline-code\">ALTER ROLE app_reader REPLICATION;</code>, or better, use the dedicated backup role."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: no pg_hba.conf entry for replication connection",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_basebackup: error: connection to server at \"127.0.0.1\", port 5432 failed: FATAL:  no pg_hba.conf entry for replication connection from host \"127.0.0.1\", user \"backup_user\", no encryption",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There is no line with <code class=\"inline-code\">replication</code> in the database column for that host. A line with <code class=\"inline-code\">all</code> does not count. Add one as in Step 4 and reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: data directory ... has invalid permissions",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "FATAL:  data directory \"/var/lib/postgresql/18/restore\" has invalid permissions\nDETAIL:  Permissions should be u=rwx (0700) or u=rwx,g=rx (0750).",
+    "caption": "Error in the restore cluster log"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Copying as root or with a wide umask leaves the folder readable by others. Fix: <code class=\"inline-code\">sudo chown -R postgres:postgres /var/lib/postgresql/18/restore</code>, then <code class=\"inline-code\">sudo chmod 700 /var/lib/postgresql/18/restore</code>, and start again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: incremental backups cannot be taken unless WAL summarization is enabled",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_basebackup: error: could not initiate base backup: ERROR:  incremental backups cannot be taken unless WAL summarization is enabled",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Turn on <code class=\"inline-code\">summarize_wal</code> (Step 13). If you then reuse a full backup taken <b>before</b> that, you get a second error:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_basebackup: error: could not initiate base backup: ERROR:  WAL summaries are required on timeline 1 from 0/3000028 to 0/7000028, but the summaries for that timeline and LSN range are incomplete\nDETAIL:  The first unsummarized LSN in this range is 0/3000028.",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Take a new full backup and base the incrementals on it. The same error appears if the summaries were removed because the reference backup is older than wal_summary_keep_time."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_verifybackup: error: pg_waldump cannot read tar files",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_verifybackup: error: pg_waldump cannot read tar files\npg_verifybackup: hint: You must use -n/--no-parse-wal when verifying a tar-format backup.",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Add <code class=\"inline-code\">-n</code> as the hint says. Also, if <code class=\"inline-code\">pg_verifybackup</code> or <code class=\"inline-code\">pg_combinebackup</code> gives \"command not found\" on Ubuntu, call them from <code class=\"inline-code\">/usr/lib/postgresql/18/bin/</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_combinebackup: backups in the wrong order",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_combinebackup: error: backup at \"/var/lib/postgresql/backups/full_mon\" is a full backup, but only the first backup should be a full backup",
+    "caption": "Error"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "List the full backup first, then the incrementals from oldest to newest."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Take a plain-format backup of your cluster with gzip-level-9 compression applied on the server side (hint: server-side compression is allowed with plain format), verify it, and restore it into a new cluster on port 5434.",
+      "items": []
+     },
+     {
+      "content": "Insert 10 rows into shopdb.orders, take an incremental backup based on the full backup from task 1, combine the two and confirm the restored copy has the 10 extra rows.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answers",
+    "text": "1) <code class=\"inline-code\">pg_basebackup -h 127.0.0.1 -U backup_user -w -D /var/lib/postgresql/backups/ex1 -Fp --compress=server-gzip:9 -c fast</code>, then <code class=\"inline-code\">/usr/lib/postgresql/18/bin/pg_verifybackup /var/lib/postgresql/backups/ex1</code>. Restore with <code class=\"inline-code\">sudo pg_createcluster 18 ex --port 5434</code>, empty /var/lib/postgresql/18/ex, copy ex1 in with <code class=\"inline-code\">cp -a</code>, <code class=\"inline-code\">chmod 700</code>, <code class=\"inline-code\">sudo pg_ctlcluster 18 ex start</code>. The server compresses the stream and pg_basebackup decompresses it to write plain files, so the backup on disk is not smaller; only the network transfer is. 2) Make sure summarize_wal was on before task 1, then <code class=\"inline-code\">pg_basebackup ... -D .../ex2 -i /var/lib/postgresql/backups/ex1/backup_manifest</code> and <code class=\"inline-code\">pg_combinebackup .../ex1 .../ex2 -o .../ex_combined</code>. Clean up with <code class=\"inline-code\">sudo pg_dropcluster 18 ex --stop</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Check settings (psql as postgres)\nSELECT name, setting, context FROM pg_settings WHERE name IN ('wal_level','max_wal_senders','summarize_wal');\n# Create the backup role (psql as postgres)\nCREATE ROLE backup_user WITH LOGIN REPLICATION PASSWORD 'Backup#2026';\n# pg_hba.conf line for a backup host, then reload\n#   host  replication  backup_user  10.0.0.13/32  scram-sha-256\nsudo systemctl reload postgresql@18-main\n# Password file for the postgres OS user\necho \"127.0.0.1:5432:replication:backup_user:Backup#2026\" > ~/.pgpass && chmod 600 ~/.pgpass\n# Test the replication connection\npsql \"host=127.0.0.1 user=backup_user dbname=replication replication=true\" -w -c \"IDENTIFY_SYSTEM;\"\n# Plain-format backup\npg_basebackup -h 127.0.0.1 -U backup_user -w -D /var/lib/postgresql/backups/base_2026_11_13 -Fp -X stream -c fast -l \"full\" -P -v\n# Verify a plain backup\n/usr/lib/postgresql/18/bin/pg_verifybackup /var/lib/postgresql/backups/base_2026_11_13\n# Restore into a test cluster\nsudo pg_createcluster 18 restore --port 5433\nsudo -u postgres bash -c 'rm -rf /var/lib/postgresql/18/restore/*'\nsudo -u postgres cp -a /var/lib/postgresql/backups/base_2026_11_13/. /var/lib/postgresql/18/restore/\nsudo chmod 700 /var/lib/postgresql/18/restore\nsudo pg_ctlcluster 18 restore start\n# Compressed tar backup and its verification\npg_basebackup -h 127.0.0.1 -U backup_user -w -D /var/lib/postgresql/backups/tar_2026_11_13 -Ft -z -X stream -c fast\n/usr/lib/postgresql/18/bin/pg_verifybackup -F t -n /var/lib/postgresql/backups/tar_2026_11_13\n# Restore from tar\ntar -xzf base.tar.gz -C /var/lib/postgresql/18/restore\ntar -xzf pg_wal.tar.gz -C /var/lib/postgresql/18/restore/pg_wal\n# Incremental: enable summarize_wal = on in postgresql.conf, reload, then\npg_basebackup -h 127.0.0.1 -U backup_user -w -D /var/lib/postgresql/backups/incr_tue -i /var/lib/postgresql/backups/full_mon/backup_manifest\n/usr/lib/postgresql/18/bin/pg_combinebackup /var/lib/postgresql/backups/full_mon /var/lib/postgresql/backups/incr_tue -o /var/lib/postgresql/backups/synthetic_tue\n# Watch a running backup (psql)\nSELECT phase, backup_streamed, backup_total FROM pg_stat_progress_basebackup;\n# Remove the test cluster\nsudo pg_dropcluster 18 restore --stop",
+    "caption": "Every command from this part, in order"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_basebackup vs pg_dump: which should I use?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use both. pg_basebackup gives fast full-cluster restores and is the base for point-in-time recovery and standbys. pg_dump gives portable, per-database dumps that can restore a single table or move data to a newer major version."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why is pg_basebackup stuck at waiting for checkpoint?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With the default <code class=\"inline-code\">--checkpoint=spread</code> the server spreads the checkpoint over its normal schedule before copying starts, which can take minutes. Add <code class=\"inline-code\">-c fast</code> to request an immediate checkpoint."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can pg_basebackup back up a single database?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. It always copies the whole cluster: every database, plus the roles and other shared objects. Use pg_dump for one database."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does pg_basebackup run in parallel?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No, it copies files over a single connection (plus one for WAL). For parallel backup and restore of large clusters, use a tool such as pgBackRest (Part 21)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "pg_basebackup copies the whole cluster's files while it runs, plus the WAL needed to make that copy consistent",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "It needs a REPLICATION role, a pg_hba.conf line with the replication keyword, and free max_wal_senders slots",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use -X stream (default) so every backup carries its own WAL, and -c fast if you cannot wait for a spread checkpoint",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Verify every backup with pg_verifybackup (add -F t -n for tar backups) and still do regular test restores",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "On Ubuntu, back up /etc/postgresql/18/main/ separately: the config files are not in the data directory",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Incremental backups need summarize_wal = on, a full backup taken after enabling it, and pg_combinebackup before restore",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "A base backup alone restores to the moment the backup ended",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 19 we set up WAL archiving with archive_mode and archive_command, so that changes made after a base backup are kept too."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "A backup you have never restored is only a hope. Here is how to take, verify and restore a pg_basebackup on PostgreSQL 18.\n\nPart 18 of my PostgreSQL DBA series covers physical backups, tested on Ubuntu with PostgreSQL 18 from the PGDG repository.\n\nWhat to remember:\n\n→ pg_basebackup copies the whole cluster while it runs, plus the WAL that makes the copy consistent. Keep -X stream (the default).\n\n→ It needs a role with REPLICATION and a pg_hba.conf line with the replication keyword. A line with \"all\" does not cover it.\n\n→ Verify every backup: pg_verifybackup checks every file against backup_manifest. For tar backups add -F t -n (tar support is new in 18).\n\n→ On Ubuntu, postgresql.conf and pg_hba.conf live in /etc/postgresql/18/main, so they are not in the backup. Copy them separately.\n\n→ Incremental backups need summarize_wal = on and pg_combinebackup before you can restore them.\n\nHow often do you actually test-restore your physical backups?\n\nFollow the series: Part 19 is WAL archiving.\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #Backup",
+  "slides": [
+   {
+    "title": "Physical backups with pg_basebackup",
+    "body": "PostgreSQL DBA series Part 18: take, verify and restore a full cluster backup"
+   },
+   {
+    "title": "How pg_basebackup works",
+    "points": [
+     "Checkpoint, then copy every file of the cluster",
+     "Streams WAL over a second connection (-X stream)",
+     "Startup replays that WAL to make the copy consistent",
+     "backup_manifest lists every file with a checksum"
+    ]
+   },
+   {
+    "title": "Prepare the server",
+    "body": "A role with REPLICATION and a pg_hba.conf line with the replication keyword.",
+    "code": "CREATE ROLE backup_user\n  WITH LOGIN REPLICATION\n  PASSWORD 'change_me';\n\n-- pg_hba.conf:\n-- host replication backup_user\n--   10.0.0.13/32 scram-sha-256",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Take and verify a backup",
+    "points": [
+     "pg_basebackup -U backup_user -D /backups/b1 -c fast -P",
+     "pg_verifybackup /backups/b1",
+     "Tar backups: pg_basebackup -Ft -z, verify with -F t -n",
+     "Ubuntu: back up /etc/postgresql/18/main separately"
+    ]
+   },
+   {
+    "title": "Prove the restore works",
+    "body": "Restore into a spare cluster, start it, and compare row counts with the source.",
+    "code": "SELECT count(*) AS orders\n  FROM orders;\n\n-- primary: 100001 rows now\n-- restored: 100000 rows,\n-- the state when the backup ended",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Incremental backups (17+)",
+    "points": [
+     "Set summarize_wal = on and reload",
+     "Take a new full backup after enabling it",
+     "pg_basebackup -i full/backup_manifest",
+     "pg_combinebackup full incr -o restored before starting"
+    ]
+   }
+  ]
+ }
+}
