@@ -1,0 +1,13 @@
+Can you upgrade PostgreSQL by changing one number? Only if it is the minor one.
+
+A PostgreSQL version like 18.7 has two parts. 18 is the major version (new features, about once a year). 7 is the minor release (bug and security fixes, at least every three months). Before PostgreSQL 10, the major was the first two numbers, like 9.5 in 9.5.3. Check yours with SHOW server_version; and SHOW server_version_num;
+
+Minor upgrade: minor releases never change the storage format, so you stop the server, replace the binaries and restart. Read the release notes first. Major upgrade: the storage format may change, so use pg_dumpall and restore, pg_upgrade (try pg_upgrade --check first) or replication, and read the Migration section of every release you skip.
+
+Each major version is supported for five years, then gets a final minor release and reaches end of life. PostgreSQL 14 got its final release (14.25) on November 12, 2026. PostgreSQL DBA habit: track every server's version and end of life date, and apply minors regularly.
+
+Episode 12 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql

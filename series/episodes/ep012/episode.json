@@ -1,0 +1,523 @@
+{
+ "ep": 12,
+ "total": 140,
+ "title": "PostgreSQL Versions and Release Types",
+ "phase": "Foundations",
+ "lines": [
+  {
+   "say": "Can you upgrade PostgreSQL by changing one number?",
+   "cap": "Upgrade *PostgreSQL* by changing *one* *number?*"
+  },
+  {
+   "say": "This is episode twelve of the PostgreSQL DBA series. Today: major and minor releases, and upgrade planning.",
+   "cap": "Episode 12: *major* vs *minor,* and upgrade *planning.*",
+   "cue": "upgrade"
+  },
+  {
+   "say": "The answer depends on which number changes. A version like eighteen point seven has two parts.",
+   "cap": "Version *18.7* has *two* parts.",
+   "cue": "two"
+  },
+  {
+   "say": "The first number is the major version. It brings new features, about once a year.",
+   "cap": "*18* is the major. New *features,* about *yearly.*",
+   "cue": "features"
+  },
+  {
+   "say": "The second number is the minor release. It carries bug fixes and security fixes, at least once every three months.",
+   "cap": "*.7* is the minor. *Fixes,* at least every *3* months.",
+   "cue": "security"
+  },
+  {
+   "say": "This rule started with PostgreSQL ten. Before that, in nine point five point three, the major version was nine point five.",
+   "cap": "Before *10:* in *9.5.3,* the major was *9.5.*",
+   "cue": "Before"
+  },
+  {
+   "say": "Check what you run. SHOW server_version gives the full version, and server_version_num gives one number for scripts.",
+   "cap": "*SHOW* *server_version* and *server_version_num.*",
+   "cue": "number"
+  },
+  {
+   "say": "In the data directory, the PG_VERSION file holds only the major version: sixteen. Output trimmed.",
+   "cap": "*PG_VERSION* holds only the *major:* 16.",
+   "cue": "sixteen"
+  },
+  {
+   "say": "This box runs sixteen point fifteen. Sixteen point sixteen came out on November twelfth, so it's one minor behind.",
+   "cap": "*16.15* here. *16.16* is out: one minor *behind.*",
+   "cue": "behind"
+  },
+  {
+   "say": "A minor upgrade is simple. Minor releases never change the storage format. Stop the server, replace the binaries, restart.",
+   "cap": "Minor upgrade: *stop,* *replace* *binaries,* *restart.*",
+   "cue": "Stop"
+  },
+  {
+   "say": "The data directory stays the same. Read the release notes first: some fixes need extra steps.",
+   "cap": "Read the *release* *notes:* some need *extra* steps.",
+   "cue": "release"
+  },
+  {
+   "say": "The PostgreSQL project recommends that you always run the current minor release of your major version.",
+   "cap": "Run the *current* *minor* of your major.",
+   "cue": "recommends"
+  },
+  {
+   "say": "A major upgrade is different. The internal storage format may change, so you cannot just swap the binaries.",
+   "cap": "Major upgrade: storage format *may* *change.*",
+   "cue": "swap"
+  },
+  {
+   "say": "The docs list three ways: dump and restore with pg_dumpall, the faster pg_upgrade, or replication.",
+   "cap": "*pg_dumpall,* *pg_upgrade,* or *replication.*",
+   "cue": "replication"
+  },
+  {
+   "say": "Before the real run, pg_upgrade with the check option tests both clusters without changing any data.",
+   "cap": "*pg_upgrade --check:* checks, changes *no* data.",
+   "cue": "check"
+  },
+  {
+   "say": "You can jump several majors at once, but read the Migration section of every release in between.",
+   "cap": "Skipping majors? Read every *Migration* section.",
+   "cue": "Migration"
+  },
+  {
+   "say": "Each major version is supported for five years. After that comes one final minor release, then end of life.",
+   "cap": "*5* years of support, then *end* *of* *life.*",
+   "cue": "five"
+  },
+  {
+   "say": "This is happening now. PostgreSQL fourteen got its final release on November twelfth, twenty twenty six.",
+   "cap": "*PostgreSQL 14:* final release on *Nov 12, 2026.*",
+   "cue": "final"
+  },
+  {
+   "say": "Before a new major ships, there are beta and release candidate builds for testing. PostgreSQL nineteen is at that stage now.",
+   "cap": "*Beta* and *RC* builds are for *testing.*",
+   "cue": "beta"
+  },
+  {
+   "say": "Common mistake: treating minor updates as optional. They fix security issues and data corruption problems.",
+   "cap": "Mistake: *skipping* minors. They fix *security* bugs.",
+   "cue": "security"
+  },
+  {
+   "say": "DBA takeaway: a common practice is to track versions and end of life dates, apply minors regularly, and test majors on a copy.",
+   "cap": "*Track* versions. Apply *minors.* *Test* majors first.",
+   "cue": "track"
+  },
+  {
+   "say": "Recap: first number major, second minor. Minors swap binaries. Majors need pg_upgrade or a dump. Five years of support.",
+   "cap": "Recap: *major,* *minor,* *upgrade* path, *5* years.",
+   "cue": "Minor"
+  },
+  {
+   "say": "Next up: installing PostgreSQL on Linux with packages. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *install* on *Linux.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "Upgrade *PostgreSQL* by changing *one* number?",
+   "sub": "Episode 12 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 12 · FOUNDATIONS",
+   "title": "PostgreSQL Versions and Release Types",
+   "sub": "Major, minor, and upgrade planning"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 6,
+   "heading": "Reading a version number",
+   "nodes": [
+    {
+     "id": "major",
+     "label": "18",
+     "sub": "major version",
+     "x": 300,
+     "y": 600,
+     "w": 360,
+     "h": 150,
+     "icon": "layers",
+     "color": "orange",
+     "at": 2
+    },
+    {
+     "id": "minor",
+     "label": ".7",
+     "sub": "minor release",
+     "x": 780,
+     "y": 600,
+     "w": 360,
+     "h": 150,
+     "icon": "wrench",
+     "color": "cyan",
+     "at": 2
+    },
+    {
+     "id": "feat",
+     "label": "Features",
+     "sub": "about once a year",
+     "x": 300,
+     "y": 920,
+     "w": 360,
+     "h": 150,
+     "icon": "growth",
+     "color": "orange",
+     "at": 3
+    },
+    {
+     "id": "fix",
+     "label": "Fixes",
+     "sub": "bugs and security",
+     "x": 780,
+     "y": 920,
+     "w": 360,
+     "h": 150,
+     "icon": "shield",
+     "color": "cyan",
+     "at": 4
+    },
+    {
+     "id": "old",
+     "label": "Before 10",
+     "sub": "9.5.3: major is 9.5",
+     "x": 540,
+     "y": 1230,
+     "w": 380,
+     "h": 150,
+     "icon": "clock",
+     "color": "amber",
+     "shape": "pill",
+     "at": 5
+    }
+   ],
+   "edges": [
+    {
+     "from": "major",
+     "to": "feat",
+     "label": "brings",
+     "at": 3,
+     "flow": true,
+     "color": "orange"
+    },
+    {
+     "from": "minor",
+     "to": "fix",
+     "label": "carries",
+     "at": 4,
+     "flow": true,
+     "color": "cyan"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "major"
+    },
+    {
+     "at": 3,
+     "id": "feat"
+    },
+    {
+     "at": 4,
+     "id": "fix"
+    },
+    {
+     "at": 5,
+     "id": "old"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 6,
+   "to": 9,
+   "heading": "What am I running?",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SHOW server_version;",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": " 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)",
+     "at": 6
+    },
+    {
+     "kind": "cmd",
+     "prompt": "appdb=# ",
+     "text": "SHOW server_version_num;",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": " 160015",
+     "at": 6
+    },
+    {
+     "kind": "comment",
+     "text": "-- headers trimmed",
+     "at": 6
+    },
+    {
+     "kind": "comment",
+     "text": "-- in /var/lib/postgresql/16/main",
+     "at": 7
+    },
+    {
+     "kind": "cmd",
+     "text": "cat PG_VERSION",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "16",
+     "at": 7
+    },
+    {
+     "kind": "comment",
+     "text": "-- latest 16.x: 16.16 (Nov 12, 2026)",
+     "at": 8
+    }
+   ]
+  },
+  {
+   "type": "steps",
+   "from": 9,
+   "to": 11,
+   "heading": "Minor upgrade",
+   "items": [
+    {
+     "at": 9,
+     "icon": "alert",
+     "title": "Stop the server"
+    },
+    {
+     "at": 9,
+     "icon": "sync",
+     "title": "Replace the binaries",
+     "text": "Same storage format, no dump needed"
+    },
+    {
+     "at": 9,
+     "icon": "bolt",
+     "title": "Restart"
+    },
+    {
+     "at": 10,
+     "icon": "book",
+     "title": "Read the release notes first",
+     "text": "Some fixes need extra steps"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 11,
+   "to": 12,
+   "kind": "tip",
+   "title": "Run the current minor",
+   "text": "The project recommends always running the current minor release of your major version."
+  },
+  {
+   "type": "compare",
+   "from": 12,
+   "to": 13,
+   "heading": "Minor vs major upgrade",
+   "left": {
+    "title": "Minor (18.6 to 18.7)",
+    "color": "cyan",
+    "rows": [
+     "Same storage format",
+     "Swap binaries, restart",
+     "Data directory unchanged"
+    ]
+   },
+   "right": {
+    "title": "Major (17 to 18)",
+    "color": "orange",
+    "rows": [
+     "Storage format may change",
+     "Cannot just swap binaries",
+     "Needs a migration method"
+    ]
+   }
+  },
+  {
+   "type": "cards",
+   "from": 13,
+   "to": 15,
+   "heading": "Major upgrade methods",
+   "columns": 1,
+   "items": [
+    {
+     "at": 13,
+     "icon": "backup",
+     "title": "pg_dumpall + restore",
+     "text": "The traditional method, can be slow",
+     "color": "blue"
+    },
+    {
+     "at": 13,
+     "icon": "bolt",
+     "title": "pg_upgrade",
+     "text": "Faster: no dump and restore of the data",
+     "color": "orange"
+    },
+    {
+     "at": 13,
+     "icon": "network",
+     "title": "Replication",
+     "text": "Copy data to a new-version server",
+     "color": "cyan"
+    },
+    {
+     "at": 14,
+     "icon": "search",
+     "title": "pg_upgrade --check",
+     "text": "From the docs: check clusters only, don't change any data",
+     "color": "green"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 15,
+   "to": 16,
+   "kind": "tip",
+   "title": "Skipping majors?",
+   "text": "Allowed, but read the Migration section of every release in between."
+  },
+  {
+   "type": "cards",
+   "from": 16,
+   "to": 18,
+   "heading": "5 years per major",
+   "columns": 2,
+   "items": [
+    {
+     "at": 16,
+     "icon": "check",
+     "title": "PostgreSQL 18",
+     "text": "Final release: Nov 14, 2030",
+     "color": "green"
+    },
+    {
+     "at": 16,
+     "icon": "check",
+     "title": "PostgreSQL 17",
+     "text": "Final release: Nov 8, 2029",
+     "color": "green"
+    },
+    {
+     "at": 16,
+     "icon": "check",
+     "title": "PostgreSQL 16",
+     "text": "Final release: Nov 9, 2028",
+     "color": "green"
+    },
+    {
+     "at": 16,
+     "icon": "check",
+     "title": "PostgreSQL 15",
+     "text": "Final release: Nov 11, 2027",
+     "color": "amber"
+    },
+    {
+     "at": 17,
+     "icon": "alert",
+     "title": "PostgreSQL 14",
+     "text": "End of life: 14.25 on Nov 12, 2026",
+     "color": "red"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 18,
+   "to": 19,
+   "kind": "fact",
+   "title": "Beta and RC builds",
+   "text": "Previews of the next major, for testing. PostgreSQL 19 is at release candidate stage."
+  },
+  {
+   "type": "callout",
+   "from": 19,
+   "to": 20,
+   "kind": "myth",
+   "title": "Minor updates are optional",
+   "text": "They fix security issues and data corruption problems. Apply them."
+  },
+  {
+   "type": "steps",
+   "from": 20,
+   "to": 21,
+   "heading": "DBA routine",
+   "items": [
+    {
+     "at": 20,
+     "icon": "eye",
+     "title": "Track version and end of life"
+    },
+    {
+     "at": 20,
+     "icon": "sync",
+     "title": "Apply minors regularly"
+    },
+    {
+     "at": 20,
+     "icon": "search",
+     "title": "Test majors on a copy first"
+    }
+   ]
+  },
+  {
+   "type": "checklist",
+   "from": 21,
+   "to": 22,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 21,
+     "title": "First number: major"
+    },
+    {
+     "at": 21,
+     "title": "Second number: minor"
+    },
+    {
+     "at": 21,
+     "title": "Minor: swap binaries, restart"
+    },
+    {
+     "at": 21,
+     "title": "Major: pg_upgrade or dump"
+    },
+    {
+     "at": 21,
+     "title": "5 years of support per major"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 22,
+   "to": 23,
+   "next": "Ep 13 · Install on Linux"
+  }
+ ]
+}
