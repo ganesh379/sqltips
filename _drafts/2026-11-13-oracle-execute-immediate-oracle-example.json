@@ -1,0 +1,946 @@
+{
+  "schemaVersion": 1,
+  "title": "Execute Immediate Oracle Example: INTO, USING, RETURNING",
+  "slug": "execute-immediate-oracle-example",
+  "category": "plsql",
+  "description": "EXECUTE IMMEDIATE in Oracle with examples: DDL, SELECT INTO, USING bind variables, RETURNING INTO, BULK COLLECT and safe dynamic table names.",
+  "focusKeyword": "execute immediate oracle example",
+  "tags": [
+    "oracle",
+    "plsql",
+    "dynamic-sql",
+    "execute-immediate",
+    "sql-injection"
+  ],
+  "related": [
+    "/posts/plsql/oracle-bulk-collect-limit-example/",
+    "/posts/plsql/oracle-global-temporary-table/",
+    "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: EXECUTE IMMEDIATE Statement",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/EXECUTE-IMMEDIATE-statement.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: Native Dynamic SQL",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/native-dynamic-sql.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: PL/SQL Dynamic SQL",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/dynamic-sql.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Language Reference: SQL Injection",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/sql-injection.html"
+    },
+    {
+      "title": "Oracle 19c PL/SQL Packages and Types Reference: DBMS_ASSERT",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_ASSERT.html"
+    },
+    {
+      "title": "Oracle 19c SQL Language Reference: Types of SQL Statements",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Types-of-SQL-Statements.html"
+    }
+  ],
+  "reviewNotes": "All examples written from the Oracle 19c docs and not run; please test each block (and the expected outputs) on 19c or 23ai. Check specifically: (1) the exact error text for a trailing semicolon in a SQL string (written as ORA-00911: invalid character; message wording changed in 23ai); (2) the SQL*Plus output of EXEC show_max with the injection string (shown as ORA-20001 line only; real output also includes ORA-06512 lines); (3) the 23ai DROP TABLE IF EXISTS mention; (4) Example 3 output assumes Example 2 made no changes and Example 4 assumes salaries from the sample data (103 = 48000). Note salary values display as 72000 not 72000.00 because DBMS_OUTPUT uses implicit TO_CHAR.",
+  "generatedAt": "2026-11-13T01:30:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">EXECUTE IMMEDIATE</code> runs a SQL statement or PL/SQL block that you build as a string at run time. You put the statement text in quotes, pass values with <code class=\"inline-code\">USING</code>, and read results with <code class=\"inline-code\">INTO</code>, <code class=\"inline-code\">BULK COLLECT INTO</code> or <code class=\"inline-code\">RETURNING INTO</code>. A typical call looks like <code class=\"inline-code\">EXECUTE IMMEDIATE 'SELECT salary FROM employees WHERE emp_id = :id' INTO v_sal USING 101;</code>"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This tutorial walks through every common form with a small employees table: DDL, single-row queries, updates, RETURNING INTO, multi-row queries, dynamic table and column names, and dynamic PL/SQL blocks. Each example shows the output you should see, and the last sections cover the mistakes that cause most EXECUTE IMMEDIATE errors."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What EXECUTE IMMEDIATE does",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Normal SQL inside PL/SQL is <b>static SQL</b>. The compiler sees the full statement when you compile the procedure, checks that tables and columns exist, and works out the privileges. That is fast and safe, so it should be your default."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Sometimes the statement is not known until the code runs. The table name comes from a parameter, you need to run DDL such as <code class=\"inline-code\">CREATE TABLE</code> or <code class=\"inline-code\">TRUNCATE</code>, or the WHERE clause depends on which filters a user picked. Static SQL cannot do these things. This is <b>dynamic SQL</b>, and <code class=\"inline-code\">EXECUTE IMMEDIATE</code> is Oracle's native way to run it."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "When the line runs, Oracle takes the string, parses it, binds the values you pass in USING, executes it and hands back any results, all in one step. The Oracle docs note that it \"prepares the dynamic string before every execution\", so there is a small cost each time compared with static SQL."
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Statement type",
+            "Where inputs go",
+            "Where results go"
+          ],
+          [
+            "SELECT returning at most one row",
+            "USING",
+            "INTO"
+          ],
+          [
+            "SELECT returning many rows",
+            "USING",
+            "BULK COLLECT INTO"
+          ],
+          [
+            "INSERT / UPDATE / DELETE",
+            "USING",
+            "none (check SQL%ROWCOUNT)"
+          ],
+          [
+            "DML with RETURNING clause",
+            "USING (IN only)",
+            "RETURNING INTO"
+          ],
+          [
+            "Anonymous PL/SQL block or CALL",
+            "USING (IN, OUT, IN OUT)",
+            "OUT binds in USING"
+          ],
+          [
+            "DDL with no placeholders",
+            "none",
+            "none"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This table follows the rules in the PL/SQL Language Reference. If you remember it, you will know which clause to write for any statement. If the number or data types of the inputs and outputs are not known until run time, native dynamic SQL cannot handle it and you need the <code class=\"inline-code\">DBMS_SQL</code> package instead."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Create this table and data so you can run every example in SQL*Plus, SQL Developer or SQLcl. Turn on server output first so you can see DBMS_OUTPUT messages."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SET SERVEROUTPUT ON\n\nCREATE TABLE employees (\n  emp_id    NUMBER PRIMARY KEY,\n  emp_name  VARCHAR2(50) NOT NULL,\n  dept      VARCHAR2(20) NOT NULL,\n  salary    NUMBER(10,2)\n);\n\nINSERT INTO employees VALUES (101, 'Asha Rao',    'IT',    65000);\nINSERT INTO employees VALUES (102, 'Vikram Shah', 'IT',    72000);\nINSERT INTO employees VALUES (103, 'Neha Gupta',  'HR',    48000);\nINSERT INTO employees VALUES (104, 'Rahul Verma', 'SALES', 55000);\nINSERT INTO employees VALUES (105, 'Priya Nair',  'SALES', 51000);\nCOMMIT;",
+        "caption": "Sample employees table"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "EMP_ID",
+            "EMP_NAME",
+            "DEPT",
+            "SALARY"
+          ],
+          [
+            "101",
+            "Asha Rao",
+            "IT",
+            "65000"
+          ],
+          [
+            "102",
+            "Vikram Shah",
+            "IT",
+            "72000"
+          ],
+          [
+            "103",
+            "Neha Gupta",
+            "HR",
+            "48000"
+          ],
+          [
+            "104",
+            "Rahul Verma",
+            "SALES",
+            "55000"
+          ],
+          [
+            "105",
+            "Priya Nair",
+            "SALES",
+            "51000"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 1: Run DDL with EXECUTE IMMEDIATE",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You cannot write <code class=\"inline-code\">CREATE TABLE</code> or <code class=\"inline-code\">DROP TABLE</code> directly inside a PL/SQL block. The compiler rejects it. Wrap the statement in a string and run it with EXECUTE IMMEDIATE."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Create a backup table",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  EXECUTE IMMEDIATE\n    'CREATE TABLE employees_bkp AS SELECT * FROM employees';\n  DBMS_OUTPUT.PUT_LINE('Backup table created');\nEND;\n/",
+        "caption": "Dynamic DDL inside a PL/SQL block"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Backup table created\n\nPL/SQL procedure successfully completed.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The statement has no placeholders and returns nothing, so it needs no INTO or USING clause. Notice there is no semicolon inside the quotes. A SQL statement string must not end with one."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Drop a table only if it exists",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A common need in deployment scripts is to drop a table without failing when it is missing. Catch the \"table or view does not exist\" error, ORA-00942, and re-raise anything else."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "BEGIN\n  EXECUTE IMMEDIATE 'DROP TABLE employees_bkp PURGE';\n  DBMS_OUTPUT.PUT_LINE('Dropped');\nEXCEPTION\n  WHEN OTHERS THEN\n    IF SQLCODE = -942 THEN\n      DBMS_OUTPUT.PUT_LINE('Table did not exist, nothing to drop');\n    ELSE\n      RAISE;\n    END IF;\nEND;\n/",
+        "caption": "Ignore only ORA-00942"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Dropped\n\nPL/SQL procedure successfully completed.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Run it a second time and you get the other message. In Oracle Database 23ai you can write <code class=\"inline-code\">DROP TABLE IF EXISTS employees_bkp</code> instead, but the pattern above works on 19c and older releases."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "DDL commits your work",
+        "text": "Oracle commits the current transaction before and after every DDL statement. That is still true when the DDL runs through EXECUTE IMMEDIATE. If your procedure inserts rows and then runs dynamic DDL, those inserts are committed and you can no longer roll them back."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 2: SELECT INTO with bind variables",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "For a query that returns one row, put the output variables in <code class=\"inline-code\">INTO</code> and the input values in <code class=\"inline-code\">USING</code>. Inside the string, each input is a placeholder: a colon followed by a name or number, such as <code class=\"inline-code\">:id</code> or <code class=\"inline-code\">:1</code>."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  v_name   employees.emp_name%TYPE;\n  v_salary employees.salary%TYPE;\n  v_id     NUMBER := 102;\nBEGIN\n  EXECUTE IMMEDIATE\n    'SELECT emp_name, salary FROM employees WHERE emp_id = :id'\n    INTO v_name, v_salary\n    USING v_id;\n\n  DBMS_OUTPUT.PUT_LINE(v_name || ' earns ' || v_salary);\nEND;\n/",
+        "caption": "Single-row dynamic query"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "Vikram Shah earns 72000\n\nPL/SQL procedure successfully completed.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The order matters. INTO comes before USING, and the variables in INTO must match the selected columns in number and compatible type. Oracle matches placeholders in a SQL statement to USING values <b>by position</b>, not by name. The name <code class=\"inline-code\">:id</code> is only a label."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "When no row or many rows come back",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "EXECUTE IMMEDIATE ... INTO behaves like static SELECT INTO. No row raises <code class=\"inline-code\">NO_DATA_FOUND</code> (ORA-01403). More than one row raises <code class=\"inline-code\">TOO_MANY_ROWS</code> (ORA-01422). Handle the case you expect."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  v_name employees.emp_name%TYPE;\nBEGIN\n  EXECUTE IMMEDIATE\n    'SELECT emp_name FROM employees WHERE emp_id = :id'\n    INTO v_name\n    USING 999;\nEXCEPTION\n  WHEN NO_DATA_FOUND THEN\n    DBMS_OUTPUT.PUT_LINE('No employee with that id');\nEND;\n/",
+        "caption": "Handle a missing row"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "No employee with that id\n\nPL/SQL procedure successfully completed.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You can pass a literal such as 999 in USING. The only value you cannot write there is the keyword NULL, which is covered in the mistakes section."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 3: UPDATE, INSERT and DELETE with USING",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "For DML without a RETURNING clause, every bind value goes in USING. After the statement runs, <code class=\"inline-code\">SQL%ROWCOUNT</code> tells you how many rows it touched."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  v_dept VARCHAR2(20) := 'SALES';\n  v_pct  NUMBER       := 10;\nBEGIN\n  EXECUTE IMMEDIATE\n    'UPDATE employees\n        SET salary = salary * (1 + :pct / 100)\n      WHERE dept = :dept'\n    USING v_pct, v_dept;\n\n  DBMS_OUTPUT.PUT_LINE(SQL%ROWCOUNT || ' rows updated');\nEND;\n/",
+        "caption": "10% raise for one department"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "2 rows updated\n\nPL/SQL procedure successfully completed.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "EMP_ID",
+            "EMP_NAME",
+            "DEPT",
+            "SALARY"
+          ],
+          [
+            "104",
+            "Rahul Verma",
+            "SALES",
+            "60500"
+          ],
+          [
+            "105",
+            "Priya Nair",
+            "SALES",
+            "56100"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The two SALES rows went from 55000 and 51000 to 60500 and 56100. The values are bound in the same order as the placeholders appear: <code class=\"inline-code\">:pct</code> first, then <code class=\"inline-code\">:dept</code>. The change is not committed. EXECUTE IMMEDIATE does not commit DML for you, so you decide when to COMMIT or ROLLBACK, as with static SQL."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "",
+        "text": "The SQL string can span several lines, as above. Oracle ignores the line breaks, and the statement is much easier to read and debug."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 4: RETURNING INTO with dynamic DML",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "When the DML statement has its own <code class=\"inline-code\">RETURNING ... INTO :placeholder</code> part, the input values go in USING and the returned values go in a separate <code class=\"inline-code\">RETURNING INTO</code> clause at the end of EXECUTE IMMEDIATE."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  v_new_salary employees.salary%TYPE;\nBEGIN\n  EXECUTE IMMEDIATE\n    'UPDATE employees\n        SET salary = salary + :amt\n      WHERE emp_id = :id\n     RETURNING salary INTO :new_sal'\n    USING 5000, 103\n    RETURNING INTO v_new_salary;\n\n  DBMS_OUTPUT.PUT_LINE('New salary: ' || v_new_salary);\nEND;\n/",
+        "caption": "Get the updated value back"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "New salary: 53000\n\nPL/SQL procedure successfully completed.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Neha Gupta's salary was 48000, so it is now 53000. The docs state that when the statement has a RETURNING INTO clause, USING may contain only IN binds. The returned values are always OUT, so you do not write a mode for them. To get values back from an UPDATE that hits many rows, use <code class=\"inline-code\">RETURNING BULK COLLECT INTO</code> with a collection."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 5: Fetch many rows with BULK COLLECT INTO",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "INTO works only for one row. When a dynamic query can return several rows, collect them into a collection with <code class=\"inline-code\">BULK COLLECT INTO</code>."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  TYPE t_names IS TABLE OF employees.emp_name%TYPE;\n  v_names t_names;\nBEGIN\n  EXECUTE IMMEDIATE\n    'SELECT emp_name FROM employees\n      WHERE dept = :d\n      ORDER BY emp_name'\n    BULK COLLECT INTO v_names\n    USING 'IT';\n\n  FOR i IN 1 .. v_names.COUNT LOOP\n    DBMS_OUTPUT.PUT_LINE(i || '. ' || v_names(i));\n  END LOOP;\nEND;\n/",
+        "caption": "Multi-row dynamic query"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "1. Asha Rao\n2. Vikram Shah\n\nPL/SQL procedure successfully completed.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If no rows match, BULK COLLECT does not raise NO_DATA_FOUND. The collection is simply empty and <code class=\"inline-code\">v_names.COUNT</code> is 0. For very large results, open a cursor variable with <code class=\"inline-code\">OPEN c FOR 'SELECT ...' USING ...</code> and fetch in batches with LIMIT, so you do not load everything into memory at once."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 6: Dynamic table or column names, safely",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Bind variables hold <b>values</b> only. You cannot bind a table name, column name or keyword, because Oracle must know the objects when it parses the statement. Writing <code class=\"inline-code\">'SELECT * FROM :tab'</code> fails at run time."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "So names have to be concatenated into the string. That is exactly where SQL injection happens, so validate every name before you use it. The safe pattern has two steps."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: check the name against the data dictionary",
+        "level": 3
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: quote it with DBMS_ASSERT",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "CREATE OR REPLACE PROCEDURE show_max (p_column IN VARCHAR2) AS\n  v_col  user_tab_cols.column_name%TYPE;\n  v_max  VARCHAR2(100);\nBEGIN\n  -- Step 1: the column must really exist on EMPLOYEES\n  SELECT column_name\n    INTO v_col\n    FROM user_tab_cols\n   WHERE table_name  = 'EMPLOYEES'\n     AND column_name = UPPER(p_column);\n\n  -- Step 2: quote the validated name and build the SQL\n  EXECUTE IMMEDIATE\n    'SELECT TO_CHAR(MAX(' || DBMS_ASSERT.ENQUOTE_NAME(v_col)\n    || ')) FROM employees'\n    INTO v_max;\n\n  DBMS_OUTPUT.PUT_LINE('MAX(' || v_col || ') = ' || v_max);\nEXCEPTION\n  WHEN NO_DATA_FOUND THEN\n    RAISE_APPLICATION_ERROR(-20001, 'Unknown column: ' || p_column);\nEND;\n/\n\nEXEC show_max('salary')\nEXEC show_max('emp_id) || (SELECT 1 FROM dual')",
+        "caption": "Validate, then quote"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "MAX(SALARY) = 72000\n\nPL/SQL procedure successfully completed.\n\nERROR at line 1:\nORA-20001: Unknown column: emp_id) || (SELECT 1 FROM dual\n(followed by ORA-06512 lines)",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The first call works because SALARY is a real column. The second call is an injection attempt, and it never reaches EXECUTE IMMEDIATE because no column has that name. <code class=\"inline-code\">DBMS_ASSERT.ENQUOTE_NAME</code> wraps the name in double quotes and checks that it is a valid quoted SQL name. By default it converts an unquoted name to upper case, so <code class=\"inline-code\">salary</code> becomes <code class=\"inline-code\">\"SALARY\"</code>."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Other useful DBMS_ASSERT functions: <code class=\"inline-code\">SIMPLE_SQL_NAME</code> raises ORA-44003 if the input is not a simple SQL name, and <code class=\"inline-code\">SQL_OBJECT_NAME</code> raises ORA-44002 if the object does not exist. The Oracle docs warn that these functions help validation code but do not replace it."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "danger",
+        "title": "Values go in USING, always",
+        "text": "Never concatenate user input as a value, for example <code class=\"inline-code\">'... WHERE emp_name = ''' || p_name || ''''</code>. Pass the value with USING instead. The database uses bind values only as data and never runs them as SQL text."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Example 7: Run a dynamic PL/SQL block",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "EXECUTE IMMEDIATE can also run an anonymous PL/SQL block, for example to call a procedure whose name is decided at run time. Here the string <b>must</b> end with <code class=\"inline-code\">END;</code> including the semicolon, because that is part of PL/SQL syntax."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  v_total NUMBER := 10;\nBEGIN\n  EXECUTE IMMEDIATE 'BEGIN :n := :n * 2; END;'\n    USING IN OUT v_total;\n\n  DBMS_OUTPUT.PUT_LINE('v_total = ' || v_total);\nEND;\n/",
+        "caption": "IN OUT bind in a dynamic block"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "v_total = 20\n\nPL/SQL procedure successfully completed.",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Two things are different from a SQL statement. First, you can use OUT and IN OUT binds in USING, and the variable gets the new value back. Second, repeated placeholder names behave differently."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Repeated placeholders: SQL vs PL/SQL block",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "In a dynamic <b>SQL statement</b>, placeholders are matched by position, so a repeated name needs a repeated value. In a dynamic <b>PL/SQL block</b> or CALL statement, each unique name maps to one bind value. That is why <code class=\"inline-code\">:n</code> appears twice above but <code class=\"inline-code\">v_total</code> is passed only once."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "-- SQL statement: :s appears twice, so pass the value twice\nEXECUTE IMMEDIATE\n  'UPDATE employees SET salary = :s WHERE salary < :s'\n  USING v_floor, v_floor;\n\n-- PL/SQL block: :n appears twice, pass it once\nEXECUTE IMMEDIATE 'BEGIN :n := :n * 2; END;'\n  USING IN OUT v_total;",
+        "caption": "Positional vs name-based matching"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes and how to fix them",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "1. A semicolon at the end of a SQL string",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">EXECUTE IMMEDIATE 'DELETE FROM employees WHERE emp_id = 105;'</code> fails, usually with ORA-00911: invalid character. Remove the semicolon from SQL strings. Keep it only for PL/SQL blocks, which must end in <code class=\"inline-code\">END;</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "2. Writing NULL in the USING clause",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The Oracle docs state that a bind argument cannot be the reserved word NULL, so writing USING NULL fails. Declare a variable, leave it unassigned (so it is NULL), and pass that instead."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  v_null NUMBER;  -- NULL by default\nBEGIN\n  EXECUTE IMMEDIATE\n    'UPDATE employees SET salary = :s WHERE emp_id = :id'\n    USING v_null, 105;\nEND;\n/",
+        "caption": "Passing NULL as a bind value"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "3. Trying to bind a table or column name",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Placeholders work only for values. For identifiers, validate the name and concatenate it, as shown in Example 6."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "4. A SELECT with no INTO clause",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "If the dynamic statement is a SELECT and you leave out both INTO and BULK COLLECT INTO, the docs say the statement \"never executes\". For example, <code class=\"inline-code\">EXECUTE IMMEDIATE 'SELECT my_seq.NEXTVAL FROM dual'</code> does not increment the sequence. You get no error, just nothing happening."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "5. Building values into the string",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Concatenating values causes SQL injection, quoting bugs with names like O'Brien, and date format problems that depend on NLS settings. It also creates a different statement text for each value, so Oracle hard parses each one. Bind values with USING."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "6. ORA-00942 or ORA-01031 only inside a procedure",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A dynamic statement can work in an anonymous block but fail inside a stored procedure. Definer's rights procedures do not use privileges granted through roles, and dynamic SQL is only checked at run time. Grant the privilege on the object directly to the procedure owner."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "7. Debugging a string you cannot see",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "When a long dynamic statement fails, build it into a variable first, print it with <code class=\"inline-code\">DBMS_OUTPUT.PUT_LINE</code>, and then run it. Most errors are obvious once you see the final text, such as a missing space between <code class=\"inline-code\">'FROM employees'</code> and <code class=\"inline-code\">'WHERE'</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Performance tips and best practices",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "Use static SQL when the statement is known at compile time. It is checked at compile time, records dependencies, and avoids the extra prepare step.",
+            "items": []
+          },
+          {
+            "content": "Always use bind variables for values. The statement text stays the same, so Oracle can reuse the cursor in the shared pool instead of hard parsing each new value.",
+            "items": []
+          },
+          {
+            "content": "Store the statement in a VARCHAR2 or CLOB variable before running it. You can log it, print it and reuse it in a loop.",
+            "items": []
+          },
+          {
+            "content": "For many rows, prefer BULK COLLECT INTO, or OPEN FOR with FETCH ... LIMIT, over a row-by-row loop of EXECUTE IMMEDIATE calls.",
+            "items": []
+          },
+          {
+            "content": "Use DBMS_SQL when the number or types of columns or binds are unknown until run time, for example a generic CSV export of any table.",
+            "items": []
+          },
+          {
+            "content": "Keep DDL out of transactional code paths, because each DDL statement commits.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is EXECUTE IMMEDIATE in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "It is the PL/SQL statement that builds and runs a dynamic SQL statement or PL/SQL block in one step. You pass the statement as a string, bind values with USING, and collect results with INTO, BULK COLLECT INTO or RETURNING INTO."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Does EXECUTE IMMEDIATE commit automatically?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Not for DML. An INSERT, UPDATE or DELETE run through EXECUTE IMMEDIATE waits for your COMMIT or ROLLBACK, like static SQL. DDL is different. Oracle commits before and after every DDL statement, so dynamic CREATE, ALTER, DROP or TRUNCATE commits the open transaction."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can I use COMMIT inside EXECUTE IMMEDIATE?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You can, with <code class=\"inline-code\">EXECUTE IMMEDIATE 'COMMIT'</code>, but there is no reason to. A plain COMMIT statement works directly in PL/SQL and is clearer."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I use EXECUTE IMMEDIATE with an INTO variable?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Write the INTO clause before USING: <code class=\"inline-code\">EXECUTE IMMEDIATE 'SELECT salary FROM employees WHERE emp_id = :1' INTO v_sal USING v_id;</code> The query must return exactly one row, or you get NO_DATA_FOUND or TOO_MANY_ROWS."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between EXECUTE IMMEDIATE and DBMS_SQL?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "EXECUTE IMMEDIATE is simpler and, per the Oracle docs, runs noticeably faster. It needs you to know the number and types of inputs and outputs when you write the code. DBMS_SQL is a lower-level API that can describe and handle statements whose shape is only known at run time."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "Use EXECUTE IMMEDIATE only when static SQL cannot do the job: DDL, run-time table or column names, or truly dynamic WHERE clauses.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Inputs go in USING, single-row results in INTO, many rows in BULK COLLECT INTO, DML results in RETURNING INTO.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "No semicolon at the end of a SQL string; PL/SQL block strings must end with END;",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Bind every value. Validate every identifier against the data dictionary and quote it with DBMS_ASSERT.ENQUOTE_NAME.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Pass NULL through an unassigned variable, never the NULL keyword.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Remember that dynamic DDL commits the current transaction.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Print the final statement text when something fails.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your PL/SQL must create a table, or query one whose name arrives as a parameter. Static SQL can't. EXECUTE IMMEDIATE can.\n\nIt runs a SQL string at run time. Five rules that avoid most errors:\n\n1. Inputs go in USING, one-row results in INTO, many rows in BULK COLLECT INTO.\n2. No semicolon at the end of a SQL string. A PL/SQL block string must end with END;\n3. Bind values, never concatenate them: WHERE emp_id = :id with USING v_id. Safer and Oracle can reuse the parsed cursor.\n4. You cannot bind a table or column name. Check it in USER_TAB_COLS, then wrap it with DBMS_ASSERT.ENQUOTE_NAME before concatenating.\n5. USING NULL does not compile. Pass an unassigned variable instead.\n\nOne trap: dynamic DDL still commits your open transaction, just like normal DDL.\n\nWhich one has bitten you in a real project, the semicolon or the commit?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #PLSQL #OracleSQL #SQLInterview",
+    "slides": [
+      {
+        "title": "EXECUTE IMMEDIATE in Oracle",
+        "body": "Run dynamic SQL in PL/SQL safely, with 7 worked examples"
+      },
+      {
+        "title": "Which clause goes where",
+        "points": [
+          "Input values: USING",
+          "One row back: INTO",
+          "Many rows back: BULK COLLECT INTO",
+          "DML results: RETURNING INTO"
+        ]
+      },
+      {
+        "title": "Single-row query with a bind",
+        "code": "EXECUTE IMMEDIATE\n  'SELECT salary\n     FROM employees\n    WHERE emp_id = :id'\n  INTO v_salary\n  USING v_id;",
+        "lang": "plsql",
+        "body": "No row raises NO_DATA_FOUND, two rows raise TOO_MANY_ROWS, same as SELECT INTO."
+      },
+      {
+        "title": "DDL needs dynamic SQL",
+        "code": "BEGIN\n  EXECUTE IMMEDIATE\n    'CREATE TABLE emp_bkp AS\n     SELECT * FROM employees';\nEND;\n/",
+        "lang": "plsql",
+        "body": "No semicolon inside the quotes. DDL commits the open transaction."
+      },
+      {
+        "title": "Table and column names",
+        "points": [
+          "You cannot bind an identifier, only values",
+          "Check the name in USER_TAB_COLS first",
+          "Then quote it with DBMS_ASSERT.ENQUOTE_NAME",
+          "Never concatenate user input as a value"
+        ]
+      },
+      {
+        "title": "Passing NULL",
+        "code": "DECLARE\n  v_null NUMBER;\nBEGIN\n  EXECUTE IMMEDIATE\n    'UPDATE employees\n        SET salary = :s'\n    USING v_null;\nEND;",
+        "lang": "plsql",
+        "body": "USING NULL is not allowed. An unassigned variable works."
+      }
+    ]
+  }
+}

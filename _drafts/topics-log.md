@@ -53,3 +53,4 @@
 - 2026-11-11 [PostgreSQL] postgresql checkpoint tuning -> _drafts/2026-11-11-postgresql-postgresql-dba-part-16-checkpoints-background-writer.json
 - 2026-11-12 [Oracle] oracle sys_refcursor example -> _drafts/2026-11-12-oracle-oracle-sys-refcursor-example.json
 - 2026-11-12 [PostgreSQL] pg_dump and pg_restore -> _drafts/2026-11-12-postgresql-postgresql-dba-part-17-pg-dump-pg-restore.json
+- 2026-11-13 [Oracle] execute immediate oracle example -> _drafts/2026-11-13-oracle-execute-immediate-oracle-example.json
