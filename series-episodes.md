@@ -59,7 +59,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
 
 ## Installation & Administration
 
-- [ ] Ep 013 | 2026-11-16 | Install PostgreSQL on Linux: Packages and Service
+- [x] Ep 013 | 2026-11-16 | Install PostgreSQL on Linux: Packages and Service (posted 2026-11-15 13:00, Buffer 6af7f55781e1228421e7083b)
   - Objective: Demonstrate package-based installation on a chosen supported distro, service checks and version verification.
   - Format: Terminal walkthrough · Level: Beginner
   - Hook: From zero to a running PostgreSQL service.

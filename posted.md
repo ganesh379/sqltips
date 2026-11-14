@@ -46,3 +46,4 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-12 | 13:00 | Instagram | Series Ep 010 | psql: The Essential PostgreSQL Command-Line Tool | reels/2026-11-12-1300 | 6af4006d7ffe799078d42aa5
 - 2026-11-13 | 13:00 | Instagram | Series Ep 011 | PostgreSQL Configuration Files | reels/2026-11-13-1300 | 6af55415df70eccdaab5759b
 - 2026-11-14 | 13:00 | Instagram | Series Ep 012 | PostgreSQL Versions and Release Types | reels/2026-11-14-1300 | 6af6a3cc5ec1c9d5be612049
+- 2026-11-15 | 13:00 | Instagram | Series Ep 013 | Install PostgreSQL on Linux: Packages and Service | reels/2026-11-15-1300 | 6af7f55781e1228421e7083b
