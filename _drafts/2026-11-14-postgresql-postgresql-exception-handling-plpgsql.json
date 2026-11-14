@@ -1,0 +1,1059 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL Exception Handling in PL/pgSQL, With Examples",
+ "slug": "postgresql-exception-handling-plpgsql",
+ "category": "postgresql",
+ "description": "PostgreSQL exception handling in PL/pgSQL: catch errors with EXCEPTION WHEN, read SQLSTATE, log details and raise custom errors. Tested examples.",
+ "focusKeyword": "postgresql exception handling",
+ "tags": [
+  "postgresql",
+  "plpgsql",
+  "exception-handling",
+  "error-handling"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-function-vs-procedure/",
+  "/posts/postgresql/postgresql-upsert-on-conflict/",
+  "/posts/postgresql/postgresql-deadlock-detected/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: PL/pgSQL Control Structures (41.6.8 Trapping Errors, 41.6.9)",
+   "url": "https://www.postgresql.org/docs/current/plpgsql-control-structures.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: PL/pgSQL Errors and Messages (RAISE, ASSERT)",
+   "url": "https://www.postgresql.org/docs/current/plpgsql-errors-and-messages.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: PL/pgSQL Transaction Management",
+   "url": "https://www.postgresql.org/docs/current/plpgsql-transactions.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: PL/pgSQL Basic Statements (SELECT INTO STRICT)",
+   "url": "https://www.postgresql.org/docs/current/plpgsql-statements.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Appendix A. PostgreSQL Error Codes",
+   "url": "https://www.postgresql.org/docs/current/errcodes-appendix.html"
+  }
+ ],
+ "reviewNotes": "Regular Saturday article (not a series part). Every SQL block was run in article order on a fresh database on PostgreSQL 18.7 (Ubuntu 18.7-1.pgdg24.04+2, PGDG packages) on Ubuntu 24.04.5 LTS; followed the PostgreSQL 18 documentation (docs/current, pages in sources). Outputs are real; some outputs drop '(1 row)' lines and column headers for phone width (the withdraw output caption says so). SANDBOX CAVEAT: postgresql-18 depends on liburing2 from archive.ubuntu.com, which is blocked here, and installing a stub system package was not permitted this run. I extracted the official PGDG postgresql-18, postgresql-client-18 and libpq5 .deb files into a scratch directory and ran initdb/pg_ctl/psql from there with a stub liburing on LD_LIBRARY_PATH (server used the default io_method=worker). Same 18.7 binaries, so PL/pgSQL behaviour and messages are unaffected; no OS paths or service commands appear in the article. EDITOR CHECKS: (1) 'SQ001' is an invented custom SQLSTATE; the docs allow any five digits/upper-case letters except 00000 and advise against codes ending in 000. (2) The Oracle mapping table is from general Oracle knowledge, not the PostgreSQL docs (except the STRICT note, which the docs state matches Oracle). (3) The 'cannot commit while a subtransaction is active' and 'invalid transaction termination' messages were reproduced, not copied from docs. (4) Performance claim is the doc's own tip ('significantly more expensive'); no benchmark numbers given. Topic chosen from Google autocomplete ('postgresql exception handling', '... example', '... in function', 'plpgsql exception handling'); no existing article or draft covers it.",
+ "generatedAt": "2026-11-14T13:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL exception handling in PL/pgSQL works with a <code class=\"inline-code\">BEGIN ... EXCEPTION WHEN ... THEN ... END</code> block. When a statement inside the block fails, PostgreSQL stops running the block, undoes every change the block made, and runs the first <code class=\"inline-code\">WHEN</code> handler that matches the error. If no handler matches, the error goes up to the caller as if the block had no exception section at all."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial shows every part of that with runnable examples on PostgreSQL 18: catching specific errors, reading <code class=\"inline-code\">SQLSTATE</code> and <code class=\"inline-code\">SQLERRM</code>, getting the constraint and table name with <code class=\"inline-code\">GET STACKED DIAGNOSTICS</code>, raising your own errors with <code class=\"inline-code\">RAISE EXCEPTION</code>, and processing a batch where bad rows are logged instead of stopping the whole load. If you come from Oracle PL/SQL, there is a mapping table near the end."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How exception handling works in PL/pgSQL",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Any PL/pgSQL block can have an EXCEPTION section. This is the general shape:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "[ DECLARE\n    declarations ]\nBEGIN\n    statements\nEXCEPTION\n    WHEN condition [ OR condition ... ] THEN\n        handler_statements\n    [ WHEN condition [ OR condition ... ] THEN\n        handler_statements ... ]\nEND;",
+    "caption": "Syntax of a block with an exception handler"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Four rules explain almost everything you will see in this article:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>The block is undone, the variables are not.</b> When an error is caught, all database changes made inside that block are rolled back, but local variables keep the values they had when the error happened.",
+      "items": []
+     },
+     {
+      "content": "<b>The first matching handler wins.</b> PostgreSQL checks the <code class=\"inline-code\">WHEN</code> clauses from top to bottom and runs only the first one that matches.",
+      "items": []
+     },
+     {
+      "content": "<b>Unmatched errors keep going.</b> If no handler matches, the error moves to the enclosing block, then to the caller, and finally aborts the transaction.",
+      "items": []
+     },
+     {
+      "content": "<b>An error inside a handler is not caught by the same handler.</b> It goes out to an outer block, if there is one.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Under the hood, a block with an EXCEPTION section runs as a <b>subtransaction</b>. Think of it as an automatic savepoint: PostgreSQL marks a point when the block starts and rolls back to that mark when an error is caught. This is why PL/pgSQL has no <code class=\"inline-code\">SAVEPOINT</code> command; a block with a handler does the same job."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">condition</code> can be an error name such as <code class=\"inline-code\">unique_violation</code> or <code class=\"inline-code\">division_by_zero</code>, a five-character SQLSTATE code such as <code class=\"inline-code\">'23505'</code>, a whole category name such as <code class=\"inline-code\">integrity_constraint_violation</code>, or <code class=\"inline-code\">OTHERS</code>. Names are not case-sensitive. <code class=\"inline-code\">OTHERS</code> matches every error except <code class=\"inline-code\">query_canceled</code> and <code class=\"inline-code\">assert_failure</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small payments schema in a scratch database. The <code class=\"inline-code\">balance_not_negative</code> check constraint and the primary and foreign keys give us real errors to catch. <code class=\"inline-code\">audit_log</code> and <code class=\"inline-code\">error_log</code> are simple logging tables."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE accounts (\n  account_id  int PRIMARY KEY,\n  owner_name  text NOT NULL,\n  balance     numeric(12,2) NOT NULL\n              CONSTRAINT balance_not_negative CHECK (balance >= 0)\n);\n\nCREATE TABLE payments (\n  payment_id  int PRIMARY KEY,\n  account_id  int NOT NULL REFERENCES accounts (account_id),\n  amount      numeric(12,2) NOT NULL\n);\n\nCREATE TABLE audit_log (\n  log_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  note       text NOT NULL\n);\n\nCREATE TABLE error_log (\n  error_id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  payment_id      int,\n  sql_state       text,\n  constraint_name text,\n  message         text,\n  logged_at       timestamptz NOT NULL DEFAULT now()\n);\n\nINSERT INTO accounts VALUES\n  (1, 'Asha',  5000.00),\n  (2, 'Ravi',   300.00),\n  (3, 'Meera', 1200.00);\n\nINSERT INTO payments VALUES (101, 1, 250.00);",
+    "caption": "Sample tables and data"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLE\nCREATE TABLE\nCREATE TABLE\nCREATE TABLE\nINSERT 0 3\nINSERT 0 1",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before writing any handler, find out which error code you need to catch. In psql, <code class=\"inline-code\">\\set VERBOSITY verbose</code> prints the SQLSTATE in front of every error message:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\set VERBOSITY verbose\nINSERT INTO payments VALUES (101, 2, 99.00);",
+    "caption": "Show the SQLSTATE of an error in psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  23505: duplicate key value violates unique constraint \"payments_pkey\"\nDETAIL:  Key (payment_id)=(101) already exists.\nSCHEMA NAME:  public\nTABLE NAME:  payments\nCONSTRAINT NAME:  payments_pkey\nLOCATION:  _bt_check_unique, nbtinsert.c:666",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Code <code class=\"inline-code\">23505</code> is <code class=\"inline-code\">unique_violation</code>. The full list of codes and names is in Appendix A of the PostgreSQL documentation (\"PostgreSQL Error Codes\"). The codes used in this article are:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "SQLSTATE",
+      "Condition name",
+      "Typical cause"
+     ],
+     [
+      "23505",
+      "unique_violation",
+      "Duplicate primary key or unique value"
+     ],
+     [
+      "23503",
+      "foreign_key_violation",
+      "Parent row does not exist"
+     ],
+     [
+      "23514",
+      "check_violation",
+      "CHECK constraint failed"
+     ],
+     [
+      "23502",
+      "not_null_violation",
+      "NULL in a NOT NULL column"
+     ],
+     [
+      "22003",
+      "numeric_value_out_of_range",
+      "Value too large for the numeric type"
+     ],
+     [
+      "22012",
+      "division_by_zero",
+      "Division by zero"
+     ],
+     [
+      "22023",
+      "invalid_parameter_value",
+      "Bad argument (useful for your own errors)"
+     ],
+     [
+      "P0001",
+      "raise_exception",
+      "Default code of RAISE EXCEPTION"
+     ],
+     [
+      "P0002",
+      "no_data_found",
+      "SELECT INTO STRICT found no row"
+     ],
+     [
+      "57014",
+      "query_canceled",
+      "Statement timeout or pg_cancel_backend"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Type <code class=\"inline-code\">\\set VERBOSITY default</code> to go back to normal messages."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Catch a specific error",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This function inserts a payment and turns the two errors we expect into friendly messages. Everything else is left alone on purpose."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE OR REPLACE FUNCTION add_payment(p_id int, p_account int, p_amount numeric)\nRETURNS text\nLANGUAGE plpgsql\nAS $$\nBEGIN\n  INSERT INTO payments (payment_id, account_id, amount)\n  VALUES (p_id, p_account, p_amount);\n  RETURN 'payment ' || p_id || ' saved';\nEXCEPTION\n  WHEN unique_violation THEN\n    RETURN 'payment ' || p_id || ' already exists';\n  WHEN foreign_key_violation THEN\n    RETURN 'account ' || p_account || ' does not exist';\nEND;\n$$;\n\nSELECT add_payment(102, 1, 400.00);\nSELECT add_payment(101, 1, 400.00);\nSELECT add_payment(103, 99, 50.00);",
+    "caption": "Handle unique_violation and foreign_key_violation"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "    add_payment\n-------------------\n payment 102 saved\n\n        add_payment\n----------------------------\n payment 101 already exists\n\n        add_payment\n---------------------------\n account 99 does not exist",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The first call succeeds. The second hits the primary key and the third hits the foreign key; both are caught and the function returns normally, so the caller's transaction carries on."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now pass a NULL payment id. No handler matches a NOT NULL error, so it goes straight to the caller:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT add_payment(NULL, 1, 50.00);",
+    "caption": "An error with no matching handler"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  null value in column \"payment_id\" of relation \"payments\" violates not-null constraint\nDETAIL:  Failing row contains (null, 1, 50.00).\nCONTEXT:  SQL statement \"INSERT INTO payments (payment_id, account_id, amount)\n  VALUES (p_id, p_account, p_amount)\"\nPL/pgSQL function add_payment(integer,integer,numeric) line 3 at SQL statement",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the behaviour you want. Catch only the errors you know how to handle; let the rest fail loudly. The <code class=\"inline-code\">CONTEXT</code> lines tell you the function and line number where the error happened."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What gets rolled back when an error is caught",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This rule surprises many developers, so let us prove it. The function below writes an audit row in the outer block, then debits the account and records a payment in an inner block. The variable <code class=\"inline-code\">v_steps</code> counts how many statements in the inner block finished."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE OR REPLACE FUNCTION withdraw(p_account int, p_amount numeric)\nRETURNS text\nLANGUAGE plpgsql\nAS $$\nDECLARE\n  v_steps int := 0;\nBEGIN\n  INSERT INTO audit_log (note)\n  VALUES ('withdraw ' || p_amount || ' from account ' || p_account);\n\n  BEGIN\n    UPDATE accounts SET balance = balance - p_amount\n     WHERE account_id = p_account;\n    v_steps := v_steps + 1;\n\n    INSERT INTO payments (payment_id, account_id, amount)\n    VALUES (900 + p_account, p_account, -p_amount);\n    v_steps := v_steps + 1;\n  EXCEPTION\n    WHEN OTHERS THEN\n      RETURN format('failed after %s step(s): SQLSTATE %s, %s',\n                    v_steps, SQLSTATE, SQLERRM);\n  END;\n\n  RETURN 'withdrawn ' || p_amount;\nEND;\n$$;\n\nSELECT withdraw(2, 1000.00);\nSELECT withdraw(3, 200.00);\nSELECT withdraw(3, 200.00);",
+    "caption": "Inner block with a handler"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " failed after 0 step(s): SQLSTATE 23514, new row for relation \"accounts\" violates check constraint \"balance_not_negative\"\n\n withdrawn 200.00\n\n failed after 1 step(s): SQLSTATE 23505, duplicate key value violates unique constraint \"payments_pkey\"",
+    "caption": "Output (column headers removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Inside a handler, <code class=\"inline-code\">SQLSTATE</code> holds the error code and <code class=\"inline-code\">SQLERRM</code> holds the message. Look closely at the third call: the <code class=\"inline-code\">UPDATE</code> worked (<code class=\"inline-code\">v_steps</code> is 1), then the <code class=\"inline-code\">INSERT</code> failed because payment 903 already existed. Now check the data:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT account_id, balance FROM accounts ORDER BY account_id;\nSELECT note FROM audit_log ORDER BY log_id;",
+    "caption": "Check what survived"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " account_id | balance\n------------+---------\n          1 | 5000.00\n          2 |  300.00\n          3 | 1000.00\n(3 rows)\n\n              note\n---------------------------------\n withdraw 1000.00 from account 2\n withdraw 200.00 from account 3\n withdraw 200.00 from account 3\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Meera (account 3) has 1000.00: only the successful second call took money out. The debit from the third call was rolled back together with its failed insert, because both were in the inner block. The three audit rows survived because they were written in the outer block, before the inner block started. And the variable kept its value of 1, even though the update it counted was undone."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "Put only the statements that must succeed or fail together inside the block with the handler. Anything you want to keep, such as an audit row, belongs outside it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Get full error details with GET STACKED DIAGNOSTICS",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">SQLSTATE</code> and <code class=\"inline-code\">SQLERRM</code> are often enough. When you need more, such as which constraint failed or the call stack, use <code class=\"inline-code\">GET STACKED DIAGNOSTICS</code> inside the handler. This function logs every failure with its details:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE OR REPLACE FUNCTION add_payment_logged(p_id int, p_account int, p_amount numeric)\nRETURNS boolean\nLANGUAGE plpgsql\nAS $$\nDECLARE\n  v_state      text;\n  v_constraint text;\n  v_table      text;\n  v_message    text;\n  v_detail     text;\n  v_context    text;\nBEGIN\n  INSERT INTO payments (payment_id, account_id, amount)\n  VALUES (p_id, p_account, p_amount);\n  RETURN true;\nEXCEPTION\n  WHEN OTHERS THEN\n    GET STACKED DIAGNOSTICS\n      v_state      = RETURNED_SQLSTATE,\n      v_constraint = CONSTRAINT_NAME,\n      v_table      = TABLE_NAME,\n      v_message    = MESSAGE_TEXT,\n      v_detail     = PG_EXCEPTION_DETAIL,\n      v_context    = PG_EXCEPTION_CONTEXT;\n\n    INSERT INTO error_log (payment_id, sql_state, constraint_name, message)\n    VALUES (p_id, v_state, v_constraint, v_message);\n\n    RAISE NOTICE 'table=%, detail=%', v_table, v_detail;\n    RAISE NOTICE 'context=%', v_context;\n    RETURN false;\nEND;\n$$;\n\nSELECT add_payment_logged(104, 7, 75.00);\nSELECT add_payment_logged(105, 2, 12345678901.50);",
+    "caption": "Capture error details and log them"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "NOTICE:  table=payments, detail=Key (account_id)=(7) is not present in table \"accounts\".\nNOTICE:  context=SQL statement \"INSERT INTO payments (payment_id, account_id, amount)\n  VALUES (p_id, p_account, p_amount)\"\nPL/pgSQL function add_payment_logged(integer,integer,numeric) line 10 at SQL statement\n add_payment_logged\n--------------------\n f\n\nNOTICE:  table=, detail=A field with precision 12, scale 2 must round to an absolute value less than 10^10.\nNOTICE:  context=SQL statement \"INSERT INTO payments (payment_id, account_id, amount)\n  VALUES (p_id, p_account, p_amount)\"\nPL/pgSQL function add_payment_logged(integer,integer,numeric) line 10 at SQL statement\n add_payment_logged\n--------------------\n f",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT payment_id, sql_state, constraint_name, message FROM error_log ORDER BY error_id;",
+    "caption": "The error log"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "payment_id",
+      "sql_state",
+      "constraint_name",
+      "message"
+     ],
+     [
+      "104",
+      "23503",
+      "payments_account_id_fkey",
+      "insert or update on table \"payments\" violates foreign key constraint \"payments_account_id_fkey\""
+     ],
+     [
+      "105",
+      "22003",
+      "",
+      "numeric field overflow"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The numeric overflow is not linked to a table or constraint, so <code class=\"inline-code\">TABLE_NAME</code> and <code class=\"inline-code\">CONSTRAINT_NAME</code> come back as empty strings, not NULL. The log rows were kept because the <code class=\"inline-code\">INSERT INTO error_log</code> runs in the handler, after the block's own work was rolled back, and the function then returns normally."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The items you can read are:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Item",
+      "What it returns"
+     ],
+     [
+      "RETURNED_SQLSTATE",
+      "The SQLSTATE error code"
+     ],
+     [
+      "MESSAGE_TEXT",
+      "The primary error message"
+     ],
+     [
+      "PG_EXCEPTION_DETAIL",
+      "The DETAIL line, if any"
+     ],
+     [
+      "PG_EXCEPTION_HINT",
+      "The HINT line, if any"
+     ],
+     [
+      "PG_EXCEPTION_CONTEXT",
+      "The call stack where the error happened"
+     ],
+     [
+      "COLUMN_NAME, CONSTRAINT_NAME, TABLE_NAME, SCHEMA_NAME",
+      "The related object, if any"
+     ],
+     [
+      "PG_DATATYPE_NAME",
+      "The related data type, if any"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Raise your own errors with RAISE EXCEPTION",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Business rules need their own errors. <code class=\"inline-code\">RAISE EXCEPTION</code> stops the code and aborts the transaction unless something catches it. Add <code class=\"inline-code\">USING</code> to set the error code, a <code class=\"inline-code\">DETAIL</code> line and a <code class=\"inline-code\">HINT</code>. Without <code class=\"inline-code\">ERRCODE</code>, the code is <code class=\"inline-code\">P0001</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE OR REPLACE PROCEDURE transfer(p_from int, p_to int, p_amount numeric)\nLANGUAGE plpgsql\nAS $$\nDECLARE\n  v_balance numeric;\nBEGIN\n  IF p_amount <= 0 THEN\n    RAISE EXCEPTION 'transfer amount must be positive, got %', p_amount\n      USING ERRCODE = 'invalid_parameter_value';\n  END IF;\n\n  SELECT balance INTO v_balance\n    FROM accounts WHERE account_id = p_from FOR UPDATE;\n\n  IF NOT FOUND THEN\n    RAISE EXCEPTION 'account % not found', p_from\n      USING ERRCODE = 'no_data_found';\n  END IF;\n\n  IF v_balance < p_amount THEN\n    RAISE EXCEPTION 'insufficient funds in account %', p_from\n      USING ERRCODE = 'SQ001',\n            DETAIL  = format('balance %s, requested %s', v_balance, p_amount),\n            HINT    = 'Reduce the amount or top up the account first.';\n  END IF;\n\n  UPDATE accounts SET balance = balance - p_amount WHERE account_id = p_from;\n  UPDATE accounts SET balance = balance + p_amount WHERE account_id = p_to;\nEND;\n$$;\n\nCALL transfer(2, 1, 500.00);\nCALL transfer(1, 2, -5);\nCALL transfer(42, 2, 10);",
+    "caption": "A procedure that raises its own errors"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  insufficient funds in account 2\nDETAIL:  balance 300.00, requested 500.00\nHINT:  Reduce the amount or top up the account first.\nCONTEXT:  PL/pgSQL function transfer(integer,integer,numeric) line 19 at RAISE\nERROR:  transfer amount must be positive, got -5\nCONTEXT:  PL/pgSQL function transfer(integer,integer,numeric) line 6 at RAISE\nERROR:  account 42 not found\nCONTEXT:  PL/pgSQL function transfer(integer,integer,numeric) line 14 at RAISE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each <code class=\"inline-code\">%</code> in the message is replaced by the next argument. <code class=\"inline-code\">SQ001</code> is a code we made up for \"insufficient funds\". PostgreSQL accepts any five characters made of digits and upper-case letters other than <code class=\"inline-code\">00000</code>; avoid codes ending in <code class=\"inline-code\">000</code>, because those are category codes. Applications can now react to <code class=\"inline-code\">SQ001</code> without parsing the message text."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Callers catch a custom code with <code class=\"inline-code\">WHEN SQLSTATE</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DO $$\nBEGIN\n  CALL transfer(2, 3, 9999.00);\nEXCEPTION\n  WHEN SQLSTATE 'SQ001' THEN\n    RAISE NOTICE 'caught: %', SQLERRM;\nEND;\n$$;",
+    "caption": "Catch a custom SQLSTATE"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "NOTICE:  caught: insufficient funds in account 2\nDO",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "Levels below <code class=\"inline-code\">EXCEPTION</code> (<code class=\"inline-code\">DEBUG</code>, <code class=\"inline-code\">LOG</code>, <code class=\"inline-code\">INFO</code>, <code class=\"inline-code\">NOTICE</code>, <code class=\"inline-code\">WARNING</code>) only print a message and never stop the code. Whether you see them depends on <code class=\"inline-code\">client_min_messages</code> and <code class=\"inline-code\">log_min_messages</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Re-raise an error with RAISE",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Sometimes you want to do something when an error happens and still fail. A bare <code class=\"inline-code\">RAISE;</code> inside a handler throws the same error again, with its original code and message. But watch what happens to the log row:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE OR REPLACE FUNCTION add_payment_strict(p_id int, p_account int, p_amount numeric)\nRETURNS void\nLANGUAGE plpgsql\nAS $$\nBEGIN\n  INSERT INTO payments (payment_id, account_id, amount)\n  VALUES (p_id, p_account, p_amount);\nEXCEPTION\n  WHEN OTHERS THEN\n    INSERT INTO error_log (payment_id, sql_state, message)\n    VALUES (p_id, SQLSTATE, SQLERRM);\n    RAISE;\nEND;\n$$;\n\nSELECT count(*) FROM error_log;\nSELECT add_payment_strict(101, 1, 10.00);\nSELECT count(*) FROM error_log;",
+    "caption": "Log and re-raise"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " count\n-------\n     2\n\nERROR:  duplicate key value violates unique constraint \"payments_pkey\"\nDETAIL:  Key (payment_id)=(101) already exists.\nCONTEXT:  SQL statement \"INSERT INTO payments (payment_id, account_id, amount)\n  VALUES (p_id, p_account, p_amount)\"\nPL/pgSQL function add_payment_strict(integer,integer,numeric) line 3 at SQL statement\n\n count\n-------\n     2",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The count is still 2. The re-raised error aborted the caller's transaction, and the log insert was part of that transaction, so it was rolled back too. Logging inside the database and then failing does not leave a trace. If you must keep the log row, log from the application after the rollback, or return a status instead of re-raising. PostgreSQL has no autonomous transactions like Oracle's <code class=\"inline-code\">PRAGMA AUTONOMOUS_TRANSACTION</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Skip bad rows in a batch load",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A common real job: load rows from a staging table, keep the good ones, and log the bad ones. Wrap each row in its own block so one bad row does not undo the others."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE payment_staging (\n  payment_id int,\n  account_id int,\n  amount     numeric\n);\n\nINSERT INTO payment_staging VALUES\n  (201, 1, 100.00),\n  (202, 9, 50.00),\n  (203, 2, 75.00),\n  (101, 3, 20.00),\n  (204, 3, 12345678901.50);\n\nCREATE OR REPLACE PROCEDURE load_payments()\nLANGUAGE plpgsql\nAS $$\nDECLARE\n  r      record;\n  v_ok   int := 0;\n  v_bad  int := 0;\nBEGIN\n  FOR r IN SELECT * FROM payment_staging ORDER BY payment_id LOOP\n    BEGIN\n      INSERT INTO payments (payment_id, account_id, amount)\n      VALUES (r.payment_id, r.account_id, r.amount);\n      v_ok := v_ok + 1;\n    EXCEPTION\n      WHEN unique_violation OR foreign_key_violation\n           OR numeric_value_out_of_range THEN\n        INSERT INTO error_log (payment_id, sql_state, message)\n        VALUES (r.payment_id, SQLSTATE, SQLERRM);\n        v_bad := v_bad + 1;\n    END;\n  END LOOP;\n  RAISE NOTICE 'loaded %, rejected %', v_ok, v_bad;\nEND;\n$$;\n\nCALL load_payments();",
+    "caption": "One block per row"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "NOTICE:  loaded 2, rejected 3\nCALL",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT payment_id, sql_state, message\n  FROM error_log\n WHERE payment_id IN (101, 202, 204)\n ORDER BY error_id DESC\n LIMIT 3;",
+    "caption": "Rows that were rejected"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "payment_id",
+      "sql_state",
+      "message"
+     ],
+     [
+      "204",
+      "22003",
+      "numeric field overflow"
+     ],
+     [
+      "202",
+      "23503",
+      "insert or update on table \"payments\" violates foreign key constraint \"payments_account_id_fkey\""
+     ],
+     [
+      "101",
+      "23505",
+      "duplicate key value violates unique constraint \"payments_pkey\""
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Payments 201 and 203 were loaded; the other three were logged with their reason. Note the <code class=\"inline-code\">OR</code> that lets one handler cover several conditions. Any other error, such as a NOT NULL violation, still stops the whole load, which is usually what you want for an error you did not expect."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For a large load you may want to <code class=\"inline-code\">COMMIT</code> as you go. In a procedure called with <code class=\"inline-code\">CALL</code>, put the <code class=\"inline-code\">COMMIT</code> <i>outside</i> the inner block, after <code class=\"inline-code\">END;</code> and before <code class=\"inline-code\">END LOOP;</code>. A <code class=\"inline-code\">COMMIT</code> inside a block that has an EXCEPTION section fails, as the next section shows. To learn when to use a procedure rather than a function, see <a href=\"/posts/postgresql/postgresql-function-vs-procedure/\">PostgreSQL function vs procedure</a>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "1. COMMIT inside a block with a handler",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DO $$\nBEGIN\n  INSERT INTO audit_log (note) VALUES ('raw commit test');\n  COMMIT;\nEXCEPTION\n  WHEN division_by_zero THEN\n    NULL;\nEND;\n$$;",
+    "caption": "This fails"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  cannot commit while a subtransaction is active\nCONTEXT:  PL/pgSQL function inline_code_block line 4 at COMMIT",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The block is a subtransaction, so the transaction cannot end inside it. Move the <code class=\"inline-code\">COMMIT</code> to a block without an EXCEPTION section. Also remember that transaction control works only in a <code class=\"inline-code\">CALL</code> or <code class=\"inline-code\">DO</code> run outside an explicit transaction: running <code class=\"inline-code\">CALL</code> after <code class=\"inline-code\">BEGIN;</code> gives <code class=\"inline-code\">ERROR:  invalid transaction termination</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "2. WHEN OTHERS THEN NULL",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A handler that catches everything and does nothing hides real bugs: the function \"succeeds\" and the data is silently missing. Catch named conditions, or at least log <code class=\"inline-code\">SQLSTATE</code> and <code class=\"inline-code\">SQLERRM</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "3. Expecting OTHERS to catch a timeout",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET statement_timeout = '1s';\nDO $$\nBEGIN\n  PERFORM pg_sleep(5);\nEXCEPTION\n  WHEN OTHERS THEN\n    RAISE NOTICE 'caught: %', SQLERRM;\nEND;\n$$;\nRESET statement_timeout;",
+    "caption": "OTHERS does not catch query_canceled"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  canceling statement due to statement timeout\nCONTEXT:  SQL statement \"SELECT pg_sleep(5)\"\nPL/pgSQL function inline_code_block line 3 at PERFORM",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">OTHERS</code> deliberately skips <code class=\"inline-code\">query_canceled</code> so that a timeout or a cancel request from a DBA always stops your code. You can trap it by name, but that is rarely a good idea."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "4. Using SQLERRM outside a handler",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">SQLSTATE</code> and <code class=\"inline-code\">SQLERRM</code> exist only inside an exception handler. Outside one, <code class=\"inline-code\">RAISE NOTICE '%', SQLERRM;</code> fails with <code class=\"inline-code\">ERROR:  column \"sqlerrm\" does not exist</code>. Copy the values into your own variables in the handler if you need them later."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "5. Expecting SELECT INTO to fail when no row is found",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Oracle, <code class=\"inline-code\">SELECT ... INTO</code> raises <code class=\"inline-code\">NO_DATA_FOUND</code>. In PL/pgSQL it does not: the variable is set to NULL and <code class=\"inline-code\">FOUND</code> becomes false. Add <code class=\"inline-code\">STRICT</code> to get the Oracle behaviour:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE OR REPLACE FUNCTION owner_of(p_account int)\nRETURNS text\nLANGUAGE plpgsql\nAS $$\nDECLARE\n  v_owner text;\nBEGIN\n  SELECT owner_name INTO STRICT v_owner\n    FROM accounts WHERE account_id = p_account;\n  RETURN v_owner;\nEXCEPTION\n  WHEN no_data_found THEN\n    RETURN 'no such account';\nEND;\n$$;\n\nSELECT owner_of(1), owner_of(42);",
+    "caption": "SELECT INTO STRICT raises no_data_found"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " owner_of |    owner_of\n----------+-----------------\n Asha     | no such account\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With <code class=\"inline-code\">STRICT</code>, more than one row raises <code class=\"inline-code\">too_many_rows</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Oracle PL/SQL to PL/pgSQL mapping",
+    "level": 2
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Oracle PL/SQL",
+      "PostgreSQL PL/pgSQL"
+     ],
+     [
+      "EXCEPTION WHEN OTHERS THEN",
+      "EXCEPTION WHEN OTHERS THEN (does not catch query_canceled)"
+     ],
+     [
+      "SQLCODE (number)",
+      "SQLSTATE (five-character text)"
+     ],
+     [
+      "SQLERRM",
+      "SQLERRM"
+     ],
+     [
+      "RAISE_APPLICATION_ERROR(-20001, 'msg')",
+      "RAISE EXCEPTION 'msg' USING ERRCODE = 'SQ001'"
+     ],
+     [
+      "PRAGMA EXCEPTION_INIT",
+      "WHEN SQLSTATE '23505' or the condition name"
+     ],
+     [
+      "RAISE; (re-raise)",
+      "RAISE;"
+     ],
+     [
+      "SAVEPOINT / ROLLBACK TO in PL/SQL",
+      "A nested BEGIN ... EXCEPTION ... END block"
+     ],
+     [
+      "SELECT INTO raises NO_DATA_FOUND",
+      "Only with SELECT INTO STRICT"
+     ],
+     [
+      "DBMS_UTILITY.FORMAT_ERROR_BACKTRACE",
+      "GET STACKED DIAGNOSTICS ... PG_EXCEPTION_CONTEXT"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "The documentation warns that a block with an EXCEPTION clause is significantly more expensive to enter and exit than a block without one. Do not add a handler \"just in case\".",
+      "items": []
+     },
+     {
+      "content": "Check for expected conditions before they become errors. <code class=\"inline-code\">IF NOT FOUND</code> after a plain <code class=\"inline-code\">SELECT INTO</code> is cheaper than catching <code class=\"inline-code\">no_data_found</code>.",
+      "items": []
+     },
+     {
+      "content": "For insert-or-update logic, use <code class=\"inline-code\">INSERT ... ON CONFLICT</code> instead of catching <code class=\"inline-code\">unique_violation</code>. The documentation itself recommends this; see <a href=\"/posts/postgresql/postgresql-upsert-on-conflict/\">PostgreSQL upsert with ON CONFLICT</a>.",
+      "items": []
+     },
+     {
+      "content": "The row-by-row pattern above is fine for thousands of rows with occasional errors. For millions of clean rows, a single set-based <code class=\"inline-code\">INSERT ... SELECT</code> is much faster; validate the data first and use the per-row loop only for the rows that fail.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I catch all exceptions in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">EXCEPTION WHEN OTHERS THEN</code>. It catches every error except <code class=\"inline-code\">query_canceled</code> and <code class=\"inline-code\">assert_failure</code>. Always record <code class=\"inline-code\">SQLSTATE</code> and <code class=\"inline-code\">SQLERRM</code> in the handler so the error is not lost."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does an exception roll back the whole transaction in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An uncaught error aborts the whole transaction. A caught error rolls back only the changes made inside the block that has the handler; work done before the block, in the same transaction, is kept."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I get the error message and line number in PL/pgSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Inside the handler, <code class=\"inline-code\">SQLERRM</code> gives the message. <code class=\"inline-code\">GET STACKED DIAGNOSTICS v = PG_EXCEPTION_CONTEXT</code> gives the call stack, including the function name and line number where the error happened."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the PostgreSQL equivalent of RAISE_APPLICATION_ERROR?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">RAISE EXCEPTION 'message' USING ERRCODE = 'SQ001'</code>, optionally with <code class=\"inline-code\">DETAIL</code> and <code class=\"inline-code\">HINT</code>. Without <code class=\"inline-code\">ERRCODE</code> the error code is <code class=\"inline-code\">P0001</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I use exception handling in a plain SQL function?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. <code class=\"inline-code\">LANGUAGE sql</code> functions have no EXCEPTION section. Use <code class=\"inline-code\">LANGUAGE plpgsql</code>, or a <code class=\"inline-code\">DO</code> block for one-off scripts."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Wrap risky statements in <code class=\"inline-code\">BEGIN ... EXCEPTION WHEN ... THEN ... END</code>; the first matching handler runs.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "A caught error undoes the block's changes but keeps local variables and earlier work.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Find the code with <code class=\"inline-code\">\\set VERBOSITY verbose</code> and catch named conditions instead of <code class=\"inline-code\">OTHERS</code> where you can.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">SQLSTATE</code>, <code class=\"inline-code\">SQLERRM</code> and <code class=\"inline-code\">GET STACKED DIAGNOSTICS</code> to log what went wrong.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Raise business errors with <code class=\"inline-code\">RAISE EXCEPTION ... USING ERRCODE, DETAIL, HINT</code>; re-raise with a bare <code class=\"inline-code\">RAISE;</code>.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Remember that a re-raised error also rolls back any log row written in the handler.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Never <code class=\"inline-code\">COMMIT</code> inside a block that has an EXCEPTION section, and add <code class=\"inline-code\">STRICT</code> when you want <code class=\"inline-code\">SELECT INTO</code> to fail on no rows.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "A PL/pgSQL handler can log an error, re-raise it, and still lose the log row. Here is why.\n\nPostgreSQL exception handling in 5 points:\n\n→ A BEGIN ... EXCEPTION ... END block runs as a subtransaction. When an error is caught, every change made inside that block is undone, but local variables keep their values.\n\n→ Find the code to catch with \\set VERBOSITY verbose in psql. A duplicate key shows 23505, which you catch as WHEN unique_violation.\n\n→ GET STACKED DIAGNOSTICS gives you CONSTRAINT_NAME, TABLE_NAME, PG_EXCEPTION_DETAIL and the call stack, so your error log says exactly what failed.\n\n→ RAISE EXCEPTION 'insufficient funds' USING ERRCODE = 'SQ001', HINT = '...' is the PL/pgSQL answer to RAISE_APPLICATION_ERROR.\n\n→ Coming from Oracle? SELECT INTO does not raise NO_DATA_FOUND unless you write SELECT INTO STRICT. And COMMIT inside a block with a handler fails with \"cannot commit while a subtransaction is active\".\n\nBonus: WHEN OTHERS does not catch a statement timeout. That is by design.\n\nWhich of these caught you out when moving from Oracle PL/SQL to PL/pgSQL?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #PLpgSQL #SQL #Database",
+  "slides": [
+   {
+    "title": "PostgreSQL Exception Handling",
+    "body": "Catch, log and raise errors in PL/pgSQL, with real output from PostgreSQL 18"
+   },
+   {
+    "title": "The basic block",
+    "points": [
+     "The first matching WHEN handler runs",
+     "Unmatched errors go up to the caller"
+    ],
+    "code": "BEGIN\n  INSERT INTO payments\n  VALUES (p_id, p_acct, p_amt);\nEXCEPTION\n  WHEN unique_violation THEN\n    RETURN 'already exists';\nEND;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "What a caught error undoes",
+    "points": [
+     "All changes made inside the block are rolled back",
+     "Local variables keep their values",
+     "Work done before the block is kept"
+    ]
+   },
+   {
+    "title": "Log the details",
+    "code": "EXCEPTION WHEN OTHERS THEN\n  GET STACKED DIAGNOSTICS\n    v_state = RETURNED_SQLSTATE,\n    v_cons  = CONSTRAINT_NAME,\n    v_msg   = MESSAGE_TEXT;\n  INSERT INTO error_log\n  VALUES (v_state, v_cons, v_msg);",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Raise your own error",
+    "code": "RAISE EXCEPTION 'insufficient funds %',\n  p_from\n  USING ERRCODE = 'SQ001',\n        HINT = 'Top up first.';",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Traps for Oracle developers",
+    "points": [
+     "SELECT INTO needs STRICT to raise no_data_found",
+     "No COMMIT inside a block with a handler",
+     "A re-raised error rolls back your log row too",
+     "WHEN OTHERS does not catch statement timeouts"
+    ]
+   }
+  ]
+ }
+}

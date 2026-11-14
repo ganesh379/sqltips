@@ -56,3 +56,4 @@
 - 2026-11-13 [Oracle] execute immediate oracle example -> _drafts/2026-11-13-oracle-execute-immediate-oracle-example.json
 - 2026-11-13 [PostgreSQL] pg_basebackup -> _drafts/2026-11-13-postgresql-postgresql-dba-part-18-pg-basebackup.json
 - 2026-11-14 [Oracle] oracle interval partitioning example -> _drafts/2026-11-14-oracle-oracle-interval-partitioning-example.json
+- 2026-11-14 [PostgreSQL] postgresql exception handling -> _drafts/2026-11-14-postgresql-postgresql-exception-handling-plpgsql.json
