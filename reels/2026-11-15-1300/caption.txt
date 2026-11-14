@@ -1,0 +1,13 @@
+From zero to a running PostgreSQL service, on Ubuntu, step by step.
+
+The PostgreSQL docs recommend binary packages for most users; building from source is for people developing PostgreSQL or extensions. On Ubuntu, one command does it: sudo apt install postgresql. Ubuntu snapshots one major version per release, so Ubuntu 24.04 gives you PostgreSQL 16.
+
+Need another major version, like 18? Set up the official PostgreSQL Apt repository (PGDG) and install postgresql-18. Updates then arrive through your normal apt patching.
+
+Prove it is running: pg_lsclusters shows the cluster as online, pg_isready reports accepting connections with exit code 0, and SELECT version(); shows the exact build. The server must run under the PostgreSQL user account, never root. A common PostgreSQL DBA practice is to name the major version in the install, so every server matches your plan.
+
+Episode 13 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #linux #database

@@ -35,6 +35,7 @@ WORDS = {
     "initdb": "init D-B", "createdb": "create D-B", "dropdb": "drop D-B",
     "createuser": "create user", "vacuumdb": "vacuum D-B", "reindexdb": "reindex D-B",
     "pg_ctl": "P-G control", "pg_ctlcluster": "P-G control cluster",
+    "lsclusters": "L-S clusters", "PGDG": "P-G-D-G",
     "fsync": "F-sync", "systemctl": "system control", "sudo": "soo-doo",
     "etcd": "E-T-C-D",
     # acronyms

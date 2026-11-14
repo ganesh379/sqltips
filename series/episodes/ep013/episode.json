@@ -1,0 +1,515 @@
+{
+ "ep": 13,
+ "total": 140,
+ "title": "Install PostgreSQL on Linux: Packages and Service",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "From zero to a running PostgreSQL service.",
+   "cap": "From zero to a *running* *PostgreSQL* service."
+  },
+  {
+   "say": "This is episode thirteen of the PostgreSQL DBA series. Today: install PostgreSQL on Ubuntu from packages, then prove the service is running.",
+   "cap": "Episode 13: *install* on Ubuntu, then *prove* it runs.",
+   "cue": "prove"
+  },
+  {
+   "say": "The PostgreSQL docs say binary packages are the recommended way to install, for most users.",
+   "cap": "Docs: *binary* *packages* are the recommended way.",
+   "cue": "recommended"
+  },
+  {
+   "say": "Building from source is only recommended for people developing PostgreSQL or extensions.",
+   "cap": "*Source* builds: for PostgreSQL and *extension* developers.",
+   "cue": "source"
+  },
+  {
+   "say": "Ubuntu includes PostgreSQL by default, in its own package archive.",
+   "cap": "Ubuntu *includes* PostgreSQL by *default.*",
+   "cue": "default"
+  },
+  {
+   "say": "One command installs it: sudo apt install postgresql.",
+   "cap": "*sudo apt install postgresql*",
+   "cue": "command"
+  },
+  {
+   "say": "But Ubuntu snapshots one major version for the life of that release.",
+   "cap": "One *major* *version* per Ubuntu release.",
+   "cue": "snapshots"
+  },
+  {
+   "say": "On Ubuntu twenty four point zero four, that is PostgreSQL sixteen.",
+   "cap": "Ubuntu 24.04 ships *PostgreSQL* *16.*",
+   "cue": "sixteen"
+  },
+  {
+   "say": "Want a different major version, like eighteen? Use the official PostgreSQL Apt repository, called PGDG.",
+   "cap": "Other versions: the *PGDG* *Apt* repository.",
+   "cue": "PGDG"
+  },
+  {
+   "say": "The download page gives two commands to set it up. Then you install the package named postgresql eighteen.",
+   "cap": "Set up the repo, then install *postgresql-18.*",
+   "cue": "named"
+  },
+  {
+   "say": "That repository plugs into your normal patch management, with updates for all supported versions.",
+   "cap": "Updates arrive through *normal* *apt* *patching.*",
+   "cue": "updates"
+  },
+  {
+   "say": "Back on our test server. By default on Ubuntu, the package also creates a ready-made cluster called sixteen main.",
+   "cap": "The package creates a cluster: *16/main.*",
+   "cue": "cluster"
+  },
+  {
+   "say": "Ubuntu's pg_lsclusters lists it: version sixteen, port five four three two. Output trimmed.",
+   "cap": "*pg_lsclusters:* version 16, port *5432.*",
+   "cue": "port"
+  },
+  {
+   "say": "In this test container it was down, so we started it with sudo service postgresql start. Now it shows online.",
+   "cap": "*service postgresql start,* then *online.*",
+   "cue": "online"
+  },
+  {
+   "say": "Next, pg_isready asks the server if it is accepting connections. Exit code zero means yes.",
+   "cap": "*pg_isready:* exit code *0* means *accepting.*",
+   "cue": "zero"
+  },
+  {
+   "say": "Then connect as the postgres operating system user, and run SELECT version.",
+   "cap": "Connect as *postgres,* run *SELECT version().*",
+   "cue": "SELECT"
+  },
+  {
+   "say": "We get PostgreSQL sixteen point fifteen, the Ubuntu build. Output trimmed.",
+   "cap": "Running: *PostgreSQL* *16.15,* Ubuntu build.",
+   "cue": "fifteen"
+  },
+  {
+   "say": "Common mistake: assuming apt gives you the newest major version. It gives the one your distribution snapshotted.",
+   "cap": "Myth: apt always gives the *newest* *major.*",
+   "cue": "snapshotted"
+  },
+  {
+   "say": "Another one: running the server as root. The docs say it must run under the PostgreSQL user account, and not by root.",
+   "cap": "Never run the server as *root.*",
+   "cue": "root"
+  },
+  {
+   "say": "The docs say using the package's own startup tooling is much less work than doing it yourself.",
+   "cap": "Use the *package's* own *startup* tooling.",
+   "cue": "tooling"
+  },
+  {
+   "say": "DBA takeaway: a common practice is to name the major version in the install, so every server gets the version you planned.",
+   "cap": "Common practice: *name* the *major* *version.*",
+   "cue": "planned"
+  },
+  {
+   "say": "Recap: install from packages, and check which major version your source gives.",
+   "cap": "Recap: *packages,* and check the *major.*",
+   "cue": "check"
+  },
+  {
+   "say": "Use PGDG for other versions. Verify with pg_lsclusters, pg_isready and SELECT version.",
+   "cap": "*PGDG* for others. *Verify* three ways.",
+   "cue": "Verify"
+  },
+  {
+   "say": "Next up: initializing a PostgreSQL cluster, and what initdb really creates. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *initdb* and the *cluster.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "From zero to a *running* *PostgreSQL* service.",
+   "sub": "Episode 13 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 13 · INSTALLATION & ADMINISTRATION",
+   "title": "Install PostgreSQL on Linux",
+   "sub": "Packages, service checks, version"
+  },
+  {
+   "type": "cards",
+   "from": 2,
+   "to": 4,
+   "heading": "Two ways to install",
+   "columns": 1,
+   "items": [
+    {
+     "at": 2,
+     "icon": "layers",
+     "title": "Binary packages",
+     "text": "Recommended way for users of the system",
+     "color": "green"
+    },
+    {
+     "at": 3,
+     "icon": "wrench",
+     "title": "Build from source",
+     "text": "Recommended only for PostgreSQL or extension developers",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 4,
+   "to": 9,
+   "heading": "Where packages come from",
+   "nodes": [
+    {
+     "id": "ubu",
+     "label": "Ubuntu",
+     "sub": "24.04 ships 16",
+     "x": 290,
+     "y": 540,
+     "w": 380,
+     "h": 150,
+     "icon": "cloud",
+     "color": "orange",
+     "at": 4
+    },
+    {
+     "id": "pgdg",
+     "label": "PGDG repo",
+     "sub": "supported versions",
+     "x": 800,
+     "y": 540,
+     "w": 380,
+     "h": 150,
+     "icon": "cloud",
+     "color": "blue",
+     "at": 8
+    },
+    {
+     "id": "apt",
+     "label": "apt install",
+     "sub": "package manager",
+     "x": 540,
+     "y": 880,
+     "w": 360,
+     "h": 140,
+     "icon": "terminal",
+     "color": "cyan",
+     "at": 5
+    },
+    {
+     "id": "srv",
+     "label": "db1",
+     "sub": "server + client",
+     "x": 540,
+     "y": 1200,
+     "w": 360,
+     "h": 150,
+     "icon": "server",
+     "color": "green",
+     "shape": "db",
+     "at": 5
+    }
+   ],
+   "edges": [
+    {
+     "from": "ubu",
+     "to": "apt",
+     "label": "postgresql",
+     "at": 5,
+     "flow": true,
+     "color": "orange"
+    },
+    {
+     "from": "pgdg",
+     "to": "apt",
+     "label": "postgresql-18",
+     "at": 8,
+     "flow": true,
+     "color": "blue"
+    },
+    {
+     "from": "apt",
+     "to": "srv",
+     "label": "install",
+     "at": 5,
+     "flow": true,
+     "color": "green"
+    }
+   ],
+   "focus": [
+    {
+     "at": 4,
+     "id": "ubu"
+    },
+    {
+     "at": 5,
+     "id": "apt"
+    },
+    {
+     "at": 6,
+     "id": "ubu"
+    },
+    {
+     "at": 7,
+     "id": "srv"
+    },
+    {
+     "at": 8,
+     "id": "pgdg"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 9,
+   "to": 11,
+   "heading": "From the PostgreSQL docs",
+   "title": "postgresql.org/download/linux/ubuntu",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- automated repository setup",
+     "at": 9
+    },
+    {
+     "kind": "cmd",
+     "text": "sudo apt install -y postgresql-common",
+     "at": 9
+    },
+    {
+     "kind": "cmd",
+     "text": "sudo /usr/share/postgresql-common/\\",
+     "at": 9
+    },
+    {
+     "kind": "cmd",
+     "text": "pgdg/apt.postgresql.org.sh",
+     "at": 9,
+     "prompt": "> "
+    },
+    {
+     "kind": "comment",
+     "text": "-- then install the version you want",
+     "at": 9
+    },
+    {
+     "kind": "cmd",
+     "text": "sudo apt update",
+     "at": 9
+    },
+    {
+     "kind": "cmd",
+     "text": "sudo apt install postgresql-18",
+     "at": 9
+    },
+    {
+     "kind": "comment",
+     "text": "-- minor updates: normal apt patching",
+     "at": 10
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 11,
+   "to": 14,
+   "heading": "Check the cluster",
+   "title": "bash: db1 (Ubuntu 24.04)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- after: sudo apt install postgresql",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "text": "pg_lsclusters",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "Ver Cluster Port Status Owner",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "16  main    5432 down   postgres",
+     "at": 11
+    },
+    {
+     "kind": "comment",
+     "text": "-- data and log columns trimmed",
+     "at": 12
+    },
+    {
+     "kind": "cmd",
+     "text": "sudo service postgresql start",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "* Starting PostgreSQL 16 database server",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "   ...done.",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "text": "pg_lsclusters",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "16  main    5432 online postgres",
+     "at": 13
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 14,
+   "to": 17,
+   "heading": "Prove it is running",
+   "title": "bash: db1 (Ubuntu 24.04)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "pg_isready",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "/var/run/postgresql:5432 -",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "  accepting connections",
+     "at": 14
+    },
+    {
+     "kind": "comment",
+     "text": "-- one line, wrapped to fit",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "text": "echo $?",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "0",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "text": "sudo -u postgres psql",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT version();",
+     "at": 15,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "out",
+     "text": " PostgreSQL 16.15 (Ubuntu 16.15-...",
+     "at": 16
+    },
+    {
+     "kind": "comment",
+     "text": "-- rest of the line trimmed",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "(1 row)",
+     "at": 16
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 17,
+   "to": 18,
+   "kind": "myth",
+   "title": "apt gives the newest major",
+   "text": "It gives the major version your distribution snapshotted. Ubuntu 24.04: 16."
+  },
+  {
+   "type": "callout",
+   "from": 18,
+   "to": 19,
+   "kind": "warning",
+   "title": "Never run it as root",
+   "text": "The docs: the server must run under the PostgreSQL user account, not by root."
+  },
+  {
+   "type": "callout",
+   "from": 19,
+   "to": 20,
+   "kind": "fact",
+   "title": "Use the package tooling",
+   "text": "Packages include startup scripts for your OS. The docs call that much less work."
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "tip",
+   "title": "Name the major version",
+   "text": "A common practice: install postgresql-18 by name, so every server matches your plan."
+  },
+  {
+   "type": "checklist",
+   "from": 21,
+   "to": 23,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 21,
+     "title": "Install from packages"
+    },
+    {
+     "at": 21,
+     "title": "Check the major version"
+    },
+    {
+     "at": 22,
+     "title": "PGDG for other versions"
+    },
+    {
+     "at": 22,
+     "title": "pg_lsclusters: online"
+    },
+    {
+     "at": 22,
+     "title": "pg_isready: exit code 0"
+    },
+    {
+     "at": 22,
+     "title": "SELECT version()"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 23,
+   "to": 24,
+   "next": "Ep 14 · Initialize a cluster"
+  }
+ ]
+}
