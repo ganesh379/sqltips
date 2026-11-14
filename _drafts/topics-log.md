@@ -55,3 +55,4 @@
 - 2026-11-12 [PostgreSQL] pg_dump and pg_restore -> _drafts/2026-11-12-postgresql-postgresql-dba-part-17-pg-dump-pg-restore.json
 - 2026-11-13 [Oracle] execute immediate oracle example -> _drafts/2026-11-13-oracle-execute-immediate-oracle-example.json
 - 2026-11-13 [PostgreSQL] pg_basebackup -> _drafts/2026-11-13-postgresql-postgresql-dba-part-18-pg-basebackup.json
+- 2026-11-14 [Oracle] oracle interval partitioning example -> _drafts/2026-11-14-oracle-oracle-interval-partitioning-example.json

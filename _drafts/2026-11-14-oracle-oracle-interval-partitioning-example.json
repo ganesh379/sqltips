@@ -1,0 +1,867 @@
+{
+  "schemaVersion": 1,
+  "title": "Oracle Interval Partitioning Example by Month (Step by Step)",
+  "slug": "oracle-interval-partitioning-example",
+  "category": "plsql",
+  "description": "Oracle interval partitioning example by month: create the table, see auto-created SYS_P partitions, rename them, use PARTITION FOR and avoid ORA-14758.",
+  "focusKeyword": "oracle interval partitioning example",
+  "tags": [
+    "oracle",
+    "partitioning",
+    "performance",
+    "dba"
+  ],
+  "related": [
+    "/posts/plsql/how-to-read-explain-plan-in-oracle/",
+    "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/",
+    "/posts/plsql/oracle-database-architecture-the-hidden-engine-of-data-powerhouse/"
+  ],
+  "sources": [
+    {
+      "title": "Oracle 19c SQL Language Reference: CREATE TABLE (INTERVAL clause and restrictions)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/CREATE-TABLE.html"
+    },
+    {
+      "title": "Oracle 19c SQL Language Reference: ALTER TABLE (alter_interval_partitioning)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/ALTER-TABLE.html"
+    },
+    {
+      "title": "Oracle 19c VLDB and Partitioning Guide: Creating Range-Interval-Partitioned Tables",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/vldbg/partition-create-tables-indexes.html"
+    },
+    {
+      "title": "Oracle 19c VLDB and Partitioning Guide: Partition concepts (Interval Partitioning)",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/vldbg/partition-concepts.html"
+    },
+    {
+      "title": "Oracle 19c VLDB and Partitioning Guide: Maintenance of partitioned tables",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/vldbg/maintenance-partition-tables-indexes.html"
+    },
+    {
+      "title": "Oracle 19c Reference: ALL_TAB_PARTITIONS",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/ALL_TAB_PARTITIONS.html"
+    },
+    {
+      "title": "Oracle 19c Reference: ALL_PART_TABLES",
+      "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/ALL_PART_TABLES.html"
+    },
+    {
+      "title": "Oracle error help: ORA-14758, ORA-14300, ORA-14400",
+      "url": "https://docs.oracle.com/en/error-help/db/ora-14758/"
+    }
+  ],
+  "reviewNotes": "Written from the Oracle 19c docs; nothing was run. Needs a test run on 19c or later (Partitioning option). Please check: (1) SYS_P numbers and the HIGH_VALUE text in the outputs are illustrative; (2) the exact INTERVAL column text in USER_PART_TABLES (shown as NUMTOYMINTERVAL(1, 'MONTH')); (3) the error raised when inserting a NULL key (I wrote ORA-14300 for 19c; the docs only say NULL is not allowed) the exact error raised for DATE '9999-12-01' on a monthly table (docs say it causes an error but give no code); (4) the SET INTERVAL () / SET INTERVAL (...) sequence then DROP of p_before_2026 succeeds; (5) the rename PL/SQL block (LONG high_value in a cursor FOR loop) compiles and runs; (6) ORA-14300 wording differs in newer releases (26ai shows 'partitioning key ... is beyond the calculated exclusive upper interval bound ...'). Licensing note says Partitioning is an EE option; editor may want to confirm current licensing wording.",
+  "generatedAt": "2026-11-14T01:45:00Z",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Interval partitioning is a form of range partitioning where Oracle creates new partitions for you. You define one starting range partition and an interval, such as <code class=\"inline-code\">INTERVAL (NUMTOYMINTERVAL(1, 'MONTH'))</code>, and every time a row arrives for a month that has no partition yet, the database creates that partition automatically. No more month-end jobs that add partitions, and no more inserts failing because nobody added next month's partition."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "This tutorial builds a monthly interval-partitioned orders table step by step. You will see which partitions Oracle creates, how to find and rename the system-generated ones, how to query and drop a partition by date, and the errors people hit in real projects."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How interval partitioning works",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "With plain range partitioning, every partition has a fixed upper bound written in <code class=\"inline-code\">VALUES LESS THAN</code>. If a row is inserted above the highest bound and there is no <code class=\"inline-code\">MAXVALUE</code> partition, the insert fails with <code class=\"inline-code\">ORA-14400: inserted partition key does not map to any partition</code>. Someone has to add partitions ahead of time."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Interval partitioning removes that chore. The table has two sections:"
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Range section</b>: the partitions you wrote in <code class=\"inline-code\">CREATE TABLE</code>. The high value of the last one is called the <b>transition point</b>.",
+            "items": []
+          },
+          {
+            "content": "<b>Interval section</b>: everything above the transition point. Oracle creates a partition here only when the first row for that interval is inserted.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The boundaries of interval partitions are fixed by arithmetic from the transition point, not by when data arrives. If the transition point is 1 January 2026 and the interval is one month, the July 2026 partition always covers 1 July to 31 July, even if no June partition exists yet. Empty months simply have no partition."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle names each automatically created partition <code class=\"inline-code\">SYS_Pn</code>, where n is a number the database picks. You can rename them later, and you can always refer to one by a value it contains using <code class=\"inline-code\">PARTITION FOR (...)</code>."
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "Feature",
+            "Range partitioning",
+            "Interval partitioning"
+          ],
+          [
+            "New partitions",
+            "You add them with ADD PARTITION",
+            "Created automatically on insert"
+          ],
+          [
+            "Insert above last bound",
+            "ORA-14400 unless a MAXVALUE partition exists",
+            "New partition is created"
+          ],
+          [
+            "MAXVALUE partition",
+            "Allowed",
+            "Not allowed"
+          ],
+          [
+            "Partitioning key columns",
+            "Up to 16",
+            "Exactly 1 (NUMBER, DATE, FLOAT or TIMESTAMP)"
+          ],
+          [
+            "Partition names",
+            "Your names",
+            "SYS_Pn unless you rename"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "note",
+        "title": "Licensing",
+        "text": "Interval partitioning has been available since Oracle 11g. Partitioning is a separately licensed option of Oracle Enterprise Edition, so check your licence before using it on a production database."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Sample setup: a monthly orders table",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Create an orders table partitioned by <code class=\"inline-code\">order_date</code>. It has one range partition for everything before 2026, and monthly interval partitions after that."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "CREATE TABLE orders (\n  order_id     NUMBER        NOT NULL,\n  customer_id  NUMBER        NOT NULL,\n  order_date   DATE          NOT NULL,\n  amount       NUMBER(10,2)  NOT NULL,\n  CONSTRAINT orders_pk PRIMARY KEY (order_id)\n)\nPARTITION BY RANGE (order_date)\nINTERVAL (NUMTOYMINTERVAL(1, 'MONTH'))\n(\n  PARTITION p_before_2026 VALUES LESS THAN (DATE '2026-01-01')\n);",
+        "caption": "Monthly interval-partitioned table"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The transition point is 1 January 2026. <code class=\"inline-code\">NUMTOYMINTERVAL(1, 'MONTH')</code> returns an <code class=\"inline-code\">INTERVAL YEAR TO MONTH</code> value of one month, which becomes the width of each new partition. Making <code class=\"inline-code\">order_date</code> <code class=\"inline-code\">NOT NULL</code> matters, as you will see in the mistakes section."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now insert five orders. Note there is no order in March 2026."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "INSERT INTO orders VALUES (1, 101, DATE '2025-12-20', 1500);\nINSERT INTO orders VALUES (2, 102, DATE '2026-01-05', 2400);\nINSERT INTO orders VALUES (3, 101, DATE '2026-01-28',  800);\nINSERT INTO orders VALUES (4, 103, DATE '2026-02-14', 3200);\nINSERT INTO orders VALUES (5, 104, DATE '2026-04-02',  950);\nCOMMIT;",
+        "caption": "Sample rows"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "None of these inserts fails. The December 2025 order goes into the range partition. The others land in partitions for January, February and April 2026, which Oracle creates as the rows arrive."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 1: see which partitions Oracle created",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Query <code class=\"inline-code\">USER_TAB_PARTITIONS</code>. The <code class=\"inline-code\">INTERVAL</code> column tells you whether a partition belongs to the interval section (<code class=\"inline-code\">YES</code>) or the range section (<code class=\"inline-code\">NO</code>)."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT partition_name,\n       partition_position,\n       interval,\n       high_value\n  FROM user_tab_partitions\n WHERE table_name = 'ORDERS'\n ORDER BY partition_position;",
+        "caption": "List the partitions of ORDERS"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "PARTITION_NAME  POSITION  INTERVAL  HIGH_VALUE\n--------------  --------  --------  ----------------------------------------------\nP_BEFORE_2026          1  NO        TO_DATE(' 2026-01-01 00:00:00', 'SYYYY-MM-DD\n                                    HH24:MI:SS', 'NLS_CALENDAR=GREGORIAN')\nSYS_P2041              2  YES       TO_DATE(' 2026-02-01 00:00:00', ...)\nSYS_P2042              3  YES       TO_DATE(' 2026-03-01 00:00:00', ...)\nSYS_P2043              4  YES       TO_DATE(' 2026-05-01 00:00:00', ...)",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Four partitions exist. There is no partition with a high value of 1 April, because no March order was inserted. The <code class=\"inline-code\">SYS_P</code> numbers on your database will be different; they are generated by Oracle and are only guaranteed to be unique. <code class=\"inline-code\">HIGH_VALUE</code> is a <code class=\"inline-code\">LONG</code> column holding the bound as an expression, which is why it looks like a <code class=\"inline-code\">TO_DATE</code> call."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "To check the interval defined on the table itself, query <code class=\"inline-code\">USER_PART_TABLES</code>:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT table_name, partitioning_type, interval\n  FROM user_part_tables\n WHERE table_name = 'ORDERS';",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "TABLE_NAME  PARTITIONING_TYPE  INTERVAL\n----------  -----------------  ---------------------------\nORDERS      RANGE              NUMTOYMINTERVAL(1, 'MONTH')",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The partitioning type is still <code class=\"inline-code\">RANGE</code>. Interval partitioning is an extension of range partitioning, and the <code class=\"inline-code\">INTERVAL</code> column is what tells you the table creates partitions automatically."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 2: a late row fills the gap",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Insert a March order now:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "INSERT INTO orders VALUES (6, 105, DATE '2026-03-10', 1200);\nCOMMIT;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Run the <code class=\"inline-code\">USER_TAB_PARTITIONS</code> query again. A new partition for March appears at position 4, and the April partition moves to position 5. The new partition gets a higher <code class=\"inline-code\">SYS_P</code> number than April because it was created later, so <b>never assume the number order matches the date order</b>. Always sort by <code class=\"inline-code\">partition_position</code> or by the high value."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 3: work with a partition by date using PARTITION FOR",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "System-generated names are awkward in scripts because they differ between databases (development, test, production). <code class=\"inline-code\">PARTITION FOR</code> solves this: you give any value that falls inside the partition, and Oracle finds it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Query one month",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "SELECT order_id, customer_id, order_date, amount\n  FROM orders PARTITION FOR (DATE '2026-01-15')\n ORDER BY order_id;",
+        "caption": "Read only the January 2026 partition"
+      }
+    },
+    {
+      "type": "table",
+      "data": {
+        "withHeadings": true,
+        "content": [
+          [
+            "ORDER_ID",
+            "CUSTOMER_ID",
+            "ORDER_DATE",
+            "AMOUNT"
+          ],
+          [
+            "2",
+            "102",
+            "05-JAN-26",
+            "2400"
+          ],
+          [
+            "3",
+            "101",
+            "28-JAN-26",
+            "800"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The value 15 January is not stored anywhere in the table. It only identifies the partition whose range contains it. Date display depends on your <code class=\"inline-code\">NLS_DATE_FORMAT</code> setting."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "tip",
+        "title": "You rarely need PARTITION FOR in application queries",
+        "text": "A normal filter such as <code class=\"inline-code\">WHERE order_date &gt;= DATE '2026-01-01' AND order_date &lt; DATE '2026-02-01'</code> lets the optimizer prune to the same single partition. Use <code class=\"inline-code\">PARTITION FOR</code> for maintenance work and ad hoc checks."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Rename a system-generated partition",
+        "level": 3
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "ALTER TABLE orders\n  RENAME PARTITION FOR (DATE '2026-01-01') TO p_2026_01;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Renaming only changes the name. The partition stays in the interval section, so its <code class=\"inline-code\">INTERVAL</code> column still shows <code class=\"inline-code\">YES</code>."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 4: rename all new partitions automatically",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Many teams want readable names like <code class=\"inline-code\">P_2026_02</code>. The block below reads each <code class=\"inline-code\">SYS_P</code> partition, turns its <code class=\"inline-code\">HIGH_VALUE</code> expression into a real date with dynamic SQL, and renames it after the month it holds. You can schedule it with <code class=\"inline-code\">DBMS_SCHEDULER</code> to run daily."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "plsql",
+        "code": "DECLARE\n  l_high DATE;\nBEGIN\n  FOR p IN (SELECT partition_name, high_value\n              FROM user_tab_partitions\n             WHERE table_name = 'ORDERS'\n               AND interval = 'YES'\n               AND partition_name LIKE 'SYS\\_P%' ESCAPE '\\')\n  LOOP\n    -- high_value is text like TO_DATE(' 2026-03-01 ...')\n    EXECUTE IMMEDIATE 'SELECT ' || p.high_value || ' FROM dual'\n      INTO l_high;\n\n    EXECUTE IMMEDIATE 'ALTER TABLE orders RENAME PARTITION '\n      || p.partition_name || ' TO P_'\n      || TO_CHAR(ADD_MONTHS(l_high, -1), 'YYYY_MM');\n  END LOOP;\nEND;\n/",
+        "caption": "Rename SYS_P partitions to P_YYYY_MM"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The high value is the exclusive upper bound, so <code class=\"inline-code\">ADD_MONTHS(l_high, -1)</code> gives the first day of the month the partition actually contains. A partition with high value 1 March 2026 becomes <code class=\"inline-code\">P_2026_02</code>. The <code class=\"inline-code\">LIKE 'SYS\\_P%'</code> filter skips partitions already renamed, so running the block twice is safe."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "PARTITION_NAME  POSITION  INTERVAL\n--------------  --------  --------\nP_BEFORE_2026          1  NO\nP_2026_01              2  YES\nP_2026_02              3  YES\nP_2026_03              4  YES\nP_2026_04              5  YES",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Step 5: drop old months (data retention)",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Interval partitioning pairs well with a retention policy: old months are removed with a fast metadata operation instead of a big DELETE."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "ALTER TABLE orders\n  DROP PARTITION FOR (DATE '2026-01-01')\n  UPDATE INDEXES;",
+        "caption": "Drop the January 2026 partition"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">UPDATE INDEXES</code> keeps the primary key index usable. The <code class=\"inline-code\">orders_pk</code> index is a global, non-partitioned index, and without this clause dropping a partition that contains rows leaves it <code class=\"inline-code\">UNUSABLE</code>, which breaks inserts and lookups until it is rebuilt. Local index partitions are dropped along with the table partition."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Why you cannot drop the first partition",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Now try to drop the range partition:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "ALTER TABLE orders DROP PARTITION p_before_2026;",
+        "caption": ""
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "text",
+        "code": "ORA-14758: Last partition in the range section cannot be dropped",
+        "caption": "Output (expected output)"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Oracle needs at least one range partition to anchor the interval arithmetic, so the highest range partition can never be dropped. The fix is to move the transition point up first. Setting the interval again converts every existing interval partition into a range partition:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "ALTER TABLE orders SET INTERVAL ();\nALTER TABLE orders SET INTERVAL (NUMTOYMINTERVAL(1, 'MONTH'));\n\nALTER TABLE orders DROP PARTITION p_before_2026 UPDATE INDEXES;",
+        "caption": "Move the transition point, then drop"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "After the first statement the table is plain range partitioned, and the existing monthly partitions become range partitions with their current bounds. The second statement switches interval partitioning back on, with the new transition point at the top of the highest partition. <code class=\"inline-code\">p_before_2026</code> is no longer the last range partition, so it can be dropped. Check <code class=\"inline-code\">USER_TAB_PARTITIONS</code> afterwards: the <code class=\"inline-code\">INTERVAL</code> column now shows <code class=\"inline-code\">NO</code> for the converted partitions."
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "One side effect: the lowest remaining partition has no lower bound, so any older row inserted later (say a December 2025 order) will go into it. That is usually fine for a retention policy, but be aware of it if old data can still arrive."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Other interval types: daily, weekly, yearly and numbers",
+        "level": 2
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The interval expression must match the partitioning key. Use <code class=\"inline-code\">NUMTOYMINTERVAL</code> for months and years, <code class=\"inline-code\">NUMTODSINTERVAL</code> for days, and a plain number for <code class=\"inline-code\">NUMBER</code> keys."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "-- one partition per day\nPARTITION BY RANGE (log_time)\nINTERVAL (NUMTODSINTERVAL(1, 'DAY'))\n(PARTITION p0 VALUES LESS THAN (DATE '2026-01-01'))\n\n-- one partition per week (7 days from the transition point)\nINTERVAL (NUMTODSINTERVAL(7, 'DAY'))\n\n-- one partition per year\nINTERVAL (NUMTOYMINTERVAL(1, 'YEAR'))\n\n-- one partition per 100000 ids on a NUMBER key\nPARTITION BY RANGE (payment_id)\nINTERVAL (100000)\n(PARTITION p0 VALUES LESS THAN (100000))",
+        "caption": "Interval clause variations"
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Weekly partitions start on the weekday of your transition point, because each one is exactly 7 days after the previous bound. If you want weeks to start on Monday, pick a Monday as the transition point."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Convert an existing range-partitioned table",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You do not need to rebuild a range-partitioned table to get automatic partitions. <code class=\"inline-code\">SET INTERVAL</code> converts it in place:"
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "ALTER TABLE sales SET INTERVAL (NUMTOYMINTERVAL(1, 'MONTH'));",
+        "caption": ""
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The current highest bound becomes the transition point. This only works when the table has no <code class=\"inline-code\">MAXVALUE</code> partition, because an interval table cannot have one. If yours has an empty <code class=\"inline-code\">MAXVALUE</code> partition, drop it first."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Common mistakes",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Allowing NULL in the partitioning key",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "The documentation says you cannot use <code class=\"inline-code\">NULL</code> values for the partitioning key of an interval-partitioned table. A row with a <code class=\"inline-code\">NULL</code> key has no interval to go to, so the insert fails (in 19c it is reported as <code class=\"inline-code\">ORA-14300: partitioning key maps to a partition outside maximum permitted number of partitions</code>). Declare the key column <code class=\"inline-code\">NOT NULL</code> so the error is clear and happens at the right place."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "A bad date creates a far-future partition",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "A typo such as year 2206 instead of 2026 is not rejected. Oracle quietly creates a partition 180 years ahead, and it stays there until you drop it. Two limits make bad values fail outright. A table can have at most 1024K - 1 (1,048,575) partitions, counted in interval positions from the transition point, so on a daily table a key far in the future fails with <code class=\"inline-code\">ORA-14300</code>. And the documentation warns that a value such as <code class=\"inline-code\">DATE '9999-12-01'</code>, often used as a \"no end date\" marker, fails on a monthly table because the partition's upper bound would be 1 January 10000, which a <code class=\"inline-code\">DATE</code> cannot store. Validate dates in the application or with a check constraint."
+      }
+    },
+    {
+      "type": "sqlcode",
+      "data": {
+        "language": "sql",
+        "code": "ALTER TABLE orders ADD CONSTRAINT orders_date_chk\n  CHECK (order_date < DATE '2100-01-01');",
+        "caption": "Block absurd future dates"
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Hard-coding SYS_P names in scripts",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "<code class=\"inline-code\">SYS_P2042</code> on test will be something else on production. Use <code class=\"inline-code\">PARTITION FOR</code> or rename partitions first."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Trying ADD PARTITION",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "You cannot explicitly add a partition to an interval-partitioned table. The partition appears when data arrives. If you need an empty partition to exist in advance, for example before an exchange partition load, the documentation uses <code class=\"inline-code\">LOCK TABLE orders PARTITION FOR (DATE '2026-06-01') IN SHARE MODE</code> to materialise it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Changing the interval at the wrong boundary",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Switching a daily table to monthly with <code class=\"inline-code\">SET INTERVAL</code> fails with <code class=\"inline-code\">ORA-14767: Cannot specify this interval with existing high bounds</code> if the highest partition bound is not on a month boundary, such as 30 January. Make sure a partition ends on the first of a month before changing."
+      }
+    },
+    {
+      "type": "callout",
+      "data": {
+        "type": "warning",
+        "title": "Global indexes and partition maintenance",
+        "text": "Dropping, truncating or merging partitions marks global indexes <code class=\"inline-code\">UNUSABLE</code> unless you add <code class=\"inline-code\">UPDATE INDEXES</code> (or <code class=\"inline-code\">UPDATE GLOBAL INDEXES</code>). Always include it on tables used by applications."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Performance tips",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "unordered",
+        "items": [
+          {
+            "content": "<b>Filter on the raw key column.</b> Write <code class=\"inline-code\">order_date &gt;= DATE '2026-02-01' AND order_date &lt; DATE '2026-03-01'</code> rather than <code class=\"inline-code\">TRUNC(order_date) = ...</code> or <code class=\"inline-code\">TO_CHAR(order_date, 'YYYY-MM') = ...</code>. Wrapping the key in a function can stop the optimizer from pruning partitions.",
+            "items": []
+          },
+          {
+            "content": "<b>Check pruning in the plan.</b> In <code class=\"inline-code\">DBMS_XPLAN</code> output, look for <code class=\"inline-code\">PARTITION RANGE SINGLE</code> or <code class=\"inline-code\">PARTITION RANGE ITERATOR</code> with a narrow Pstart/Pstop, not <code class=\"inline-code\">PARTITION RANGE ALL</code>.",
+            "items": []
+          },
+          {
+            "content": "<b>Prefer local indexes</b> where the query always filters by the partition key. They are maintained per partition and survive drops and truncates without rebuilds.",
+            "items": []
+          },
+          {
+            "content": "<b>Pick a sensible interval.</b> Daily partitions on a low-volume table produce thousands of tiny segments with little benefit. Monthly is a common middle ground; choose based on how you query and how you purge.",
+            "items": []
+          },
+          {
+            "content": "<b>Gather statistics on new partitions.</b> A fresh partition starts with no statistics. Make sure your stats job (or incremental statistics) covers new partitions.",
+            "items": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Frequently asked questions",
+        "level": 2
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "What is the difference between range and interval partitioning in Oracle?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Interval partitioning is range partitioning where Oracle adds new partitions automatically above the transition point. With range partitioning you add each partition yourself, or inserts beyond the last bound fail with ORA-14400."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can I use interval partitioning on a VARCHAR2 column?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "No. The single partitioning key must be <code class=\"inline-code\">NUMBER</code>, <code class=\"inline-code\">DATE</code>, <code class=\"inline-code\">FLOAT</code> or <code class=\"inline-code\">TIMESTAMP</code>. If your dates are stored as text, convert them to a real <code class=\"inline-code\">DATE</code> column (or a virtual column) first."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "How do I find the partition name for a date in an interval partitioned table?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Query <code class=\"inline-code\">USER_TAB_PARTITIONS</code> ordered by <code class=\"inline-code\">partition_position</code> and read <code class=\"inline-code\">HIGH_VALUE</code>, or skip the name entirely and use <code class=\"inline-code\">PARTITION FOR (DATE '2026-02-10')</code> in your statement."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Can I have a MAXVALUE partition with interval partitioning?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "No. A MAXVALUE partition would catch every future row, so there would be nothing left for interval partitions. Oracle rejects it."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Does interval partitioning work with subpartitions?",
+        "level": 3
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "text": "Yes, as the top level. Oracle supports interval-range, interval-hash and interval-list composite partitioning. Interval partitioning is not supported at the subpartition level."
+      }
+    },
+    {
+      "type": "header",
+      "data": {
+        "text": "Summary",
+        "level": 2
+      }
+    },
+    {
+      "type": "list",
+      "data": {
+        "style": "checklist",
+        "items": [
+          {
+            "content": "Interval partitioning = range partitioning plus automatic partition creation above the transition point.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Define at least one range partition and an <code class=\"inline-code\">INTERVAL</code> expression; no <code class=\"inline-code\">MAXVALUE</code>.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "One key column only: <code class=\"inline-code\">NUMBER</code>, <code class=\"inline-code\">DATE</code>, <code class=\"inline-code\">FLOAT</code> or <code class=\"inline-code\">TIMESTAMP</code>, declared <code class=\"inline-code\">NOT NULL</code>.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Find partitions in <code class=\"inline-code\">USER_TAB_PARTITIONS</code>; <code class=\"inline-code\">INTERVAL = 'YES'</code> marks auto-created ones.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Use <code class=\"inline-code\">PARTITION FOR (value)</code> instead of hard-coded <code class=\"inline-code\">SYS_P</code> names.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Add <code class=\"inline-code\">UPDATE INDEXES</code> when dropping or truncating partitions.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "To drop the first range partition, run <code class=\"inline-code\">SET INTERVAL ()</code> then set the interval again.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          },
+          {
+            "content": "Guard against typo dates that create far-future partitions.",
+            "meta": {
+              "checked": true
+            },
+            "items": []
+          }
+        ]
+      }
+    }
+  ],
+  "linkedin": {
+    "post": "Your monthly job that adds next month's partition failed, and now every insert throws ORA-14400.\nOracle interval partitioning removes that job entirely. You define one starting partition and an interval, and Oracle creates each new partition when the first row for it arrives.\n\nWhat to know before you use it:\n→ Add INTERVAL (NUMTOYMINTERVAL(1, 'MONTH')) after PARTITION BY RANGE (order_date)\n→ Only one key column, of type NUMBER, DATE, FLOAT or TIMESTAMP, and no MAXVALUE partition\n→ New partitions get names like SYS_P2041. Never hard-code them; use PARTITION FOR (DATE '2026-01-15') instead\n→ The last range partition cannot be dropped (ORA-14758). Run SET INTERVAL () and then set the interval again to move the transition point\n→ A typo date like 2206 quietly creates a partition 180 years ahead, so validate dates\n\nHow do you handle partition names and retention on your partitioned tables today?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #OracleDBA #PLSQL",
+    "slides": [
+      {
+        "title": "Oracle Interval Partitioning by Month",
+        "body": "Let Oracle create partitions for you, and avoid the traps"
+      },
+      {
+        "title": "Why use interval partitioning",
+        "points": [
+          "Range tables need someone to add partitions in advance",
+          "Miss one and inserts fail with ORA-14400",
+          "Interval tables create the partition on first insert"
+        ]
+      },
+      {
+        "title": "Create a monthly table",
+        "code": "CREATE TABLE orders (\n  order_id   NUMBER PRIMARY KEY,\n  order_date DATE NOT NULL,\n  amount     NUMBER(10,2)\n)\nPARTITION BY RANGE (order_date)\nINTERVAL (NUMTOYMINTERVAL(1,'MONTH'))\n(PARTITION p0 VALUES LESS THAN\n   (DATE '2026-01-01'));",
+        "lang": "sql"
+      },
+      {
+        "title": "Find the auto-created partitions",
+        "body": "New partitions get names like SYS_P2041. The INTERVAL column in USER_TAB_PARTITIONS is YES for them. Sort by partition_position, not by name.",
+        "code": "SELECT partition_name, interval\n  FROM user_tab_partitions\n WHERE table_name = 'ORDERS'\n ORDER BY partition_position;",
+        "lang": "sql"
+      },
+      {
+        "title": "Use PARTITION FOR, not SYS_P names",
+        "code": "ALTER TABLE orders\n  RENAME PARTITION\n  FOR (DATE '2026-01-01')\n  TO p_2026_01;\n\nALTER TABLE orders\n  DROP PARTITION\n  FOR (DATE '2026-02-01')\n  UPDATE INDEXES;",
+        "lang": "sql"
+      },
+      {
+        "title": "Rules that catch people out",
+        "points": [
+          "One key column: NUMBER, DATE, FLOAT or TIMESTAMP",
+          "No MAXVALUE partition, and keep the key NOT NULL",
+          "Last range partition cannot be dropped: ORA-14758",
+          "A typo date like 2206 creates a far-future partition"
+        ]
+      }
+    ]
+  }
+}
