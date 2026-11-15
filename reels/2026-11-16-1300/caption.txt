@@ -1,0 +1,13 @@
+What does initdb really create? A data directory, shared catalogs and three databases.
+
+Before PostgreSQL can store anything, a PostgreSQL DBA needs a database cluster: a set of databases managed by one running server. initdb builds it: the data directory, the shared catalog tables, and the postgres, template1 and template0 databases. CREATE DATABASE copies a template, so never modify template0.
+
+We ran initdb -D with -E UTF8, --locale=C.UTF-8 and -k. Result: data_checksums is on, the directory is mode 700, owned by postgres. Choose carefully: the docs say the template databases' sort order needs a drop and recreate to change, and the WAL segment size can only be set at initdb.
+
+Since PostgreSQL 18, initdb enables data checksums by default. initdb refuses to run as root ("cannot be run as root") and warns about trust authentication, so use -A scram-sha-256 with a password. On Ubuntu, the package already ran pg_createcluster for you.
+
+Episode 14 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #linux

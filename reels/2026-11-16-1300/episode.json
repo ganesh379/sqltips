@@ -1,0 +1,591 @@
+{
+ "ep": 14,
+ "total": 140,
+ "title": "Initialize a PostgreSQL Cluster",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "What does initdb really create?",
+   "cap": "What does *initdb* really *create?*"
+  },
+  {
+   "say": "This is episode fourteen of the PostgreSQL DBA series. Today: what initdb builds, and what to get right the first time.",
+   "cap": "Episode 14: what *initdb* builds, and what to get *right.*",
+   "cue": "right"
+  },
+  {
+   "say": "Before PostgreSQL stores anything, you need a database cluster: a set of databases managed by one running server.",
+   "cap": "A *cluster:* databases managed by *one* *server.*",
+   "cue": "cluster"
+  },
+  {
+   "say": "initdb creates it. First, the data directory and its subdirectories.",
+   "cap": "initdb creates the *data* *directory.*",
+   "cue": "directory"
+  },
+  {
+   "say": "Then the shared catalog tables, which belong to the whole cluster, not to any one database.",
+   "cap": "Then the *shared* *catalog* tables.",
+   "cue": "shared"
+  },
+  {
+   "say": "Then three databases: postgres, template one, and template zero.",
+   "cap": "Three databases: *postgres,* *template1,* *template0.*",
+   "cue": "three"
+  },
+  {
+   "say": "postgres is the default database. The templates are copied by later CREATE DATABASE commands.",
+   "cap": "Templates are *copied* by *CREATE DATABASE.*",
+   "cue": "copied"
+  },
+  {
+   "say": "Never modify template zero. Objects you add to template one are copied into databases you create later.",
+   "cap": "Never modify *template0.* template1 can be *customized.*",
+   "cue": "Objects"
+  },
+  {
+   "say": "Let's run it as the postgres user. Dash capital D names the data directory.",
+   "cap": "Run as *postgres.* *-D* names the data directory.",
+   "cue": "names"
+  },
+  {
+   "say": "Dash capital E sets the encoding, dash dash locale sets the locale, and dash k turns on data checksums.",
+   "cap": "*-E* encoding, *--locale,* and *-k* for checksums.",
+   "cue": "checksums"
+  },
+  {
+   "say": "initdb confirms the locale, and says data page checksums are enabled. Output trimmed.",
+   "cap": "Locale *C.UTF-8,* checksums *enabled.*",
+   "cue": "enabled"
+  },
+  {
+   "say": "Inside: base, global, pg_wal and the config files. Mode seven hundred, owned by postgres. Output trimmed.",
+   "cap": "*base,* *global,* *pg_wal.* Mode *700,* owner postgres.",
+   "cue": "seven"
+  },
+  {
+   "say": "Connected to it, SHOW data_checksums returns on, and pg_database lists our three databases.",
+   "cap": "*data_checksums* is *on.* Three databases listed.",
+   "cue": "lists"
+  },
+  {
+   "say": "Why choose carefully? The docs say the template databases' sort order cannot be changed without dropping and recreating them.",
+   "cap": "Template *sort* *order:* drop and *recreate* to change.",
+   "cue": "changed"
+  },
+  {
+   "say": "And the WAL segment size can only be set during initialization. The default is sixteen megabytes.",
+   "cap": "*WAL* *segment* *size:* set only at initdb. Default *16 MB.*",
+   "cue": "only"
+  },
+  {
+   "say": "Checksums: since PostgreSQL eighteen, initdb enables them by default. Our Ubuntu sixteen cluster had them off.",
+   "cap": "Checksums: *on* by default since *PostgreSQL 18.*",
+   "cue": "eighteen"
+  },
+  {
+   "say": "To change that later, pg_checksums works only on a cluster that is shut down.",
+   "cap": "*pg_checksums:* only on an *offline* cluster.",
+   "cue": "shut"
+  },
+  {
+   "say": "Common mistake: running initdb as root. It refuses, with the error: cannot be run as root.",
+   "cap": "initdb *refuses* to run as *root.*",
+   "cue": "refuses"
+  },
+  {
+   "say": "Another: the default trust authentication. initdb warns you. The docs suggest dash capital A scram sha two fifty six, with a password.",
+   "cap": "Replace *trust:* use *-A scram-sha-256* and a password.",
+   "cue": "warns"
+  },
+  {
+   "say": "On Ubuntu, the package already ran pg_createcluster for you. The docs say: prefer your package's script over running initdb directly.",
+   "cap": "Ubuntu ran *pg_createcluster.* Prefer the *package* *script.*",
+   "cue": "prefer"
+  },
+  {
+   "say": "DBA takeaway: a common practice is to fix locale, encoding and checksums in your server build standard.",
+   "cap": "Common practice: put these in your *build* *standard.*",
+   "cue": "standard"
+  },
+  {
+   "say": "Recap: initdb builds the data directory, the shared catalogs and three databases.",
+   "cap": "Recap: *directory,* *catalogs,* *three* databases.",
+   "cue": "shared"
+  },
+  {
+   "say": "Choose locale, encoding and checksums up front. Never run it as root, and replace trust.",
+   "cap": "Choose *up* *front.* No *root.* Replace *trust.*",
+   "cue": "root"
+  },
+  {
+   "say": "Next up: starting, stopping, restarting and reloading PostgreSQL. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *start,* *stop,* *reload.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "What does *initdb* really *create?*",
+   "sub": "Episode 14 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 14 · INSTALLATION & ADMINISTRATION",
+   "title": "Initialize a PostgreSQL Cluster",
+   "sub": "initdb, locale, encoding, checksums"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 8,
+   "heading": "What initdb creates",
+   "nodes": [
+    {
+     "id": "init",
+     "label": "initdb",
+     "sub": "run once",
+     "x": 540,
+     "y": 500,
+     "w": 320,
+     "h": 120,
+     "icon": "terminal",
+     "color": "orange",
+     "shape": "pill",
+     "at": 2
+    },
+    {
+     "id": "dir",
+     "label": "Data directory",
+     "sub": "+ subdirectories",
+     "x": 290,
+     "y": 770,
+     "w": 380,
+     "h": 140,
+     "icon": "folder",
+     "color": "blue",
+     "at": 3
+    },
+    {
+     "id": "cat",
+     "label": "Shared catalogs",
+     "sub": "whole cluster",
+     "x": 790,
+     "y": 770,
+     "w": 380,
+     "h": 140,
+     "icon": "table",
+     "color": "cyan",
+     "at": 4
+    },
+    {
+     "id": "pg",
+     "label": "postgres",
+     "sub": "default DB",
+     "x": 210,
+     "y": 1060,
+     "w": 300,
+     "h": 130,
+     "icon": "database",
+     "color": "green",
+     "shape": "db",
+     "at": 5
+    },
+    {
+     "id": "t1",
+     "label": "template1",
+     "sub": "customizable",
+     "x": 540,
+     "y": 1060,
+     "w": 300,
+     "h": 130,
+     "icon": "database",
+     "color": "amber",
+     "shape": "db",
+     "at": 5
+    },
+    {
+     "id": "t0",
+     "label": "template0",
+     "sub": "never modify",
+     "x": 870,
+     "y": 1060,
+     "w": 300,
+     "h": 130,
+     "icon": "lock",
+     "color": "red",
+     "shape": "db",
+     "at": 5
+    },
+    {
+     "id": "new",
+     "label": "New database",
+     "sub": "CREATE DATABASE",
+     "x": 540,
+     "y": 1280,
+     "w": 360,
+     "h": 120,
+     "icon": "layers",
+     "color": "purple",
+     "at": 6
+    }
+   ],
+   "edges": [
+    {
+     "from": "init",
+     "to": "dir",
+     "label": "creates",
+     "at": 3,
+     "flow": true,
+     "color": "blue"
+    },
+    {
+     "from": "init",
+     "to": "cat",
+     "label": "generates",
+     "at": 4,
+     "flow": true,
+     "color": "cyan"
+    },
+    {
+     "from": "dir",
+     "to": "pg",
+     "at": 5,
+     "color": "green"
+    },
+    {
+     "from": "dir",
+     "to": "t1",
+     "at": 5,
+     "color": "amber"
+    },
+    {
+     "from": "dir",
+     "to": "t0",
+     "at": 5,
+     "color": "red"
+    },
+    {
+     "from": "t1",
+     "to": "new",
+     "label": "copied",
+     "at": 6,
+     "flow": true,
+     "color": "purple"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "init"
+    },
+    {
+     "at": 3,
+     "id": "dir"
+    },
+    {
+     "at": 4,
+     "id": "cat"
+    },
+    {
+     "at": 5,
+     "id": "t1"
+    },
+    {
+     "at": 6,
+     "id": "new"
+    },
+    {
+     "at": 7,
+     "id": "t0"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 8,
+   "to": 11,
+   "heading": "Run initdb",
+   "title": "bash: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- as postgres, bin dir on PATH",
+     "at": 8
+    },
+    {
+     "kind": "cmd",
+     "text": "initdb -D /var/lib/postgresql/demo \\",
+     "at": 8
+    },
+    {
+     "kind": "cmd",
+     "text": "-E UTF8 --locale=C.UTF-8 -k",
+     "at": 9,
+     "prompt": "> "
+    },
+    {
+     "kind": "out",
+     "text": "The database cluster will be",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "initialized with locale \"C.UTF-8\".",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "Data page checksums are enabled.",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "creating subdirectories ... ok",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "Success.",
+     "at": 10
+    },
+    {
+     "kind": "comment",
+     "text": "-- output trimmed",
+     "at": 10
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 11,
+   "to": 13,
+   "heading": "Look inside",
+   "title": "bash + psql: demo cluster",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "ls demo",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "PG_VERSION base global pg_wal ...",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "text": "stat -c \"%a %U\" demo",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "700 postgres",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "text": "SHOW data_checksums;",
+     "at": 12,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "out",
+     "text": " on",
+     "at": 12
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT datname",
+     "at": 12,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "FROM pg_database;",
+     "at": 12,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "out",
+     "text": " postgres",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": " template1",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": " template0",
+     "at": 12
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 13,
+   "to": 17,
+   "heading": "Decide before initdb",
+   "columns": 1,
+   "items": [
+    {
+     "at": 13,
+     "icon": "book",
+     "title": "Locale and sort order",
+     "text": "Template sort order: drop and recreate to change",
+     "color": "orange"
+    },
+    {
+     "at": 14,
+     "icon": "file",
+     "title": "WAL segment size",
+     "text": "Set only at initdb. Default 16 MB",
+     "color": "blue"
+    },
+    {
+     "at": 15,
+     "icon": "shield",
+     "title": "Data checksums",
+     "text": "On by default since PostgreSQL 18. Off on 16",
+     "color": "green"
+    },
+    {
+     "at": 16,
+     "icon": "wrench",
+     "title": "pg_checksums",
+     "text": "Enables or disables them, only on an offline cluster",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 17,
+   "to": 19,
+   "heading": "Two common mistakes",
+   "title": "bash: db1",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "initdb -D /tmp/x",
+     "at": 17,
+     "prompt": "root# "
+    },
+    {
+     "kind": "out",
+     "text": "initdb: error: cannot be run as root",
+     "at": 17
+    },
+    {
+     "kind": "comment",
+     "text": "-- hint line trimmed",
+     "at": 17
+    },
+    {
+     "kind": "comment",
+     "text": "-- from our first run:",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "initdb: warning: enabling \"trust\"",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "authentication for local connections",
+     "at": 18
+    },
+    {
+     "kind": "comment",
+     "text": "-- docs: -A scram-sha-256 and -W",
+     "at": 18
+    }
+   ]
+  },
+  {
+   "type": "compare",
+   "from": 19,
+   "to": 20,
+   "heading": "Package vs plain initdb",
+   "left": {
+    "title": "Ubuntu package",
+    "color": "orange",
+    "rows": [
+     "Runs pg_createcluster",
+     "Cluster 16/main",
+     "Config in /etc/postgresql",
+     "Data in /var/lib/postgresql"
+    ]
+   },
+   "right": {
+    "title": "Plain initdb",
+    "color": "blue",
+    "rows": [
+     "You run initdb -D",
+     "You pick the directory",
+     "Config in data directory",
+     "Start with pg_ctl"
+    ]
+   },
+   "at": [
+    19,
+    19,
+    19,
+    19
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "tip",
+   "title": "Write it down",
+   "text": "A common practice: fix locale, encoding and checksums in your server build standard."
+  },
+  {
+   "type": "checklist",
+   "from": 21,
+   "to": 23,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 21,
+     "title": "Data directory"
+    },
+    {
+     "at": 21,
+     "title": "Shared catalogs"
+    },
+    {
+     "at": 21,
+     "title": "postgres, template1, template0"
+    },
+    {
+     "at": 22,
+     "title": "Locale, encoding, checksums"
+    },
+    {
+     "at": 22,
+     "title": "Never as root"
+    },
+    {
+     "at": 22,
+     "title": "Replace trust auth"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 23,
+   "to": 24,
+   "next": "Ep 15 · Start, stop, restart, reload"
+  }
+ ]
+}
