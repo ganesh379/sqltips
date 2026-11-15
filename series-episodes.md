@@ -63,7 +63,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Demonstrate package-based installation on a chosen supported distro, service checks and version verification.
   - Format: Terminal walkthrough · Level: Beginner
   - Hook: From zero to a running PostgreSQL service.
-- [ ] Ep 014 | 2026-11-17 | Initialize a PostgreSQL Cluster
+- [x] Ep 014 | 2026-11-17 | Initialize a PostgreSQL Cluster (posted 2026-11-16 13:00, Buffer 6af94699918fe79d2ec42ee0)
   - Objective: Explain initdb, locale, encoding, checksums and data directory; distinguish package-managed cluster setup.
   - Format: Terminal + diagram · Level: Beginner
   - Hook: What does initdb really create?
