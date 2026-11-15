@@ -1,0 +1,1192 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL JSONB Query: Operators, Arrays and Indexes",
+ "slug": "postgresql-jsonb-query",
+ "category": "postgresql",
+ "description": "How to write a PostgreSQL JSONB query: -> vs ->>, @> and ?, arrays of objects, jsonb_set updates and GIN indexes, with real PostgreSQL 18 output.",
+ "focusKeyword": "postgresql jsonb query",
+ "tags": [
+  "postgresql",
+  "jsonb",
+  "json",
+  "indexes",
+  "sql"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/",
+  "/posts/postgresql/postgresql-dba-part-13-table-index-bloat/",
+  "/posts/postgresql/postgresql-upsert-on-conflict/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 8.14 JSON Types (containment, existence, jsonb indexing, subscripting)",
+   "url": "https://www.postgresql.org/docs/current/datatype-json.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 9.16 JSON Functions and Operators",
+   "url": "https://www.postgresql.org/docs/current/functions-json.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Release 18 notes (jsonb null casts, json{b}_strip_nulls)",
+   "url": "https://www.postgresql.org/docs/current/release-18.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Indexes on Expressions",
+   "url": "https://www.postgresql.org/docs/current/indexes-expressional.html"
+  }
+ ],
+ "reviewNotes": "Regular Sunday article (not a series part). Every SQL statement was run in article order on PostgreSQL 18.7 (Ubuntu 18.7-1.pgdg24.04+2, official PGDG packages) on Ubuntu 24.04.5 LTS, following the PostgreSQL 18 documentation (docs/current, pages in sources). Outputs are real; the '(n rows)' footers are dropped except where several result sets are shown together, and the whole update section (BEGIN ... ROLLBACK) was re-run as one script exactly as printed. EXPLAIN timings (19.2 ms vs 1.2 ms) are from the sandbox and the article says they only show direction. SANDBOX CAVEAT: postgresql-18 could not be installed with apt because its dependency liburing2 comes from archive.ubuntu.com, which is blocked here; I extracted the PGDG postgresql-18/postgresql-client-18/libpq5 .debs and ran initdb/pg_ctl/psql with a stub liburing (io_method=worker, the default). Same 18.7 binaries, so SQL behaviour and messages are unaffected; the article has no service or path commands except createdb/psql. EDITOR CHECKS: (1) The PG18 note on jsonb null casts is from the release notes; I did not run PostgreSQL 17 to capture the old error text, so the article does not quote it. (2) Index sizes and plan shapes depend on the generated data. (3) The 'subscripts create missing parents, jsonb_set does not' comparison is both documented and tested. Topic from Google autocomplete ('postgresql jsonb query', 'postgres jsonb query examples', '... array of objects', '... nested object', '... performance'); current results are mostly operator lists without EXPLAIN proof of index use or PG18 notes. No published article or draft covers JSONB.",
+ "generatedAt": "2026-11-15T12:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To query JSONB in PostgreSQL you use a small set of operators: <code class=\"inline-code\">-&gt;</code> and <code class=\"inline-code\">-&gt;&gt;</code> to read a field, <code class=\"inline-code\">@&gt;</code> to test whether a document contains some JSON, <code class=\"inline-code\">?</code> to test whether a key exists, and JSON path expressions with <code class=\"inline-code\">@?</code> for conditions inside arrays. Add the right index and these queries stay fast on millions of rows."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial builds one small orders table and walks through every common JSONB query: reading nested values, filtering in WHERE, turning arrays into rows, updating parts of a document and indexing. Every query was run on PostgreSQL 18 and the output shown is real, including the error messages you will hit along the way."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "json vs jsonb: which one to query",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL has two JSON types. <code class=\"inline-code\">json</code> stores the exact text you sent. <code class=\"inline-code\">jsonb</code> parses it once and stores a binary form. Input is slightly slower, but every query afterwards is much faster because nothing has to be parsed again, and only <code class=\"inline-code\">jsonb</code> supports GIN indexes."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The binary form also changes what you get back. jsonb does not keep whitespace, does not keep key order, and keeps only the last value when a key appears twice:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT '{\"b\": 1, \"a\": 2, \"a\": 3}'::json  AS as_json,\n       '{\"b\": 1, \"a\": 2, \"a\": 3}'::jsonb AS as_jsonb;",
+    "caption": "Same input, two types"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "         as_json          |     as_jsonb\n--------------------------+------------------\n {\"b\": 1, \"a\": 2, \"a\": 3} | {\"a\": 3, \"b\": 1}",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The PostgreSQL documentation recommends jsonb for most applications. Use json only if something really depends on key order or duplicate keys. Everything below uses jsonb."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each order has a few normal columns and a jsonb column called <b>details</b> holding the status, payment, line items and tags. Run this in a scratch database (for example <code class=\"inline-code\">sudo -u postgres createdb shop</code>, then <code class=\"inline-code\">sudo -u postgres psql -d shop</code>)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders (\n    order_id  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer  text  NOT NULL,\n    details   jsonb NOT NULL\n);\n\nINSERT INTO orders (customer, details) VALUES\n('Asha',  '{\"status\": \"shipped\", \"payment\": {\"method\": \"upi\", \"amount\": 1499.00},\n           \"items\": [{\"sku\": \"BK-101\", \"qty\": 2, \"price\": 499.50},\n                     {\"sku\": \"PN-220\", \"qty\": 1, \"price\": 500.00}],\n           \"tags\": [\"gift\", \"express\"]}'),\n('Ravi',  '{\"status\": \"pending\", \"payment\": {\"method\": \"card\", \"amount\": 349.00},\n           \"items\": [{\"sku\": \"PN-220\", \"qty\": 1, \"price\": 349.00}],\n           \"tags\": [\"express\"]}'),\n('Meera', '{\"status\": \"delivered\", \"payment\": {\"method\": \"upi\", \"amount\": 2250.00},\n           \"items\": [{\"sku\": \"LT-900\", \"qty\": 1, \"price\": 2250.00}],\n           \"tags\": [], \"coupon\": \"DIWALI10\"}'),\n('John',  '{\"status\": \"cancelled\", \"payment\": {\"method\": \"cod\", \"amount\": 0},\n           \"items\": [], \"tags\": [\"refund\"], \"coupon\": null}');",
+    "caption": "orders table with a jsonb column"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLE\nINSERT 0 4",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice two details we will use later: Ravi's order has no <b>coupon</b> key at all, while John's order has the key with a JSON <b>null</b> value. They are not the same thing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Read values: -> vs ->>",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">-&gt;</code> returns the value as jsonb. <code class=\"inline-code\">-&gt;&gt;</code> returns it as text. That single character decides what you can do with the result next."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id,\n       details -> 'status'  AS status_jsonb,\n       details ->> 'status' AS status_text\n  FROM orders;",
+    "caption": "-> keeps JSON, ->> gives text"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | status_jsonb | status_text\n----------+--------------+-------------\n        1 | \"shipped\"    | shipped\n        2 | \"pending\"    | pending\n        3 | \"delivered\"  | delivered\n        4 | \"cancelled\"  | cancelled",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The jsonb result keeps the double quotes because it is still a JSON string. The text result is a plain SQL string you can compare, concatenate or cast."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Nested objects and array elements",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Chain <code class=\"inline-code\">-&gt;</code> to walk down the document and use <code class=\"inline-code\">-&gt;&gt;</code> only on the last step. Array positions start at 0. The path operators <code class=\"inline-code\">#&gt;</code> and <code class=\"inline-code\">#&gt;&gt;</code> take the whole path as a text array, which is shorter for deep values."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id,\n       details -> 'payment' ->> 'method'   AS method,\n       details #>> '{payment,amount}'      AS amount,\n       details -> 'items' -> 0 ->> 'sku'   AS first_sku,\n       details #>> '{items,0,sku}'         AS first_sku_path\n  FROM orders;",
+    "caption": "Walking into nested JSON"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | method | amount  | first_sku | first_sku_path\n----------+--------+---------+-----------+----------------\n        1 | upi    | 1499.00 | BK-101    | BK-101\n        2 | card   | 349.00  | PN-220    | PN-220\n        3 | upi    | 2250.00 | LT-900    | LT-900\n        4 | cod    | 0       |           |",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "John's order has an empty items array, so the first item does not exist. The operators return NULL instead of raising an error. That is helpful in reports, but it also means a typo in a key name silently returns NULL rather than failing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Subscript syntax",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Since PostgreSQL 14 you can also use square brackets, like <code class=\"inline-code\">details['payment']['method']</code>. The result is always jsonb, the same as <code class=\"inline-code\">-&gt;</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, details['payment']['method'] AS method\n  FROM orders;",
+    "caption": "jsonb subscripting"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | method\n----------+--------\n        1 | \"upi\"\n        2 | \"card\"\n        3 | \"upi\"\n        4 | \"cod\"",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Subscripts are most useful in UPDATE statements, shown later. For reading, most people stick to the arrows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Filter rows with JSONB in WHERE",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Compare a text value",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, customer\n  FROM orders\n WHERE details ->> 'status' = 'shipped';",
+    "caption": "Filter on a top-level field"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | customer\n----------+----------\n        1 | Asha",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Compare numbers: cast first",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">-&gt;&gt;</code> always returns text, so cast it before comparing with a number:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, customer\n  FROM orders\n WHERE (details #>> '{payment,amount}')::numeric > 1000;",
+    "caption": "Numeric comparison needs a cast"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | customer\n----------+----------\n        1 | Asha\n        3 | Meera",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Containment with @>",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">@&gt;</code> asks: does the left document contain this piece of JSON? It works at any depth, and for arrays the order of elements does not matter. This is the operator to reach for first, because a plain GIN index on the column supports it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, customer\n  FROM orders\n WHERE details @> '{\"payment\": {\"method\": \"upi\"}}';",
+    "caption": "Orders paid by UPI"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | customer\n----------+----------\n        1 | Asha\n        3 | Meera",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It also matches objects inside arrays. This finds every order with at least one line item for SKU PN-220, without unpacking the array:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, customer\n  FROM orders\n WHERE details @> '{\"items\": [{\"sku\": \"PN-220\"}]}';",
+    "caption": "Search inside an array of objects"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | customer\n----------+----------\n        1 | Asha\n        2 | Ravi",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Key exists: ?, ?| and ?&",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">?</code> tests whether a string is a key, or an element of an array, <b>at the top level</b> of the value on its left. <code class=\"inline-code\">?|</code> means any of the strings exist, and <code class=\"inline-code\">?&amp;</code> means all of them exist."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, customer FROM orders WHERE details -> 'tags' ? 'express';\nSELECT order_id, customer FROM orders WHERE details -> 'tags' ?| array['gift', 'refund'];\nSELECT order_id, customer FROM orders WHERE details -> 'tags' ?& array['gift', 'express'];",
+    "caption": "Existence operators on the tags array"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | customer\n----------+----------\n        1 | Asha\n        2 | Ravi\n(2 rows)\n\n order_id | customer\n----------+----------\n        1 | Asha\n        4 | John\n(2 rows)\n\n order_id | customer\n----------+----------\n        1 | Asha\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Because <code class=\"inline-code\">?</code> only looks at the top level, <code class=\"inline-code\">details ? 'method'</code> returns <b>no rows</b>, even though every order has a method key inside payment. Write <code class=\"inline-code\">details -&gt; 'payment' ? 'method'</code> instead."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Missing key vs JSON null",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Ravi has no coupon key, John has <b>\"coupon\": null</b>. With ->> both come back as SQL NULL, so use ? when you need to tell them apart:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id,\n       details -> 'coupon' AS coupon_jsonb,\n       details -> 'coupon' IS NULL AS sql_null,\n       details -> 'coupon' = 'null'::jsonb AS json_null,\n       details ? 'coupon' AS has_key\n  FROM orders WHERE order_id IN (2, 4);",
+    "caption": "SQL NULL is not JSON null"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | coupon_jsonb | sql_null | json_null | has_key\n----------+--------------+----------+-----------+---------\n        2 |              | t        |           | f\n        4 | null         | f        | t         | t",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For Ravi, -> returns SQL NULL because the key is missing. For John, it returns the jsonb value null, which is a real value: IS NULL is false."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "New in PostgreSQL 18: casting a jsonb null to a scalar type gives SQL NULL. <code class=\"inline-code\">('{\"qty\": null}'::jsonb -&gt; 'qty')::int</code> returns NULL on PostgreSQL 18. Older versions raised an error for this cast, so code that relies on the new behaviour will fail after a restore onto PostgreSQL 17 or earlier."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Query arrays: turn JSON arrays into rows",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Containment tells you whether an item exists. To report on the items themselves, for example units sold per SKU, turn the array into rows. <code class=\"inline-code\">jsonb_array_elements</code> returns one jsonb row per element. Use it in a LATERAL join so each order is paired with its own items:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT o.order_id,\n       item ->> 'sku' AS sku,\n       (item ->> 'qty')::int AS qty,\n       (item ->> 'price')::numeric AS price\n  FROM orders o\n CROSS JOIN LATERAL jsonb_array_elements(o.details -> 'items') AS item\n ORDER BY o.order_id;",
+    "caption": "One row per line item"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id |  sku   | qty |  price\n----------+--------+-----+---------\n        1 | BK-101 |   2 |  499.50\n        1 | PN-220 |   1 |  500.00\n        2 | PN-220 |   1 |  349.00\n        3 | LT-900 |   1 | 2250.00",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "John's order disappears because his items array is empty, so the cross join has nothing to pair it with. Use LEFT JOIN LATERAL ... ON true if you need to keep such orders."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Typed columns with jsonb_to_recordset",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When the array holds objects with a known shape, <code class=\"inline-code\">jsonb_to_recordset</code> gives you typed columns directly. You must describe the columns in the AS clause:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT i.sku, sum(i.qty) AS units_sold\n  FROM orders o,\n       jsonb_to_recordset(o.details -> 'items') AS i(sku text, qty int)\n GROUP BY i.sku\n ORDER BY units_sold DESC, i.sku;",
+    "caption": "Units sold per SKU"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  sku   | units_sold\n--------+------------\n BK-101 |          2\n PN-220 |          2\n LT-900 |          1",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">jsonb_array_length</code> counts top-level elements, handy for queries like \"orders with more than one item\". It returns 0 for John's empty array."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Conditions inside arrays with JSON path",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Containment only tests equality. For \"any item priced above 400\" use a JSON path expression. <code class=\"inline-code\">@?</code> returns true if the path finds anything. Inside the filter, <code class=\"inline-code\">@</code> means the current array element."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id, customer\n  FROM orders\n WHERE details @? '$.items[*] ? (@.price > 400)';",
+    "caption": "Any line item above 400"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id | customer\n----------+----------\n        1 | Asha\n        3 | Meera",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To pull out the matching values rather than just filter, use <code class=\"inline-code\">jsonb_path_query</code>. You can also pass variables as a jsonb object, which keeps the path constant when the number changes:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id,\n       jsonb_path_query(details, '$.items[*] ? (@.qty >= 2).sku') AS sku\n  FROM orders;\n\nSELECT order_id, customer\n  FROM orders\n WHERE jsonb_path_exists(details, '$.items[*] ? (@.price > $min)', '{\"min\": 1000}');",
+    "caption": "Extract matches and use path variables"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id |   sku\n----------+----------\n        1 | \"BK-101\"\n(1 row)\n\n order_id | customer\n----------+----------\n        3 | Meera\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Update JSONB fields",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can change one part of a document without rewriting it by hand. Try these inside BEGIN and ROLLBACK so your sample data stays the same for the rest of the tutorial."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "jsonb_set: replace or add one value",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\n\nUPDATE orders\n   SET details = jsonb_set(details, '{status}', '\"delivered\"')\n WHERE order_id = 1;\n\nUPDATE orders\n   SET details = jsonb_set(details, '{payment,txn_id}', '\"UPI98231\"')\n WHERE order_id = 1;\n\nSELECT details -> 'status' AS status, details -> 'payment' AS payment\n  FROM orders WHERE order_id = 1;",
+    "caption": "Change status, add a nested key"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "   status    |                          payment\n-------------+------------------------------------------------------------\n \"delivered\" | {\"amount\": 1499.00, \"method\": \"upi\", \"txn_id\": \"UPI98231\"}",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The new value must be valid JSON, so a string needs double quotes inside the single quotes. The fourth argument, <code class=\"inline-code\">create_if_missing</code>, defaults to true, which is why txn_id was added."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Merge, delete keys, delete paths",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders\n   SET details = details || '{\"priority\": true, \"status\": \"on_hold\"}'\n WHERE order_id = 2;               -- merge: adds priority, overwrites status\n\nUPDATE orders\n   SET details = details - 'coupon'\n WHERE order_id = 4;               -- remove a top-level key\n\nUPDATE orders\n   SET details = details #- '{payment,txn_id}'\n WHERE order_id = 1;               -- remove a nested key by path\n\nSELECT order_id, details ->> 'status' AS status, details ? 'coupon' AS has_coupon,\n       details -> 'payment' AS payment\n  FROM orders WHERE order_id IN (1, 2, 4) ORDER BY order_id;",
+    "caption": "||, - and #-"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_id |  status   | has_coupon |               payment\n----------+-----------+------------+--------------------------------------\n        1 | delivered | f          | {\"amount\": 1499.00, \"method\": \"upi\"}\n        2 | on_hold   | f          | {\"amount\": 349.00, \"method\": \"card\"}\n        4 | cancelled | f          | {\"amount\": 0, \"method\": \"cod\"}",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Ravi's status was overwritten by the merge, John's coupon key is gone, and the txn_id added earlier was removed from Asha's payment object."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Note that <code class=\"inline-code\">||</code> merges only the top level. Concatenating <code class=\"inline-code\">{\"payment\": {\"method\": \"card\"}}</code> would replace the whole payment object, not just its method. For a nested change, use jsonb_set or a subscript."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Subscript updates",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders\n   SET details['payment']['method'] = '\"netbanking\"'\n WHERE order_id = 2;\n\nUPDATE orders\n   SET details['tags'] = details['tags'] || '[\"vip\"]'\n WHERE order_id = 2;\n\nSELECT details['payment'] AS payment, details['tags'] AS tags\n  FROM orders WHERE order_id = 2;\n\nROLLBACK;",
+    "caption": "Assign with square brackets"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                  payment                   |        tags\n--------------------------------------------+--------------------\n {\"amount\": 349.00, \"method\": \"netbanking\"} | [\"express\", \"vip\"]",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Subscript assignment has one useful difference from jsonb_set: it creates missing parent objects. <code class=\"inline-code\">jsonb_set(details, '{shipping,city}', '\"Pune\"')</code> on an order with no shipping key reports UPDATE 1 but leaves the document unchanged, because jsonb_set needs every earlier step of the path to exist. <code class=\"inline-code\">SET details['shipping']['city'] = '\"Pune\"'</code> creates <code class=\"inline-code\">{\"city\": \"Pune\"}</code> as expected. We tested both on PostgreSQL 18."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Index JSONB so queries stay fast",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Four rows prove nothing about speed, so build a 200,000-row copy with similar documents:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders_big (\n    order_id  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer  text  NOT NULL,\n    details   jsonb NOT NULL\n);\n\nINSERT INTO orders_big (customer, details)\nSELECT 'cust_' || g,\n       jsonb_build_object(\n         'status',  (ARRAY['pending','shipped','delivered','cancelled'])[1 + g % 4],\n         'payment', jsonb_build_object(\n                      'method', (ARRAY['upi','card','cod','netbanking'])[1 + g % 4],\n                      'amount', (g % 5000) + 99),\n         'items',   jsonb_build_array(jsonb_build_object(\n                      'sku', 'SKU-' || (g % 2000), 'qty', 1 + g % 3)),\n         'tags',    CASE WHEN g % 100 = 0 THEN '[\"gift\"]'::jsonb ELSE '[]'::jsonb END)\n  FROM generate_series(1, 200000) AS g;\n\nANALYZE orders_big;",
+    "caption": "200,000 generated orders"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "GIN index for @>, ? and @?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Without an index, a containment search reads the whole table:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF)\nSELECT order_id FROM orders_big\n WHERE details @> '{\"items\": [{\"sku\": \"SKU-42\"}]}';",
+    "caption": "Before the index"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Gather (actual rows=100.00 loops=1)\n   Workers Planned: 2\n   Workers Launched: 2\n   ->  Parallel Seq Scan on orders_big (actual rows=33.33 loops=3)\n         Filter: (details @> '{\"items\": [{\"sku\": \"SKU-42\"}]}'::jsonb)\n         Rows Removed by Filter: 66633\n Planning Time: 0.127 ms\n Execution Time: 19.221 ms",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_big_details_gin ON orders_big USING GIN (details);",
+    "caption": "Default GIN index (jsonb_ops)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Bitmap Heap Scan on orders_big (actual rows=100.00 loops=1)\n   Recheck Cond: (details @> '{\"items\": [{\"sku\": \"SKU-42\"}]}'::jsonb)\n   Heap Blocks: exact=100\n   ->  Bitmap Index Scan on orders_big_details_gin (actual rows=100.00 loops=1)\n         Index Cond: (details @> '{\"items\": [{\"sku\": \"SKU-42\"}]}'::jsonb)\n         Index Searches: 1\n Planning Time: 0.132 ms\n Execution Time: 1.208 ms",
+    "caption": "Output (same EXPLAIN after the index)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The plan changed from a parallel sequential scan to a Bitmap Index Scan on the new index. The timings are from a small test machine and only show the direction of the change. Measure on your own data."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A GIN index works only for the operators its operator class supports, and only when the operator is applied to the indexed column itself. A query written with <code class=\"inline-code\">#&gt;&gt;</code> and = does not use it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (COSTS OFF)\nSELECT order_id FROM orders_big WHERE details #>> '{items,0,sku}' = 'SKU-42';",
+    "caption": "Same intent, no index"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Gather\n   Workers Planned: 2\n   ->  Parallel Seq Scan on orders_big\n         Filter: ((details #>> '{items,0,sku}'::text[]) = 'SKU-42'::text)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the most common reason a JSONB index \"does not work\". Rewrite the filter with @> (or @?), or create an expression index for the exact expression you query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "jsonb_ops vs jsonb_path_ops",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "GIN has two operator classes for jsonb. The default, <code class=\"inline-code\">jsonb_ops</code>, supports <code class=\"inline-code\">?</code>, <code class=\"inline-code\">?|</code>, <code class=\"inline-code\">?&amp;</code>, <code class=\"inline-code\">@&gt;</code>, <code class=\"inline-code\">@?</code> and <code class=\"inline-code\">@@</code>. <code class=\"inline-code\">jsonb_path_ops</code> supports only <code class=\"inline-code\">@&gt;</code>, <code class=\"inline-code\">@?</code> and <code class=\"inline-code\">@@</code>, but it is usually smaller and more selective."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_big_details_pathops\n    ON orders_big USING GIN (details jsonb_path_ops);\n\nSELECT indexrelname, pg_size_pretty(pg_relation_size(indexrelid)) AS size\n  FROM pg_stat_user_indexes\n WHERE relname = 'orders_big'\n ORDER BY indexrelname;",
+    "caption": "Compare index sizes"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "        indexrelname        |  size\n----------------------------+---------\n orders_big_details_gin     | 5264 kB\n orders_big_details_pathops | 3496 kB\n orders_big_pkey            | 4408 kB",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "After dropping the default index, @> and @? still use the jsonb_path_ops index, but a key-exists query falls back to a sequential scan:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DROP INDEX orders_big_details_gin;\n\nEXPLAIN (COSTS OFF)\nSELECT order_id FROM orders_big WHERE details ? 'coupon';",
+    "caption": "? cannot use jsonb_path_ops"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Gather\n   Workers Planned: 2\n   ->  Parallel Seq Scan on orders_big\n         Filter: (details ? 'coupon'::text)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Operator class",
+      "Operators supported",
+      "Choose it when"
+     ],
+     [
+      "jsonb_ops (default)",
+      "? ?| ?& @> @? @@",
+      "You test for key existence, or query patterns vary"
+     ],
+     [
+      "jsonb_path_ops",
+      "@> @? @@",
+      "You only search by containment or JSON path and want a smaller index"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "B-tree expression index for one hot field",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If most queries filter on one field with = or a range, a normal B-tree index on that expression is often smaller and faster than a GIN index on the whole document. The query must use exactly the same expression, including the cast:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_big_status_idx ON orders_big ((details ->> 'status'));\nCREATE INDEX orders_big_amount_idx\n    ON orders_big (((details #>> '{payment,amount}')::numeric));\nANALYZE orders_big;\n\nEXPLAIN (COSTS OFF)\nSELECT order_id FROM orders_big\n WHERE (details #>> '{payment,amount}')::numeric > 5090;",
+    "caption": "Expression indexes"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Bitmap Heap Scan on orders_big\n   Recheck Cond: (((details #>> '{payment,amount}'::text[]))::numeric > '5090'::numeric)\n   ->  Bitmap Index Scan on orders_big_amount_idx\n         Index Cond: (((details #>> '{payment,amount}'::text[]))::numeric > '5090'::numeric)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Note the extra parentheses around each expression in CREATE INDEX. The syntax normally requires them for an index expression; they can be left out only when the expression is a single function call."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "operator does not exist: text > integer",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id FROM orders WHERE details #>> '{payment,amount}' > 1000;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  operator does not exist: text > integer\nLINE 1: ..._id FROM orders WHERE details #>> '{payment,amount}' > 1000;\n                                                                ^\nHINT:  No operator matches the given name and argument types. You might need to add explicit type casts.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> cast the text, <code class=\"inline-code\">(details #&gt;&gt; '{payment,amount}')::numeric &gt; 1000</code>. Do not compare as text: as strings, '999' sorts after '1000'."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "operator does not exist: text ->> unknown",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id FROM orders WHERE details ->> 'payment' ->> 'amount' > 1000;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  operator does not exist: text ->> unknown",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> after the first <code class=\"inline-code\">-&gt;&gt;</code> you have text, not JSON, so you cannot go deeper. Use <code class=\"inline-code\">-&gt;</code> for every step except the last: <code class=\"inline-code\">details -&gt; 'payment' -&gt;&gt; 'amount'</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "invalid input syntax for type json",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_id FROM orders WHERE details -> 'status' = 'shipped';",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  invalid input syntax for type json\nLINE 1: ... order_id FROM orders WHERE details -> 'status' = 'shipped';\n                                                             ^\nDETAIL:  Token \"shipped\" is invalid.\nCONTEXT:  JSON data, line 1: shipped",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> <code class=\"inline-code\">-&gt;</code> returns jsonb, so PostgreSQL tries to read 'shipped' as JSON, and a bare word is not valid JSON. Either compare text with <code class=\"inline-code\">details -&gt;&gt; 'status' = 'shipped'</code>, or compare JSON with <code class=\"inline-code\">details -&gt; 'status' = '\"shipped\"'</code>. The same error appears when you assign <code class=\"inline-code\">details['status'] = 'shipped'</code>: the value needs JSON quotes, '\"shipped\"'."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Other traps",
+    "level": 3
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Using <code class=\"inline-code\">?</code> for a nested key. It only checks the top level, so <code class=\"inline-code\">details ? 'method'</code> found nothing in our table.",
+      "items": []
+     },
+     {
+      "content": "Expecting jsonb_set to create a missing parent object. It returns the document unchanged; use a subscript assignment instead.",
+      "items": []
+     },
+     {
+      "content": "Creating a GIN index and filtering with ->> = 'value'. That expression cannot use the GIN index; use @> or an expression index.",
+      "items": []
+     },
+     {
+      "content": "Treating a missing key and a JSON null as the same thing. Check with ? when it matters.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Pull fields you filter, join or sort on all the time out into normal columns. JSONB is best for the attributes that vary from row to row.",
+      "items": []
+     },
+     {
+      "content": "Keep documents a manageable size. The documentation points out that any update locks the whole row, and changing one key writes a new version of the whole row, which matters for <a href=\"/posts/postgresql/postgresql-dba-part-13-table-index-bloat/\">table bloat</a> and vacuum work (see <a href=\"/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/\">MVCC and row versions</a>).",
+      "items": []
+     },
+     {
+      "content": "One GIN index per jsonb column is usually enough, since each extra index slows down writes. Use jsonb_path_ops if you never need ?, ?| or ?&.",
+      "items": []
+     },
+     {
+      "content": "Always confirm with EXPLAIN that your query actually uses the index you built.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I query a nested JSONB field in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Chain <code class=\"inline-code\">-&gt;</code> for each level and finish with <code class=\"inline-code\">-&gt;&gt;</code> to get text, for example <code class=\"inline-code\">details -&gt; 'payment' -&gt;&gt; 'method'</code>, or use the path form <code class=\"inline-code\">details #&gt;&gt; '{payment,method}'</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I query a JSONB array of objects?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To filter, use containment: <code class=\"inline-code\">details @&gt; '{\"items\": [{\"sku\": \"PN-220\"}]}'</code>. For conditions like greater than, use a JSON path with @?. To report on the elements, expand them with jsonb_array_elements or jsonb_to_recordset in a LATERAL join."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between -> and ->> in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "-> returns jsonb, so you can keep navigating or compare with JSON values. ->> returns text, ready for SQL comparisons, casts and output."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does a GIN index help with ->> queries?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. The default GIN operator class supports @>, ?, ?|, ?&, @? and @@, and jsonb_path_ops supports only @>, @? and @@. Neither helps ->> with =. For ->> with = or ranges, create a B-tree index on that exact expression."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Store documents as jsonb, not json, unless you need the original text.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use -> to navigate and ->> on the last step to get text; cast before numeric comparisons.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Filter with @> for containment and @? for conditions inside arrays.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Remember ? checks only the top level, and a missing key is not the same as JSON null.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Expand arrays with jsonb_array_elements or jsonb_to_recordset in a LATERAL join.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Update with jsonb_set, ||, -, #- or subscripts; subscripts create missing parents.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Index with GIN (jsonb_ops or jsonb_path_ops) or a B-tree expression index, and check with EXPLAIN.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your JSONB column has a GIN index, yet the query still does a full table scan. The operator you picked is usually why.\n\n5 things to know when you query JSONB in PostgreSQL:\n\n→ -> returns jsonb, ->> returns text. Use -> on every step except the last: details -> 'payment' ->> 'method'\n\n→ ->> gives text, so cast before comparing numbers, or you get \"operator does not exist: text > integer\"\n\n→ @> searches at any depth, even inside arrays of objects, and a plain GIN index supports it. A filter like details ->> 'status' = 'shipped' cannot use that GIN index; it needs a B-tree expression index\n\n→ The ? operator only checks top-level keys. details ? 'method' finds nothing if method sits inside payment\n\n→ jsonb_set does nothing if a parent key is missing. A subscript update, details['shipping']['city'] = '\"Pune\"', creates it\n\nBonus for PostgreSQL 18: casting a jsonb null to int now returns NULL instead of an error.\n\nWhich JSONB operator do you use most in your queries: ->>, @> or JSON path?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #Database #JSONB",
+  "slides": [
+   {
+    "title": "How to Query JSONB in PostgreSQL",
+    "body": "Operators, arrays, updates and indexes, tested on PostgreSQL 18"
+   },
+   {
+    "title": "-> keeps JSON, ->> gives text",
+    "points": [
+     "-> returns jsonb: \"shipped\" with quotes",
+     "->> returns text you can compare or cast",
+     "Use ->> only on the last step of a path"
+    ],
+    "code": "SELECT details -> 'payment'\n       ->> 'method' AS method\n  FROM orders;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Cast before comparing numbers",
+    "body": "->> always returns text. Comparing it with 1000 fails with operator does not exist: text > integer. Cast it to numeric first.",
+    "code": "SELECT order_id FROM orders\n WHERE (details #>> '{payment,amount}')\n       ::numeric > 1000;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "@> searches inside arrays",
+    "points": [
+     "Matches nested objects at any depth",
+     "Array order does not matter",
+     "A plain GIN index supports it"
+    ],
+    "code": "SELECT order_id FROM orders\n WHERE details @>\n  '{\"items\": [{\"sku\": \"PN-220\"}]}';",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Pick the right GIN index",
+    "points": [
+     "jsonb_ops (default): ? ?| ?& @> @? @@",
+     "jsonb_path_ops: @> @? @@ only, smaller",
+     "->> = 'x' needs a B-tree expression index"
+    ],
+    "code": "CREATE INDEX orders_details_gin\n  ON orders USING GIN (details);",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Traps that return wrong results",
+    "points": [
+     "? checks only top-level keys",
+     "A missing key is not the same as JSON null",
+     "jsonb_set skips paths whose parent is missing",
+     "PostgreSQL 18: jsonb null cast to int gives NULL"
+    ]
+   }
+  ]
+ }
+}
