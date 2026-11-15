@@ -1,0 +1,890 @@
+{
+ "schemaVersion": 1,
+ "title": "Oracle Materialized View Refresh: Fast, Complete, On Commit",
+ "slug": "oracle-materialized-view-refresh",
+ "category": "plsql",
+ "description": "Refresh an Oracle materialized view with DBMS_MVIEW.REFRESH: complete vs fast refresh, materialized view logs, ON COMMIT, schedules and EXPLAIN_MVIEW.",
+ "focusKeyword": "oracle materialized view refresh",
+ "tags": [
+  "oracle",
+  "materialized-view",
+  "performance",
+  "dbms-mview"
+ ],
+ "related": [
+  "/posts/plsql/how-to-read-explain-plan-in-oracle/",
+  "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle 19c SQL Reference: CREATE MATERIALIZED VIEW",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/CREATE-MATERIALIZED-VIEW.html"
+  },
+  {
+   "title": "Oracle 19c SQL Reference: CREATE MATERIALIZED VIEW LOG",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/CREATE-MATERIALIZED-VIEW-LOG.html"
+  },
+  {
+   "title": "Oracle 19c PL/SQL Packages: DBMS_MVIEW",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/arpls/DBMS_MVIEW.html"
+  },
+  {
+   "title": "Oracle 19c Data Warehousing Guide: Basic Materialized Views",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/dwhsg/basic-materialized-views.html"
+  },
+  {
+   "title": "Oracle 19c Data Warehousing Guide: Refreshing Materialized Views",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/dwhsg/refreshing-materialized-views.html"
+  },
+  {
+   "title": "Oracle 19c Reference: ALL_MVIEWS",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/ALL_MVIEWS.html"
+  },
+  {
+   "title": "Oracle error help: ORA-12015, ORA-12034, ORA-12052, ORA-23413",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-12052/"
+  }
+ ],
+ "reviewNotes": "Written from the Oracle 19c docs; no example has been run, all output blocks are expected output and need a test run on 19c/23ai. Please verify: (1) STALENESS shows STALE (not UNKNOWN) for the first on-demand view after the insert; (2) the EXPLAIN_MVIEW output rows and message texts for the SUM-without-COUNT query (modelled on doc Example 5-9; exact rows may differ, especially REFRESH_FAST_AFTER_INSERT, which may be N if the log check fails); (3) MLOG$_ORDERS is the generated log table name; (4) the claim that a non-atomic complete refresh can leave the view visibly empty (docs say it uses TRUNCATE); (5) the 19c doc text lists lowercase 'f' for fast in DBMS_MVIEW.REFRESH, uppercase 'F' is widely used, confirm it works; (6) MAT_VIEW REWRITE ACCESS plan operation name. The DBMS_SCHEDULER example needs CREATE JOB privilege.",
+ "generatedAt": "2026-11-15T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To refresh a materialized view in Oracle, call <code class=\"inline-code\">DBMS_MVIEW.REFRESH</code> with the view name and a method: <code class=\"inline-code\">'C'</code> for a complete refresh, <code class=\"inline-code\">'F'</code> for a fast (incremental) refresh, or <code class=\"inline-code\">'?'</code> to let Oracle choose. You can also make Oracle refresh it for you, either at every commit (<code class=\"inline-code\">ON COMMIT</code>) or on a schedule (<code class=\"inline-code\">START WITH ... NEXT ...</code>)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Which option is right depends on how fresh the data must be, how big the view is, and whether your query qualifies for fast refresh. This tutorial builds one small summary view and walks through every refresh option on it, with the dictionary queries you need to check what actually happened."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How materialized view refresh works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A normal view stores only a query. A materialized view stores the <b>result</b> of the query as a real table. Reads are fast because the work is already done, but the stored rows go out of date as soon as someone changes the base tables (Oracle calls them master or detail tables). A refresh brings the stored rows back in line with the base tables."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every materialized view has two refresh settings. The <b>method</b> decides how the rows are rebuilt. The <b>mode</b> decides when the refresh runs."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Refresh method",
+      "What Oracle does",
+      "Needs a materialized view log?"
+     ],
+     [
+      "COMPLETE",
+      "Truncates or deletes the stored rows and runs the full defining query again",
+      "No"
+     ],
+     [
+      "FAST",
+      "Applies only the changes recorded since the last refresh",
+      "Yes, on every base table"
+     ],
+     [
+      "FORCE",
+      "Fast refresh if possible, otherwise complete. This is the default",
+      "Only for the fast path"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Refresh mode",
+      "When the refresh runs"
+     ],
+     [
+      "ON DEMAND",
+      "Only when you call a DBMS_MVIEW refresh procedure. This is the default"
+     ],
+     [
+      "ON COMMIT",
+      "As part of every commit that changed a base table"
+     ],
+     [
+      "ON STATEMENT",
+      "After every DML statement on a base table (fast refresh only, strict join rules)"
+     ],
+     [
+      "START WITH / NEXT",
+      "Automatically at the times you give"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "So if you write <code class=\"inline-code\">CREATE MATERIALIZED VIEW ... AS SELECT ...</code> with no refresh clause at all, you get <code class=\"inline-code\">REFRESH FORCE ON DEMAND</code>: nothing refreshes until you ask, and when you ask, Oracle tries fast first. Many people expect a materialized view to update itself and are surprised when it never changes."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run this in a test schema. It creates an orders table with five rows across three customers."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE orders (\n  order_id     NUMBER        PRIMARY KEY,\n  customer_id  NUMBER        NOT NULL,\n  order_date   DATE          NOT NULL,\n  amount       NUMBER(10,2)  NOT NULL,\n  status       VARCHAR2(10)  NOT NULL\n);\n\nINSERT INTO orders VALUES (1, 101, DATE '2026-11-01', 250, 'SHIPPED');\nINSERT INTO orders VALUES (2, 101, DATE '2026-11-02', 100, 'SHIPPED');\nINSERT INTO orders VALUES (3, 102, DATE '2026-11-02', 400, 'PENDING');\nINSERT INTO orders VALUES (4, 103, DATE '2026-11-03',  75, 'SHIPPED');\nINSERT INTO orders VALUES (5, 102, DATE '2026-11-04', 125, 'SHIPPED');\nCOMMIT;",
+    "caption": "Sample orders table"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Your user needs the <code class=\"inline-code\">CREATE MATERIALIZED VIEW</code> system privilege (or a role that has it) to follow along."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Complete refresh on demand",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Start with the simplest case: a summary of order count and total amount per customer, refreshed only when you ask, and always rebuilt in full."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: create the materialized view",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE MATERIALIZED VIEW customer_sales_mv\n  BUILD IMMEDIATE\n  REFRESH COMPLETE ON DEMAND\nAS\nSELECT customer_id,\n       COUNT(*)    AS order_count,\n       SUM(amount) AS total_amount\n  FROM orders\n GROUP BY customer_id;\n\nSELECT * FROM customer_sales_mv ORDER BY customer_id;",
+    "caption": "Complete refresh, on demand"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CUSTOMER_ID ORDER_COUNT TOTAL_AMOUNT\n----------- ----------- ------------\n        101           2          350\n        102           2          525\n        103           1           75",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">BUILD IMMEDIATE</code> (the default) runs the query now and fills the view. With <code class=\"inline-code\">BUILD DEFERRED</code> the view stays empty until the first refresh, which must be a complete one."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: change the base table and see the stale data",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "INSERT INTO orders VALUES (6, 103, DATE '2026-11-05', 300, 'PENDING');\nCOMMIT;\n\nSELECT * FROM customer_sales_mv WHERE customer_id = 103;\n\nSELECT mview_name, staleness, last_refresh_type,\n       TO_CHAR(last_refresh_date, 'YYYY-MM-DD HH24:MI') AS last_refresh\n  FROM user_mviews\n WHERE mview_name = 'CUSTOMER_SALES_MV';",
+    "caption": "New order, then check the view"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CUSTOMER_ID ORDER_COUNT TOTAL_AMOUNT\n----------- ----------- ------------\n        103           1           75\n\nMVIEW_NAME          STALENESS  LAST_REFRESH_TYPE LAST_REFRESH\n------------------- ---------- ----------------- ----------------\nCUSTOMER_SALES_MV   STALE      COMPLETE          2026-11-15 09:10",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The view still says customer 103 has one order. That is expected: an on-demand view does not move until you refresh it. The <code class=\"inline-code\">STALENESS</code> column in <code class=\"inline-code\">USER_MVIEWS</code> tells you the stored rows no longer match the base table. Other values you may see are <code class=\"inline-code\">FRESH</code>, <code class=\"inline-code\">UNUSABLE</code> (built deferred, never refreshed), <code class=\"inline-code\">UNKNOWN</code> and <code class=\"inline-code\">NEEDS_COMPILE</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: run the refresh",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "BEGIN\n  DBMS_MVIEW.REFRESH(list => 'CUSTOMER_SALES_MV', method => 'C');\nEND;\n/\n\nSELECT * FROM customer_sales_mv WHERE customer_id = 103;",
+    "caption": "Complete refresh with DBMS_MVIEW"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CUSTOMER_ID ORDER_COUNT TOTAL_AMOUNT\n----------- ----------- ------------\n        103           2          375",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In SQL*Plus or SQL Developer you can write the same call as <code class=\"inline-code\">EXEC DBMS_MVIEW.REFRESH('CUSTOMER_SALES_MV', 'C');</code>. A complete refresh re-reads the whole orders table every time. That is fine for five rows. For a view built over hundreds of millions of rows it can take a long time, which is why fast refresh exists."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fast refresh with a materialized view log",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A fast refresh applies only the rows that changed. To know what changed, Oracle needs a <b>materialized view log</b> on each base table. The log is a separate table that records every insert, update and delete on the base table until the dependent views have consumed it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: create the log",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "DROP MATERIALIZED VIEW customer_sales_mv;\n\nCREATE MATERIALIZED VIEW LOG ON orders\n  WITH ROWID, SEQUENCE (customer_id, amount)\n  INCLUDING NEW VALUES;\n\nSELECT master, log_table FROM user_mview_logs;",
+    "caption": "Log on the orders table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "MASTER   LOG_TABLE\n-------- -------------\nORDERS   MLOG$_ORDERS",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each part of the log definition has a job. For a view with aggregates, the Data Warehousing Guide requires all of these:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">WITH ROWID</code>: record the rowid of each changed row.",
+      "items": []
+     },
+     {
+      "content": "The column list <code class=\"inline-code\">(customer_id, amount)</code>: every column of the table that the view uses.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">INCLUDING NEW VALUES</code>: store new values as well as old ones, so Oracle can subtract the old amount and add the new one.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">SEQUENCE</code>: ordering information, needed when the table gets a mix of inserts, updates and deletes.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: create a fast-refreshable view",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE MATERIALIZED VIEW customer_sales_mv\n  BUILD IMMEDIATE\n  REFRESH FAST ON DEMAND\nAS\nSELECT customer_id,\n       COUNT(*)      AS order_count,\n       SUM(amount)   AS total_amount,\n       COUNT(amount) AS amount_count\n  FROM orders\n GROUP BY customer_id;",
+    "caption": "Fast refresh, on demand"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice the extra <code class=\"inline-code\">COUNT(amount)</code> column. For a fast-refreshable aggregate view, <code class=\"inline-code\">COUNT(*)</code> must be in the select list, and each aggregate such as <code class=\"inline-code\">SUM(amount)</code> or <code class=\"inline-code\">AVG(amount)</code> needs its matching <code class=\"inline-code\">COUNT(amount)</code>. Oracle uses these counts to know when a group becomes empty after deletes. Leave them out and fast refresh after updates or deletes is not possible."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "If you add a log to a table that already has a materialized view, do one complete refresh of that view before the first fast refresh. Otherwise the fast refresh fails with ORA-12034: materialized view log younger than last refresh."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: change data and fast refresh",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "UPDATE orders SET amount = 450 WHERE order_id = 3;\nDELETE FROM orders WHERE order_id = 2;\nCOMMIT;\n\nSELECT COUNT(*) AS pending_changes FROM mlog$_orders;\n\nBEGIN\n  DBMS_MVIEW.REFRESH(list => 'CUSTOMER_SALES_MV', method => 'F');\nEND;\n/",
+    "caption": "Update, delete, then fast refresh"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT customer_id, order_count, total_amount\n  FROM customer_sales_mv\n ORDER BY customer_id;\n\nSELECT last_refresh_type, staleness\n  FROM user_mviews\n WHERE mview_name = 'CUSTOMER_SALES_MV';",
+    "caption": "Check the result"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CUSTOMER_ID ORDER_COUNT TOTAL_AMOUNT\n----------- ----------- ------------\n        101           1          250\n        102           2          575\n        103           2          375\n\nLAST_REFRESH_TYPE STALENESS\n----------------- ----------\nFAST              FRESH",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Customer 101 lost an order, customer 102's total rose by 50, and <code class=\"inline-code\">LAST_REFRESH_TYPE</code> confirms Oracle used the fast path. The pending-changes count shows a few rows in the log before the refresh (the exact number depends on how Oracle records the update). After the refresh those rows are purged, because by default the log is purged right after refresh once no other view still needs them."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Automatic refresh: ON COMMIT and scheduled refresh",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ON COMMIT: always current",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ALTER MATERIALIZED VIEW customer_sales_mv REFRESH FAST ON COMMIT;\n\nINSERT INTO orders VALUES (7, 101, DATE '2026-11-06', 60, 'PENDING');\nCOMMIT;\n\nSELECT order_count, total_amount\n  FROM customer_sales_mv\n WHERE customer_id = 101;",
+    "caption": "Switch to ON COMMIT"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORDER_COUNT TOTAL_AMOUNT\n----------- ------------\n          2          310",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No refresh call was needed. The view changed as part of the commit. The price is that every commit on orders now does extra work, so commits get slower. On a busy OLTP table that cost is paid by every user who writes to it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the refresh fails at commit time, Oracle writes the list of views it could not refresh to the alert log, and you have to refresh them by hand. ON COMMIT is also not supported for views over remote tables, and once it is set you cannot run distributed transactions against the master table."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Scheduled refresh: every 30 minutes",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "ALTER MATERIALIZED VIEW customer_sales_mv\n  REFRESH FAST ON DEMAND\n  START WITH SYSDATE\n  NEXT SYSDATE + 30/1440;",
+    "caption": "Refresh every 30 minutes"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">START WITH</code> is the first run. <code class=\"inline-code\">NEXT</code> is a date expression evaluated after each refresh to get the next run time; <code class=\"inline-code\">30/1440</code> is 30 minutes as a fraction of a day. For daily at 2 AM you would write <code class=\"inline-code\">NEXT TRUNC(SYSDATE) + 1 + 2/24</code>. You cannot combine <code class=\"inline-code\">START WITH</code> or <code class=\"inline-code\">NEXT</code> with <code class=\"inline-code\">ON COMMIT</code>, which is why the statement switches back to <code class=\"inline-code\">ON DEMAND</code> first."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Many DBAs prefer to leave the view <code class=\"inline-code\">ON DEMAND</code> and create a <code class=\"inline-code\">DBMS_SCHEDULER</code> job that calls <code class=\"inline-code\">DBMS_MVIEW.REFRESH</code>. You get run history and error messages in <code class=\"inline-code\">USER_SCHEDULER_JOB_RUN_DETAILS</code>, and you can chain the refresh after the batch load that feeds it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "BEGIN\n  DBMS_SCHEDULER.CREATE_JOB(\n    job_name        => 'REFRESH_CUSTOMER_SALES',\n    job_type        => 'PLSQL_BLOCK',\n    job_action      => 'BEGIN DBMS_MVIEW.REFRESH(''CUSTOMER_SALES_MV'', ''F''); END;',\n    repeat_interval => 'FREQ=MINUTELY; INTERVAL=30',\n    enabled         => TRUE);\nEND;\n/",
+    "caption": "Same schedule with DBMS_SCHEDULER"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why fast refresh fails, and how to find out",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a view cannot be fast refreshed, Oracle tells you with one of these errors:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Error",
+      "Typical cause"
+     ],
+     [
+      "ORA-23413: table does not have a materialized view log",
+      "Fast refresh requested but a base table has no log"
+     ],
+     [
+      "ORA-12015: cannot create a fast refresh materialized view from a complex query",
+      "The query uses something fast refresh cannot handle"
+     ],
+     [
+      "ORA-12052: cannot fast refresh materialized view",
+      "Rowids missing from a join view, or the inner table of an outer join has no unique constraint on the join columns"
+     ],
+     [
+      "ORA-12034: materialized view log younger than last refresh",
+      "Log created after the last refresh of the view"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Instead of guessing, ask Oracle with <code class=\"inline-code\">DBMS_MVIEW.EXPLAIN_MVIEW</code>. It writes its findings to <code class=\"inline-code\">MV_CAPABILITIES_TABLE</code>, which you create once by running the <code class=\"inline-code\">utlxmv.sql</code> script from <code class=\"inline-code\">$ORACLE_HOME/rdbms/admin</code>. You can pass an existing view name or just a query you are planning to use."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "@?/rdbms/admin/utlxmv.sql\n\nBEGIN\n  DBMS_MVIEW.EXPLAIN_MVIEW(\n    'SELECT customer_id, SUM(amount) AS total_amount\n       FROM orders GROUP BY customer_id');\nEND;\n/\n\nSELECT capability_name, possible, SUBSTR(msgtxt, 1, 50) AS msgtxt\n  FROM mv_capabilities_table\n WHERE capability_name LIKE 'REFRESH%'\n ORDER BY seq;",
+    "caption": "Explain why a query is not fast refreshable"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CAPABILITY_NAME                 P MSGTXT\n------------------------------- - ----------------------------------------\nREFRESH_COMPLETE                Y\nREFRESH_FAST                    N\nREFRESH_FAST_AFTER_INSERT       Y\nREFRESH_FAST_AFTER_ONETAB_DML   N SUM(expr) without COUNT(expr)\nREFRESH_FAST_AFTER_ONETAB_DML   N COUNT(*) is not present in the select list\nREFRESH_FAST_AFTER_ANY_DML      N see the reason why REFRESH_FAST_AFTER_ONETA\nREFRESH_FAST_PCT                N PCT is not possible on any of the detail ta",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it from the top. <code class=\"inline-code\">REFRESH_FAST_AFTER_INSERT</code> means insert-only changes could be applied fast. <code class=\"inline-code\">REFRESH_FAST_AFTER_ONETAB_DML</code> is <code class=\"inline-code\">N</code>, and the message names the fix: add <code class=\"inline-code\">COUNT(*)</code> and <code class=\"inline-code\">COUNT(amount)</code>. Fix the reasons one by one and run it again until the capabilities you need show <code class=\"inline-code\">Y</code>. Delete old rows from <code class=\"inline-code\">MV_CAPABILITIES_TABLE</code> between runs so you do not mix results."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Some features rule out fast refresh entirely. The documented list includes non-repeatable expressions such as <code class=\"inline-code\">SYSDATE</code> and <code class=\"inline-code\">ROWNUM</code>, analytic functions such as <code class=\"inline-code\">RANK</code>, <code class=\"inline-code\">CONNECT BY</code>, the <code class=\"inline-code\">MODEL</code> clause, subqueries in the select list, and <code class=\"inline-code\">RAW</code> or <code class=\"inline-code\">LONG RAW</code> columns. For join views, the rowid of every table in the FROM list must appear in the select list."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "atomic_refresh: what readers see during a refresh",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">DBMS_MVIEW.REFRESH</code> has an <code class=\"inline-code\">atomic_refresh</code> parameter that matters a lot for complete refreshes."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "atomic_refresh",
+      "How a complete refresh runs",
+      "Effect"
+     ],
+     [
+      "TRUE (default)",
+      "Deletes and re-inserts rows in one transaction",
+      "Readers keep seeing the old data until commit. Slower, more undo and redo"
+     ],
+     [
+      "FALSE",
+      "Truncates the view, then reloads it, and can use parallel DML",
+      "Faster, but readers can see an empty or partly loaded view while it runs"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "BEGIN\n  DBMS_MVIEW.REFRESH(\n    list           => 'CUSTOMER_SALES_MV',\n    method         => 'C',\n    atomic_refresh => FALSE);\nEND;\n/",
+    "caption": "Non-atomic complete refresh"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">atomic_refresh => FALSE</code> for large views refreshed in a batch window when nobody is reading them. During business hours keep the default. Oracle 12c and later also offer <code class=\"inline-code\">out_of_place => TRUE</code>, which builds the new data in a separate table and swaps it in, so the view stays readable while the refresh runs."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "When you pass several views in one call with atomic_refresh left as TRUE, they are refreshed in a single transaction. If one fails, none of them are updated. That is good for consistency, but one broken view can hold back all the others."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Expecting a view with no refresh clause to update itself.</b> The default is <code class=\"inline-code\">ON DEMAND</code>. Check <code class=\"inline-code\">REFRESH_MODE</code> in <code class=\"inline-code\">USER_MVIEWS</code>.",
+      "items": []
+     },
+     {
+      "content": "<b>Using FORCE and assuming fast refresh happens.</b> FORCE silently falls back to complete. Check <code class=\"inline-code\">LAST_REFRESH_TYPE</code> after a refresh; if it says <code class=\"inline-code\">COMPLETE</code> on a view you designed for fast refresh, run <code class=\"inline-code\">EXPLAIN_MVIEW</code>.",
+      "items": []
+     },
+     {
+      "content": "<b>Missing COUNT columns.</b> An aggregate view without <code class=\"inline-code\">COUNT(*)</code> and <code class=\"inline-code\">COUNT(expr)</code> can only fast refresh after inserts, if at all.",
+      "items": []
+     },
+     {
+      "content": "<b>A log nobody consumes.</b> If a view that used a log is dropped or stops refreshing, the log keeps growing. Logs are purged only after every dependent view has refreshed. Check the size of MLOG$ tables from time to time.",
+      "items": []
+     },
+     {
+      "content": "<b>ON COMMIT on a busy OLTP table.</b> Every writer pays the refresh cost at commit. Measure commit times before and after in a test system.",
+      "items": []
+     },
+     {
+      "content": "<b>Assuming ALTER to FAST was validated.</b> Oracle checks fast refresh eligibility when you create the view with REFRESH FAST, but not when you change it to FAST with ALTER. The error only appears at the next refresh.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Gather statistics on a materialized view after you create it, just like a table. The CREATE MATERIALIZED VIEW documentation says this explicitly.",
+      "items": []
+     },
+     {
+      "content": "Index the columns people filter on. Indexes are maintained during refresh, so keep them to the ones you need.",
+      "items": []
+     },
+     {
+      "content": "Batch many small changes into one transaction when the view is ON COMMIT. The refresh then runs once at commit instead of per change.",
+      "items": []
+     },
+     {
+      "content": "Refresh views that depend on the same tables together, or use DBMS_MVIEW.REFRESH_DEPENDENT with the table name to refresh all views built on it.",
+      "items": []
+     },
+     {
+      "content": "If you want the optimizer to use the view automatically for queries against orders, add <code class=\"inline-code\">ENABLE QUERY REWRITE</code>. It is off by default. You can confirm a rewrite in the execution plan, where the view shows up as MAT_VIEW REWRITE ACCESS.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For reading those plans, see <a href=\"/posts/plsql/how-to-read-explain-plan-in-oracle/\">how to read an explain plan in Oracle</a>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between fast refresh and complete refresh in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A complete refresh runs the full defining query again and replaces all rows. A fast refresh reads the materialized view log and applies only the changes since the last refresh. Fast refresh needs logs on all base tables and a query that meets the fast refresh rules."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I check when a materialized view was last refreshed?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Query <code class=\"inline-code\">USER_MVIEWS</code> (or <code class=\"inline-code\">DBA_MVIEWS</code>): <code class=\"inline-code\">LAST_REFRESH_DATE</code> gives the time, <code class=\"inline-code\">LAST_REFRESH_TYPE</code> says FAST or COMPLETE, and <code class=\"inline-code\">STALENESS</code> says whether the data still matches the base tables."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I refresh a materialized view every 30 minutes in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">ALTER MATERIALIZED VIEW mv_name REFRESH START WITH SYSDATE NEXT SYSDATE + 30/1440</code>, or create a DBMS_SCHEDULER job with <code class=\"inline-code\">repeat_interval => 'FREQ=MINUTELY; INTERVAL=30'</code> that calls DBMS_MVIEW.REFRESH."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I query a materialized view while it is being refreshed?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes. With the default atomic refresh, readers see the old rows until the refresh commits. With atomic_refresh set to FALSE, a complete refresh truncates the view first, so readers can see it empty for a while."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does a materialized view refresh automatically when the table changes?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only if you created it with ON COMMIT (or ON STATEMENT). Otherwise it changes only when you call DBMS_MVIEW.REFRESH or when its START WITH / NEXT schedule fires."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Default refresh is FORCE ON DEMAND: nothing happens until you call DBMS_MVIEW.REFRESH.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use method 'C' for complete, 'F' for fast, '?' for force.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Fast refresh needs a materialized view log WITH ROWID, SEQUENCE, the used columns and INCLUDING NEW VALUES.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Aggregate views need COUNT(*) and COUNT(expr) for every SUM or AVG to fast refresh after updates and deletes.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Run DBMS_MVIEW.EXPLAIN_MVIEW to see exactly why fast refresh is not possible.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Check STALENESS, LAST_REFRESH_TYPE and LAST_REFRESH_DATE in USER_MVIEWS after every change you make.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use ON COMMIT only where the extra commit time is acceptable; otherwise schedule the refresh.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Keep atomic_refresh TRUE while users are reading; use FALSE in batch windows for big complete refreshes.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your Oracle materialized view shows yesterday's numbers even though the table changed. Here is why.\n\nA materialized view with no refresh clause is FORCE ON DEMAND. It never updates by itself.\n\n→ Refresh by hand: DBMS_MVIEW.REFRESH('MY_MV', 'C') for complete, 'F' for fast, '?' to let Oracle choose.\n→ Fast refresh needs a materialized view log on every base table: WITH ROWID, SEQUENCE, the used columns, INCLUDING NEW VALUES.\n→ Aggregate views need COUNT(*) plus COUNT(amount) next to SUM(amount), or fast refresh after updates and deletes is not possible.\n→ Not sure why fast refresh fails? Run DBMS_MVIEW.EXPLAIN_MVIEW. It tells you the exact missing piece.\n→ Check USER_MVIEWS: STALENESS, LAST_REFRESH_TYPE and LAST_REFRESH_DATE show what really happened. FORCE can quietly fall back to complete.\n\nON COMMIT keeps the view current but makes every commit on the base table slower. Scheduled refresh (NEXT SYSDATE + 30/1440) is often the safer choice.\n\nWhich do you use in production: ON COMMIT, scheduled refresh, or a manual refresh after the batch load?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #OracleDBA",
+  "slides": [
+   {
+    "title": "Oracle Materialized View Refresh",
+    "body": "Complete, fast, ON COMMIT and scheduled refresh, with examples"
+   },
+   {
+    "title": "The default never updates itself",
+    "points": [
+     "No refresh clause means FORCE ON DEMAND",
+     "Data changes only when you call a refresh",
+     "Check REFRESH_MODE in USER_MVIEWS"
+    ]
+   },
+   {
+    "title": "Refresh it by hand",
+    "points": [
+     "'C' = complete, 'F' = fast, '?' = force"
+    ],
+    "code": "BEGIN\n  DBMS_MVIEW.REFRESH(\n    list   => 'CUSTOMER_SALES_MV',\n    method => 'F');\nEND;\n/",
+    "lang": "plsql"
+   },
+   {
+    "title": "Fast refresh needs a log",
+    "code": "CREATE MATERIALIZED VIEW LOG ON orders\n  WITH ROWID, SEQUENCE\n  (customer_id, amount)\n  INCLUDING NEW VALUES;",
+    "lang": "sql",
+    "body": "The log records every change so Oracle applies only the delta."
+   },
+   {
+    "title": "Add the COUNT columns",
+    "code": "SELECT customer_id,\n       COUNT(*)      AS order_count,\n       SUM(amount)   AS total_amount,\n       COUNT(amount) AS amount_count\n  FROM orders\n GROUP BY customer_id",
+    "lang": "sql",
+    "body": "Without COUNT(*) and COUNT(expr), fast refresh after updates and deletes fails."
+   },
+   {
+    "title": "Ask Oracle why it fails",
+    "points": [
+     "Run DBMS_MVIEW.EXPLAIN_MVIEW on the view or query",
+     "Read MV_CAPABILITIES_TABLE ordered by SEQ",
+     "MSGTXT names the missing piece"
+    ]
+   },
+   {
+    "title": "ON COMMIT or scheduled?",
+    "points": [
+     "ON COMMIT: always current, slower commits",
+     "NEXT SYSDATE + 30/1440: every 30 minutes",
+     "Check LAST_REFRESH_TYPE after each run"
+    ]
+   }
+  ]
+ }
+}
