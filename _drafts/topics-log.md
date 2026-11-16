@@ -60,3 +60,4 @@
 - 2026-11-15 [Oracle] oracle materialized view refresh -> _drafts/2026-11-15-oracle-oracle-materialized-view-refresh.json
 - 2026-11-15 [PostgreSQL] postgresql jsonb query -> _drafts/2026-11-15-postgresql-postgresql-jsonb-query.json
 - 2026-11-16 [Oracle] ora-01403 no data found -> _drafts/2026-11-16-oracle-ora-01403-no-data-found.json
+- 2026-11-16 [PostgreSQL] postgresql wal archiving -> _drafts/2026-11-16-postgresql-postgresql-dba-part-19-wal-archiving.json

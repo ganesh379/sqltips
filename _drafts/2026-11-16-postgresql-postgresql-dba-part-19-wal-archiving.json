@@ -1,0 +1,1577 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 19: WAL Archiving with archive_command",
+ "slug": "postgresql-dba-part-19-wal-archiving",
+ "category": "postgresql",
+ "description": "Set up PostgreSQL WAL archiving with archive_mode and archive_command on Ubuntu, verify it with pg_stat_archiver, fix failures and clean old WAL.",
+ "focusKeyword": "postgresql wal archiving",
+ "tags": [
+  "postgresql-dba-series",
+  "wal",
+  "archiving",
+  "backup"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/",
+  "/posts/postgresql/postgresql-dba-part-3-data-directory-pgdata/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 25.3 Continuous Archiving and Point-in-Time Recovery (PITR)",
+   "url": "https://www.postgresql.org/docs/current/continuous-archiving.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.5 Write Ahead Log (Archiving settings)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-wal.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 27.2 The Cumulative Statistics System (pg_stat_archiver)",
+   "url": "https://www.postgresql.org/docs/current/monitoring-stats.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 9.28 System Administration Functions (pg_switch_wal, pg_walfile_name, pg_ls_archive_statusdir)",
+   "url": "https://www.postgresql.org/docs/current/functions-admin.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_archivecleanup",
+   "url": "https://www.postgresql.org/docs/current/pgarchivecleanup.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: F.5 basic_archive",
+   "url": "https://www.postgresql.org/docs/current/basic-archive.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Chapter 49 Archive Modules",
+   "url": "https://www.postgresql.org/docs/current/archive-modules.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 26.2 Log-Shipping Standby Servers (Continuous Archiving in Standby)",
+   "url": "https://www.postgresql.org/docs/current/warm-standby.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 28.5 WAL Configuration",
+   "url": "https://www.postgresql.org/docs/current/wal-configuration.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_basebackup",
+   "url": "https://www.postgresql.org/docs/current/app-pgbasebackup.html"
+  }
+ ],
+ "reviewNotes": "Series part 19. Part 18 (postgresql-dba-part-18-pg-basebackup) is not live yet: it is named without a link in the intro and not in related. Publish Part 18 first (Parts 15, 16 and 17 are also not live). Tested on PostgreSQL 18.7 (Ubuntu 18.7-1.pgdg24.04+2, PGDG packages) on Ubuntu 24.04.5 LTS; followed the PostgreSQL 18 documentation (docs/current pages in sources). All outputs are real; LSNs, PIDs, timestamps and sizes will differ for readers. SANDBOX CAVEATS: (1) postgresql-18 depends on liburing2, which could not be downloaded here (archive.ubuntu.com blocked) and installing a stub system package was not permitted this run. I therefore ran the real PGDG 18.7 binaries extracted from the postgresql-18, postgresql-client-18 and libpq5 .deb files, with a stub liburing.so.2 on LD_LIBRARY_PATH (only matters for io_method=io_uring; default io_method=worker was used). The cluster used the Ubuntu layout: config in /etc/postgresql/18/main, data in /var/lib/postgresql/18/main, cluster_name '18/main', log /var/log/postgresql/postgresql-18-main.log, Ubuntu's log_line_prefix. (2) No systemd and no pg_ctlcluster for 18 in the sandbox: restarts/reloads shown as sudo systemctl restart|reload postgresql@18-main were done with pg_ctl restart and SELECT pg_reload_conf() (same effect); those systemctl commands print nothing on success. (3) Steps 5 and 16: SHOW/pg_settings outputs are real. Step 9 was run three times: archive took 33 s, 53 s and about 2 minutes after the insert; the article shows the 33 s run and mentions the 2-minute case. (4) Step 15 basic_archive was really switched on and off; the archiver line and the three log lines are real. While testing, the FATAL 'both archive_command and archive_library set' error was produced by adding archive_library before emptying archive_command (real log). The wal_level=minimal FATAL was reproduced on a throwaway cluster on port 5433. (5) Log lines in the mistakes section and Step 15 have the timestamp/PID prefix removed (captioned). Step 11 log output is untrimmed. EDITOR CHECKS: 'archive_library since PostgreSQL 15' is from the 15.0 release notes; the claim that plain cp does not flush to disk before returning is general Linux behaviour, not from postgresql.org; pg_archivecleanup being on the PATH on Ubuntu was checked against postgresql-common's pg_wrapper (it always uses the latest installed version). No FAQ section (series rule); the autocomplete questions 'check archive mode', 'archive_mode always' and 'archive_command /bin/true' are answered in Steps 1/5, Step 4 and Common mistakes. LENGTH: prose is above the 3,200-word target (16 steps with option tables); easiest cuts are Step 15 (basic_archive) or Step 16.",
+ "generatedAt": "2026-11-16T13:10:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 19 of the PostgreSQL DBA series. <b>WAL archiving</b> means PostgreSQL copies every finished write-ahead log (WAL) file to a safe place outside the data directory, using the command you put in <code class=\"inline-code\">archive_command</code>. You turn it on with three settings: <code class=\"inline-code\">wal_level = replica</code>, <code class=\"inline-code\">archive_mode = on</code> and an <code class=\"inline-code\">archive_command</code> (or an <code class=\"inline-code\">archive_library</code>), followed by one restart. By the end of this part you will have archiving running on PostgreSQL 18, you will know how to prove it works, how to spot a failing archive before it fills your disk, and how to clean up old archived files safely."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 18 we covered physical backups with <code class=\"inline-code\">pg_basebackup</code>. A base backup on its own only lets you go back to the moment it was taken. Add a continuous archive of WAL files and you can replay changes up to any later point in time, which is what Part 20 (point-in-time recovery) builds on."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "What WAL archiving is and why a base backup alone is not enough",
+      "items": []
+     },
+     {
+      "content": "How to set <code class=\"inline-code\">archive_mode</code>, <code class=\"inline-code\">archive_command</code> and <code class=\"inline-code\">archive_timeout</code>, and which of them need a restart",
+      "items": []
+     },
+     {
+      "content": "How to prove WAL files reach the archive with <code class=\"inline-code\">pg_switch_wal()</code>, <code class=\"inline-code\">pg_stat_archiver</code> and the <code class=\"inline-code\">archive_status</code> folder",
+      "items": []
+     },
+     {
+      "content": "What a failing archive looks like in the log, and how to fix it",
+      "items": []
+     },
+     {
+      "content": "How to remove old archived WAL safely with <code class=\"inline-code\">pg_archivecleanup</code>",
+      "items": []
+     },
+     {
+      "content": "How to use the <code class=\"inline-code\">basic_archive</code> module instead of a shell command",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 18 of this series, especially Part 5 (postgresql.conf, reload vs restart), Part 15 (WAL basics) and Part 18 (pg_basebackup).",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server (we call it db1) with PostgreSQL 18 from the PGDG repository and the default cluster <code class=\"inline-code\">18 main</code> running on port 5432.",
+      "items": []
+     },
+     {
+      "content": "A user with <code class=\"inline-code\">sudo</code> rights. Database commands run as the <code class=\"inline-code\">postgres</code> operating system user.",
+      "items": []
+     },
+     {
+      "content": "A place for the archive. In this lab it is the folder <code class=\"inline-code\">/mnt/wal_archive</code>. In production it must be on a different disk, and ideally a different machine, from the database.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 15 you met WAL: the notebook PostgreSQL writes every change into before it touches the real data files. That notebook is split into files called <b>WAL segments</b>, 16 MB each by default, with names like <code class=\"inline-code\">000000010000000000000003</code>. The name grows by one for every new segment."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Without archiving, PostgreSQL keeps only the segments it still needs for crash recovery. After a checkpoint, older segments are deleted or renamed and reused. That is fine for crash recovery, but it means the history of changes is lost."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With archiving on, a background process called the <b>archiver</b> copies each segment somewhere safe as soon as the segment is full, before PostgreSQL is allowed to recycle it. Think of it as photocopying each page of the notebook before the page is torn out and reused."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "primary db1 (10.0.0.11:5432)\n  pg_wal/000000010000000000000003  (full segment)\n  pg_wal/archive_status/...03.ready\n        |\n        |  archiver runs archive_command\n        v\narchive storage: /mnt/wal_archive/000000010000000000000003\n        |\n        |  archiver sees exit status 0\n        v\n  pg_wal/archive_status/...03.done  -> segment may now be recycled",
+    "caption": "How a WAL segment travels to the archive"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The steps behind that picture:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "When a segment is complete, PostgreSQL writes an empty marker file <code class=\"inline-code\">&lt;segment&gt;.ready</code> in <code class=\"inline-code\">pg_wal/archive_status/</code>.",
+      "items": []
+     },
+     {
+      "content": "The archiver runs your <code class=\"inline-code\">archive_command</code>. In the command, <code class=\"inline-code\">%p</code> is replaced by the path of the file to archive (relative to the data directory, for example <code class=\"inline-code\">pg_wal/000000010000000000000003</code>) and <code class=\"inline-code\">%f</code> by the file name alone. Use <code class=\"inline-code\">%%</code> for a real percent sign.",
+      "items": []
+     },
+     {
+      "content": "If the command exits with status 0, PostgreSQL treats the file as archived and renames the marker to <code class=\"inline-code\">.done</code>. Only then can the segment be removed or recycled.",
+      "items": []
+     },
+     {
+      "content": "If the command exits with any other status, the file stays <code class=\"inline-code\">.ready</code> and PostgreSQL tries again later. The segment is kept in <code class=\"inline-code\">pg_wal</code> until it succeeds.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "That last point is the whole safety contract: <b>your command must return 0 only when the file really is safely stored</b>. A command that always returns 0 makes PostgreSQL throw away WAL it never saved. A command that keeps failing makes WAL pile up in <code class=\"inline-code\">pg_wal</code> until the disk fills."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An archive is only useful together with a base backup. The base backup is the starting snapshot of the data files. The archived WAL is every change made after it. Recovery restores the snapshot and replays the WAL on top."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Archiving and replication are different jobs",
+    "text": "Streaming replication (Parts 33 to 36) sends WAL to a standby server within seconds. Archiving copies whole 16 MB files, so on a quiet server a segment can take a long time to fill. <code class=\"inline-code\">archive_timeout</code>, which you will set in Step 4, limits that delay."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prepare the archive location",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Check the current settings",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the <code class=\"inline-code\">postgres</code> user, open psql and look at the settings that control archiving. The <code class=\"inline-code\">context</code> column tells you how a change is applied: <code class=\"inline-code\">postmaster</code> means a restart is needed, <code class=\"inline-code\">sighup</code> means a reload is enough."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, context\n  FROM pg_settings\n WHERE name IN ('wal_level', 'archive_mode', 'archive_command',\n                'archive_library', 'archive_timeout')\n ORDER BY name;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "      name       |  setting   |  context   \n-----------------+------------+------------\n archive_command | (disabled) | sighup\n archive_library |            | sighup\n archive_mode    | off        | postmaster\n archive_timeout | 0          | sighup\n wal_level       | replica    | postmaster\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">wal_level</code> is already <code class=\"inline-code\">replica</code>, the default, which is the minimum archiving needs. <code class=\"inline-code\">archive_mode</code> is <code class=\"inline-code\">off</code>, so <code class=\"inline-code\">archive_command</code> shows <code class=\"inline-code\">(disabled)</code>. <code class=\"inline-code\">archive_mode</code> has context <code class=\"inline-code\">postmaster</code>, so turning it on will need a restart. The other three can be changed with a reload."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check:</b> if <code class=\"inline-code\">wal_level</code> shows <code class=\"inline-code\">minimal</code> on your server, set it to <code class=\"inline-code\">replica</code> in the same edit as Step 4. Archiving cannot be enabled with <code class=\"inline-code\">minimal</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Create the archive directory",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as your sudo user, create the folder and give it to <code class=\"inline-code\">postgres</code>. The archive command runs as the same operating system user as the server, so <code class=\"inline-code\">postgres</code> must be able to write here. The documentation also advises that the archive should not be readable by other users, because WAL contains every change to your data."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo mkdir -p /mnt/wal_archive\nsudo chown postgres:postgres /mnt/wal_archive\nsudo chmod 700 /mnt/wal_archive\nls -ld /mnt/wal_archive",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Command",
+      "What it does"
+     ],
+     [
+      "mkdir -p",
+      "Creates the folder, and any missing parent folders"
+     ],
+     [
+      "chown postgres:postgres",
+      "Makes the postgres user and group the owner"
+     ],
+     [
+      "chmod 700",
+      "Only the owner can read, write or enter the folder"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "drwx------ 2 postgres postgres 4096 Nov 16 12:48 /mnt/wal_archive",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">drwx------</code> and the owner <code class=\"inline-code\">postgres</code> are what you want. In production, mount a separate disk or a network share from your backup host at this path. If the archive sits on the same disk as the database, one disk failure takes both."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Test the archive command by hand",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before PostgreSQL uses a command, run it yourself as <code class=\"inline-code\">postgres</code> with a dummy file. We use the command from the PostgreSQL documentation: <code class=\"inline-code\">test ! -f /mnt/wal_archive/%f && cp %p /mnt/wal_archive/%f</code>. The <code class=\"inline-code\">test ! -f</code> part refuses to overwrite a file that already exists in the archive, so the command fails instead of silently replacing archived WAL."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres bash -c 'cd /tmp\necho hello > testwal\ntest ! -f /mnt/wal_archive/testwal && cp testwal /mnt/wal_archive/testwal\necho \"exit status: $?\"\ntest ! -f /mnt/wal_archive/testwal && cp testwal /mnt/wal_archive/testwal\necho \"exit status: $?\"\nrm /mnt/wal_archive/testwal testwal'",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Part",
+      "What it does"
+     ],
+     [
+      "test ! -f FILE",
+      "Succeeds only if FILE does not exist yet"
+     ],
+     [
+      "&&",
+      "Runs cp only if the test succeeded"
+     ],
+     [
+      "cp SOURCE TARGET",
+      "Copies the file; returns a non-zero status if it cannot"
+     ],
+     [
+      "echo $?",
+      "Prints the exit status of the previous command"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "exit status: 0\nexit status: 1",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The first copy succeeds with status 0. The second attempt finds the file already there and returns 1. That is exactly the behaviour PostgreSQL relies on. The last line removes the test files."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Do not use cp -i or a bare cp",
+    "text": "The documentation warns that GNU <code class=\"inline-code\">cp -i</code> returns status 0 even when the target exists, so it does not protect the archive. A bare <code class=\"inline-code\">cp</code> overwrites silently, for example when two servers are pointed at the same archive folder by mistake."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Turn on archiving",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Edit postgresql.conf",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as your sudo user, edit <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code>. The settings are in the <i>Archiving</i> section and are commented out by default."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo nano /etc/postgresql/18/main/postgresql.conf",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# /etc/postgresql/18/main/postgresql.conf  (before)\n#archive_mode = off\n#archive_command = ''\n#archive_timeout = 0",
+    "caption": "Before"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# /etc/postgresql/18/main/postgresql.conf  (after)\narchive_mode = on\narchive_command = 'test ! -f /mnt/wal_archive/%f && cp %p /mnt/wal_archive/%f'\narchive_timeout = 60",
+    "caption": "After"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "Default",
+      "Meaning",
+      "Applied by"
+     ],
+     [
+      "archive_mode",
+      "off",
+      "on: archive completed segments. always: also archive on a standby",
+      "restart"
+     ],
+     [
+      "archive_command",
+      "'' (empty)",
+      "Shell command run for each completed segment; %p = path, %f = file name",
+      "reload"
+     ],
+     [
+      "archive_timeout",
+      "0 (off)",
+      "Force a switch to a new segment after this many seconds, if there was any activity",
+      "reload"
+     ],
+     [
+      "wal_level",
+      "replica",
+      "Must be replica or logical for archiving",
+      "restart"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A note on <code class=\"inline-code\">archive_mode = always</code>: on a primary it behaves like <code class=\"inline-code\">on</code>. On a standby server, <code class=\"inline-code\">always</code> also archives every WAL file the standby receives, while <code class=\"inline-code\">on</code> archives nothing until the standby is promoted. You will use this in the replication parts."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Why 60 seconds? Without <code class=\"inline-code\">archive_timeout</code>, a quiet server might take hours to fill a 16 MB segment, and the changes in it are not in the archive until then. The documentation says a minute or so is usually reasonable. Every forced switch still produces a full 16 MB file, so a very small value wastes archive space."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Undo",
+    "text": "To undo this step, put a <code class=\"inline-code\">#</code> back in front of the three lines (or set <code class=\"inline-code\">archive_mode = off</code>) and restart as in Step 5."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Restart PostgreSQL and verify",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as your sudo user. <code class=\"inline-code\">archive_mode</code> can only be set at server start, so a reload is not enough. Plan this restart for a quiet time, because it disconnects every session."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl restart postgresql@18-main",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The command prints nothing when it succeeds. Now check the settings as the <code class=\"inline-code\">postgres</code> user:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, pending_restart\n  FROM pg_settings\n WHERE name IN ('archive_mode', 'archive_command', 'archive_timeout')\n ORDER BY name;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "      name       |                          setting                           | pending_restart \n-----------------+------------------------------------------------------------+-----------------\n archive_command | test ! -f /mnt/wal_archive/%f && cp %p /mnt/wal_archive/%f | f\n archive_mode    | on                                                         | f\n archive_timeout | 60                                                         | f\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All three values are active and <code class=\"inline-code\">pending_restart</code> is <code class=\"inline-code\">f</code> (false) everywhere. Next, confirm that the archiver process exists:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "ps -u postgres -o pid,cmd | grep archiver",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  882 postgres: 18/main: archiver",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">18/main</code> in the process title is the cluster name. If no archiver line appears, <code class=\"inline-code\">archive_mode</code> is still off: re-check the file and that you restarted rather than reloaded."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prove that WAL files reach the archive",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Create some changes and force a WAL switch",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the <code class=\"inline-code\">postgres</code> user in psql. We create a small database with an <code class=\"inline-code\">orders</code> table so there is real WAL to archive, then call <code class=\"inline-code\">pg_switch_wal()</code>. That function closes the current segment right away so it can be archived, instead of waiting for it to fill or for <code class=\"inline-code\">archive_timeout</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE salesdb;\n\\c salesdb\nCREATE TABLE orders (\n    order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer    text          NOT NULL,\n    amount      numeric(10,2) NOT NULL,\n    created_at  timestamptz   NOT NULL DEFAULT now()\n);\nINSERT INTO orders (customer, amount)\nSELECT 'customer_' || g, round((random() * 5000)::numeric, 2)\n  FROM generate_series(1, 50000) AS g;\n\nSELECT pg_walfile_name(pg_current_wal_lsn());\nSELECT pg_switch_wal();",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE DATABASE\nCREATE TABLE\nINSERT 0 50000\n     pg_walfile_name      \n--------------------------\n 000000010000000000000002\n(1 row)\n\n pg_switch_wal \n---------------\n 0/23AF720\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_current_wal_lsn()</code> returns the current position in the WAL, and <code class=\"inline-code\">pg_walfile_name()</code> turns that position into a segment file name. Before the switch we were writing into segment <code class=\"inline-code\">...02</code>. <code class=\"inline-code\">pg_switch_wal()</code> returns the position just after the end of the segment it closed. If there was no WAL activity since the last switch, it does nothing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Check pg_stat_archiver and the archive folder",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Still on db1 as <code class=\"inline-code\">postgres</code>. <code class=\"inline-code\">pg_stat_archiver</code> is a one-row view with the archiver's counters. <code class=\"inline-code\">\\x on</code> switches psql to expanded output, one column per line, which is easier to read on a narrow screen."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\x on\nSELECT * FROM pg_stat_archiver;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-[ RECORD 1 ]------+------------------------------\narchived_count     | 2\nlast_archived_wal  | 000000010000000000000002\nlast_archived_time | 2026-11-16 12:49:09.690459+00\nfailed_count       | 0\nlast_failed_wal    | \nlast_failed_time   | \nstats_reset        | 2026-11-16 12:48:21.554886+00",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two files were archived and none failed. Segment <code class=\"inline-code\">...01</code> had filled up during the insert, and <code class=\"inline-code\">...02</code> was closed by <code class=\"inline-code\">pg_switch_wal()</code>. Now look at the archive itself, from a shell on db1:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres ls -l /mnt/wal_archive",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "total 32768\n-rw------- 1 postgres postgres 16777216 Nov 16 12:49 000000010000000000000001\n-rw------- 1 postgres postgres 16777216 Nov 16 12:49 000000010000000000000002",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both files are exactly 16,777,216 bytes (16 MB). A segment closed early by a switch is still a full-size file."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Look at the archive_status markers",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL tracks progress with the marker files described in How it works. You can list them from SQL with <code class=\"inline-code\">pg_ls_archive_statusdir()</code>, which by default needs superuser or membership in the <code class=\"inline-code\">pg_monitor</code> role."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\x off\nSELECT name, size, modification\n  FROM pg_ls_archive_statusdir()\n ORDER BY name;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "             name              | size |      modification      \n-------------------------------+------+------------------------\n 000000010000000000000001.done |    0 | 2026-11-16 12:49:09+00\n 000000010000000000000002.done |    0 | 2026-11-16 12:49:09+00\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both markers end in <code class=\"inline-code\">.done</code>: archived and safe to recycle. A file ending in <code class=\"inline-code\">.ready</code> is waiting for the archiver. A few <code class=\"inline-code\">.ready</code> files for a short time is normal on a busy server. A growing number means the archive cannot keep up or is failing."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Never edit pg_wal by hand",
+    "text": "Do not delete, rename or create files in <code class=\"inline-code\">pg_wal</code> or <code class=\"inline-code\">pg_wal/archive_status</code>. Marking a file <code class=\"inline-code\">.done</code> yourself tells PostgreSQL it is safe to throw away WAL that was never archived."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Watch archive_timeout at work",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Insert a single row, which writes far less than 16 MB, and do not call <code class=\"inline-code\">pg_switch_wal()</code>. Within a minute or two, <code class=\"inline-code\">archive_timeout</code> should close the segment for you."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO orders (customer, amount) VALUES ('small_order', 99.00);\nSELECT now()::time(0), pg_walfile_name(pg_current_wal_lsn());",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INSERT 0 1\n   now    |     pg_walfile_name      \n----------+--------------------------\n 13:01:30 | 00000001000000000000000A\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Wait about a minute, then run:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT now()::time(0), last_archived_wal, last_archived_time::time(0)\n  FROM pg_stat_archiver;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "   now    |    last_archived_wal     | last_archived_time \n----------+--------------------------+--------------------\n 13:02:10 | 00000001000000000000000A | 13:02:03\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The segment holding the single insert reached the archive at 13:02:03 without any manual switch. The timer counts from the last segment switch, not from your insert, so the exact wait varies; in another run on the same server it took about two minutes. On a quiet server, <code class=\"inline-code\">archive_timeout</code> roughly limits how much recent work exists only on the database server and not yet in the archive."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Monitor archiving and handle failures",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: A monitoring query for daily checks",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as <code class=\"inline-code\">postgres</code> or a monitoring role that is a member of <code class=\"inline-code\">pg_monitor</code>. This query puts the most useful numbers on one line: how long since the last success, the last failed file, and how many files are waiting."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT archived_count,\n       failed_count,\n       last_archived_wal,\n       now() - last_archived_time AS since_last_archive,\n       last_failed_wal,\n       (SELECT count(*) FROM pg_ls_archive_statusdir()\n         WHERE name LIKE '%.ready') AS waiting_files\n  FROM pg_stat_archiver;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "What to alert on:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">waiting_files</code> keeps growing over several checks. This is the most reliable sign of trouble.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">last_failed_time</code> is newer than <code class=\"inline-code\">last_archived_time</code>: the latest attempt failed.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">since_last_archive</code> is much larger than <code class=\"inline-code\">archive_timeout</code> on a server that is in use.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation adds two cautions. First, files are usually archived oldest first, but not always (for example after crash recovery or promotion), so do not assume every file older than <code class=\"inline-code\">last_archived_wal</code> is in the archive. Second, if the command is killed by a signal or the shell returns a status above 125 (such as \"command not found\"), the archiver process restarts and the failure is <b>not</b> counted in <code class=\"inline-code\">pg_stat_archiver</code>. Watch the server log as well."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Simulate a failure (lab only)",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Lab only",
+    "text": "This step deliberately breaks archiving. Never run it on a production server."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as your sudo user, remove write permission from the archive folder so <code class=\"inline-code\">cp</code> fails, then force a switch from psql as <code class=\"inline-code\">postgres</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo chmod 500 /mnt/wal_archive",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\c salesdb\nINSERT INTO orders (customer, amount)\nSELECT 'late_' || g, 10 FROM generate_series(1, 1000) AS g;\nSELECT pg_switch_wal();",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now read the end of the server log. On Ubuntu each cluster logs to <code class=\"inline-code\">/var/log/postgresql/postgresql-18-main.log</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo tail -n 8 /var/log/postgresql/postgresql-18-main.log",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-16 12:49:22.860 UTC [882] DETAIL:  The failed archive command was: test ! -f /mnt/wal_archive/000000010000000000000003 && cp pg_wal/000000010000000000000003 /mnt/wal_archive/000000010000000000000003\ncp: cannot create regular file '/mnt/wal_archive/000000010000000000000003': Permission denied\n2026-11-16 12:49:23.864 UTC [882] LOG:  archive command failed with exit code 1\n2026-11-16 12:49:23.864 UTC [882] DETAIL:  The failed archive command was: test ! -f /mnt/wal_archive/000000010000000000000003 && cp pg_wal/000000010000000000000003 /mnt/wal_archive/000000010000000000000003\ncp: cannot create regular file '/mnt/wal_archive/000000010000000000000003': Permission denied\n2026-11-16 12:49:24.868 UTC [882] LOG:  archive command failed with exit code 1\n2026-11-16 12:49:24.868 UTC [882] DETAIL:  The failed archive command was: test ! -f /mnt/wal_archive/000000010000000000000003 && cp pg_wal/000000010000000000000003 /mnt/wal_archive/000000010000000000000003\n2026-11-16 12:49:24.868 UTC [882] WARNING:  archiving write-ahead log file \"000000010000000000000003\" failed too many times, will try again later",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The archiver tried three times about a second apart, logged the exact command with <code class=\"inline-code\">%p</code> and <code class=\"inline-code\">%f</code> filled in, and the error from <code class=\"inline-code\">cp</code>. Then it backed off and will try again later. The monitoring query from Step 10 now shows the problem:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " archived_count | failed_count |    last_archived_wal     | since_last_archive |     last_failed_wal      | waiting_files \n----------------+--------------+--------------------------+--------------------+--------------------------+---------------\n              2 |            3 | 000000010000000000000002 | 00:00:19.702188    | 000000010000000000000003 |             1\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The process title also changes, which is handy in <code class=\"inline-code\">ps</code> or <code class=\"inline-code\">top</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  882 postgres: 18/main: archiver failed on 000000010000000000000003",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Meanwhile, segment <code class=\"inline-code\">...03</code> cannot be recycled. If this went on for days on a busy server, <code class=\"inline-code\">pg_wal</code> would keep growing. The documentation is clear about the end point: if the file system holding <code class=\"inline-code\">pg_wal</code> fills up, PostgreSQL does a PANIC shutdown. No committed transaction is lost, but the database stays down until you free space."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Fix the cause and confirm archiving catches up",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as your sudo user, restore the permission. You do not need to restart or reload PostgreSQL: the archiver retries on its own."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo chmod 700 /mnt/wal_archive",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "After about a minute, check again as <code class=\"inline-code\">postgres</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\x on\nSELECT archived_count, last_archived_wal, last_archived_time,\n       failed_count, last_failed_wal\n  FROM pg_stat_archiver;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-[ RECORD 1 ]------+------------------------------\narchived_count     | 3\nlast_archived_wal  | 000000010000000000000003\nlast_archived_time | 2026-11-16 12:50:24.880962+00\nfailed_count       | 3\nlast_failed_wal    | 000000010000000000000003",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">archived_count</code> went up to 3 and the last archived file is the one that failed. <code class=\"inline-code\">failed_count</code> stays at 3 because it is a running total; what matters is that <code class=\"inline-code\">last_archived_time</code> is now later than the failure. The marker for <code class=\"inline-code\">...03</code> has changed from <code class=\"inline-code\">.ready</code> to <code class=\"inline-code\">.done</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Base backups and archive cleanup",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Take a base backup and find its backup history file",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An archive grows forever unless you remove files. To know what is safe to remove, you need a base backup. On db1, as <code class=\"inline-code\">postgres</code>, take one with <code class=\"inline-code\">pg_basebackup</code> exactly as in Part 18 (here over the local socket, which the default Ubuntu <code class=\"inline-code\">pg_hba.conf</code> allows for <code class=\"inline-code\">postgres</code>)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres mkdir -p /var/lib/postgresql/backups\nsudo -u postgres pg_basebackup -D /var/lib/postgresql/backups/base_2026_11_16 \\\n     --checkpoint=fast --label=base_2026_11_16 --progress",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-D directory",
+      "Directory to write the backup into; it must be empty or not exist"
+     ],
+     [
+      "--checkpoint=fast",
+      "Request an immediate checkpoint instead of a spread one, so the backup starts at once"
+     ],
+     [
+      "--label=label",
+      "Text label stored in the backup (default: \"pg_basebackup base backup\")"
+     ],
+     [
+      "--progress",
+      "Show progress while the backup runs"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "waiting for checkpoint\n36251/36251 kB (100%), 0/1 tablespace\n36251/36251 kB (100%), 1/1 tablespace",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With archiving enabled, the backup also writes a small <b>backup history file</b> into the archive. Its name is the first WAL segment the backup needs, plus a position and <code class=\"inline-code\">.backup</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres ls -l /mnt/wal_archive\nsudo -u postgres cat /mnt/wal_archive/000000010000000000000005.00000028.backup",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "total 81924\n-rw------- 1 postgres postgres 16777216 Nov 16 12:49 000000010000000000000001\n-rw------- 1 postgres postgres 16777216 Nov 16 12:49 000000010000000000000002\n-rw------- 1 postgres postgres 16777216 Nov 16 12:50 000000010000000000000003\n-rw------- 1 postgres postgres 16777216 Nov 16 12:50 000000010000000000000004\n-rw------- 1 postgres postgres 16777216 Nov 16 12:50 000000010000000000000005\n-rw------- 1 postgres postgres      328 Nov 16 12:50 000000010000000000000005.00000028.backup\nSTART WAL LOCATION: 0/5000028 (file 000000010000000000000005)\nSTOP WAL LOCATION: 0/5000120 (file 000000010000000000000005)\nCHECKPOINT LOCATION: 0/5000080\nBACKUP METHOD: streamed\nBACKUP FROM: primary\nSTART TIME: 2026-11-16 12:50:33 UTC\nLABEL: base_2026_11_16\nSTART TIMELINE: 1\nSTOP TIME: 2026-11-16 12:50:33 UTC\nSTOP TIMELINE: 1",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The file records the label, the start and stop time, and the WAL range of the backup. This backup starts at segment <code class=\"inline-code\">...05</code>. To restore it and replay forward, you need <code class=\"inline-code\">...05</code> and every segment after it. Segments <code class=\"inline-code\">...01</code> to <code class=\"inline-code\">...04</code> are only useful to older base backups."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: Remove archived WAL older than a base backup",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Deleting archived WAL is permanent",
+    "text": "Only remove files older than a base backup that you have verified (Part 18) and intend to keep. Removing them also removes your ability to recover with any older base backup. The documentation recommends keeping several backup sets. Always run the dry run first."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as <code class=\"inline-code\">postgres</code>. <code class=\"inline-code\">pg_archivecleanup</code> removes every WAL file in a folder that comes before a given file name. If you give it a <code class=\"inline-code\">.backup</code> file name, it uses only the segment part, so this is a safe way to say \"remove everything older than this base backup\". On Ubuntu the command is on the PATH through <code class=\"inline-code\">postgresql-common</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pg_archivecleanup --dry-run /mnt/wal_archive \\\n     000000010000000000000005.00000028.backup",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "/mnt/wal_archive/000000010000000000000003\n/mnt/wal_archive/000000010000000000000004\n/mnt/wal_archive/000000010000000000000001\n/mnt/wal_archive/000000010000000000000002",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The dry run only prints the files it would remove: segments 01 to 04, nothing from 05 onwards. Now run it for real with debug output:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pg_archivecleanup -d /mnt/wal_archive \\\n     000000010000000000000005.00000028.backup\nsudo -u postgres ls /mnt/wal_archive",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-n, --dry-run",
+      "Print the names of the files that would be removed, remove nothing"
+     ],
+     [
+      "-d, --debug",
+      "Print debug logging output on stderr"
+     ],
+     [
+      "-b, --clean-backup-history",
+      "Remove backup history files as well"
+     ],
+     [
+      "-x ext, --strip-extension=ext",
+      "Strip an extension (for example .gz) from file names before deciding, for compressed archives"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_archivecleanup: keeping WAL file \"/mnt/wal_archive/000000010000000000000005\" and later\npg_archivecleanup: removing file \"/mnt/wal_archive/000000010000000000000003\"\npg_archivecleanup: removing file \"/mnt/wal_archive/000000010000000000000004\"\npg_archivecleanup: removing file \"/mnt/wal_archive/000000010000000000000001\"\npg_archivecleanup: removing file \"/mnt/wal_archive/000000010000000000000002\"\n000000010000000000000005\n000000010000000000000005.00000028.backup",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The four older segments are gone. Segment 05 and the backup history file stay (history files are removed only with <code class=\"inline-code\">-b</code>). In production you would run this from a script after each successful, verified base backup, pointing at the oldest backup you still keep. Part 21 shows how pgBackRest handles this retention for you."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Alternative: archive_library with basic_archive",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Since PostgreSQL 15 you can archive with a loadable <b>archive module</b> instead of a shell command, set in <code class=\"inline-code\">archive_library</code>. A module runs inside the archiver process instead of starting a shell for every file, which the documentation notes can perform better. PostgreSQL ships one example module, <code class=\"inline-code\">basic_archive</code>, which copies each segment to a folder. It is mainly a starting point for writing your own, but it shows how the setting works. Production tools such as pgBackRest use <code class=\"inline-code\">archive_command</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: Switch to basic_archive (optional)",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as your sudo user, create a target folder, then change <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code>. You must empty <code class=\"inline-code\">archive_command</code>: the two settings cannot both be set."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo mkdir -p /mnt/wal_archive_lib\nsudo chown postgres:postgres /mnt/wal_archive_lib\nsudo chmod 700 /mnt/wal_archive_lib",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# /etc/postgresql/18/main/postgresql.conf  (after)\narchive_mode = on\narchive_command = ''\narchive_library = 'basic_archive'\nbasic_archive.archive_directory = '/mnt/wal_archive_lib'",
+    "caption": "After"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">archive_library</code> can be changed with a reload; the postmaster restarts the archiver process to load the new module. <code class=\"inline-code\">archive_mode</code> is unchanged, so no restart is needed."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "After the next segment switch, the file appears in <code class=\"inline-code\">/mnt/wal_archive_lib</code> and the archiver shows it as before:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  1168 postgres: 18/main: archiver last was 000000010000000000000007",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To go back, remove the two <code class=\"inline-code\">basic_archive</code> lines, restore the <code class=\"inline-code\">archive_command</code> from Step 4 and reload. The log confirms the change:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  parameter \"archive_library\" removed from configuration file, reset to default\nLOG:  parameter \"archive_command\" changed to \"test ! -f /mnt/wal_archive/%f && cp %p /mnt/wal_archive/%f\"\nLOG:  restarting archiver process because value of \"archive_library\" was changed",
+    "caption": "Output (log lines, timestamp prefix removed)"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Changing destination splits your archive",
+    "text": "While <code class=\"inline-code\">basic_archive</code> was active, segment 07 went to <code class=\"inline-code\">/mnt/wal_archive_lib</code>, not to <code class=\"inline-code\">/mnt/wal_archive</code>. Recovery needs an unbroken chain of segments in one place. Whenever you move the archive to a new destination, copy the files across or take a new base backup straight after the change."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 16: How to turn archiving off (undo)",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Skip this step if you are continuing with Part 20. If you need to switch archiving off completely, set <code class=\"inline-code\">archive_mode = off</code> in <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code> and restart, because <code class=\"inline-code\">archive_mode</code> only changes at server start."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl restart postgresql@18-main\nsudo -u postgres psql -c 'SHOW archive_mode;' -c 'SHOW archive_command;'",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " archive_mode \n--------------\n off\n(1 row)\n\n archive_command \n-----------------\n (disabled)\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Part 20 restores a base backup and replays the archive, so keep archiving on. If you tried Step 15, repeat Step 13 first so your newest base backup comes after the gap in <code class=\"inline-code\">/mnt/wal_archive</code>. Set <code class=\"inline-code\">archive_mode = on</code> again and restart if you ran this step. To pause archiving for a short time without a restart, set <code class=\"inline-code\">archive_command = ''</code> and reload. WAL then collects in <code class=\"inline-code\">pg_wal</code> until you put a working command back, so watch disk space."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "archive_mode changed but nothing happens",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You edited <code class=\"inline-code\">archive_mode</code> and ran <code class=\"inline-code\">SELECT pg_reload_conf();</code>. The log says:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  parameter \"archive_mode\" cannot be changed without restarting the server\nLOG:  configuration file \"/etc/postgresql/18/main/postgresql.conf\" contains errors; unaffected changes were applied",
+    "caption": "Output (log lines, timestamp prefix removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "and <code class=\"inline-code\">pg_settings</code> shows <code class=\"inline-code\">archive_mode | off | pending_restart = t</code>. <b>Fix:</b> <code class=\"inline-code\">sudo systemctl restart postgresql@18-main</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "LOG: archive command failed with exit code 1",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The command ran but returned 1. The next log line shows the exact command and the error from <code class=\"inline-code\">cp</code>: usually <code class=\"inline-code\">Permission denied</code> (wrong owner or mode on the folder), <code class=\"inline-code\">No space left on device</code> (archive disk full) or a mount that disappeared. <b>Fix:</b> run the command from the DETAIL line yourself as <code class=\"inline-code\">postgres</code>, correct the cause, and watch <code class=\"inline-code\">pg_stat_archiver</code> catch up as in Step 12. If the file already exists in the archive with different contents, find out why before removing anything: two servers may be writing to one folder."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: both \"archive_command\" and \"archive_library\" set",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "FATAL:  both \"archive_command\" and \"archive_library\" set\nDETAIL:  Only one of \"archive_command\", \"archive_library\" may be set.",
+    "caption": "Output (log lines, timestamp prefix removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The server keeps running, but the archiver exits and nothing is archived. <b>Fix:</b> set one of them to <code class=\"inline-code\">''</code> and reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: WAL archival cannot be enabled when \"wal_level\" is \"minimal\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The server refuses to start. <b>Fix:</b> set <code class=\"inline-code\">wal_level = replica</code> (and remove any <code class=\"inline-code\">max_wal_senders = 0</code> you added for minimal) and start again. Base backups taken while <code class=\"inline-code\">wal_level</code> was <code class=\"inline-code\">minimal</code> cannot be used for point-in-time recovery."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "archive_command = '/bin/true' to \"stop the WAL growing\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This makes PostgreSQL believe every file was archived and recycle it. The documentation warns that it breaks the chain of WAL files needed for recovery. <b>Fix:</b> fix the real archive problem, then take a new base backup, because the archive now has a gap."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Archive on the same disk as the database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It passes every test in this article and protects nothing when the disk fails. <b>Fix:</b> mount separate storage at the archive path, or move to a tool that sends WAL to another host (Part 21). Also note that plain <code class=\"inline-code\">cp</code> does not force the copy to be flushed to disk before it returns, while the documentation expects an archived file to be fully persisted; dedicated backup tools take care of this."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Change <code class=\"inline-code\">archive_timeout</code> to 120 seconds without restarting the server, and prove the new value is active.",
+      "items": []
+     },
+     {
+      "content": "Break archiving the same way as Step 11, then write a single query that returns the name of every WAL file still waiting to be archived. Fix the folder afterwards.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "1) Edit <code class=\"inline-code\">archive_timeout = 120</code> in /etc/postgresql/18/main/postgresql.conf, run <code class=\"inline-code\">SELECT pg_reload_conf();</code>, then <code class=\"inline-code\">SELECT setting, pending_restart FROM pg_settings WHERE name = 'archive_timeout';</code> returns 120 and f. It is a reload setting, so no restart. 2) <code class=\"inline-code\">SELECT replace(name, '.ready', '') AS waiting_wal FROM pg_ls_archive_statusdir() WHERE name LIKE '%.ready' ORDER BY 1;</code> Then <code class=\"inline-code\">sudo chmod 700 /mnt/wal_archive</code> and wait for the next retry."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# 1. Check archiving settings (psql as postgres)\nsudo -u postgres psql -c \"SELECT name, setting, context FROM pg_settings WHERE name IN ('wal_level','archive_mode','archive_command','archive_library','archive_timeout');\"\n\n# 2. Create the archive directory\nsudo mkdir -p /mnt/wal_archive\nsudo chown postgres:postgres /mnt/wal_archive\nsudo chmod 700 /mnt/wal_archive\n\n# 4. Settings in /etc/postgresql/18/main/postgresql.conf\n#   archive_mode = on\n#   archive_command = 'test ! -f /mnt/wal_archive/%f && cp %p /mnt/wal_archive/%f'\n#   archive_timeout = 60\nsudo nano /etc/postgresql/18/main/postgresql.conf\n\n# 5. Restart (archive_mode needs it) and check the archiver process\nsudo systemctl restart postgresql@18-main\nps -u postgres -o pid,cmd | grep archiver\n\n# 6-7. Force a WAL switch and check the archive\nsudo -u postgres psql -c 'SELECT pg_switch_wal();'\nsudo -u postgres psql -x -c 'SELECT * FROM pg_stat_archiver;'\nsudo -u postgres ls -l /mnt/wal_archive\n\n# 8 and 10. Files waiting to be archived\nsudo -u postgres psql -c \"SELECT count(*) FROM pg_ls_archive_statusdir() WHERE name LIKE '%.ready';\"\n\n# 11. Read archiver errors in the log\nsudo tail -n 20 /var/log/postgresql/postgresql-18-main.log\n\n# 13. Base backup (writes a .backup history file into the archive)\nsudo -u postgres pg_basebackup -D /var/lib/postgresql/backups/base_2026_11_16 --checkpoint=fast --label=base_2026_11_16 --progress\n\n# 14. Remove archived WAL older than that backup (dry run first)\nsudo -u postgres pg_archivecleanup --dry-run /mnt/wal_archive 000000010000000000000005.00000028.backup\nsudo -u postgres pg_archivecleanup -d /mnt/wal_archive 000000010000000000000005.00000028.backup\n\n# Reloadable settings (archive_command, archive_library, archive_timeout)\nsudo systemctl reload postgresql@18-main",
+    "caption": "All commands from this part"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "WAL archiving copies each completed WAL segment out of <code class=\"inline-code\">pg_wal</code> so changes after a base backup can be replayed",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Turn it on with <code class=\"inline-code\">wal_level = replica</code>, <code class=\"inline-code\">archive_mode = on</code> (restart) and an <code class=\"inline-code\">archive_command</code> (reload)",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "The command must return 0 only when the file is safely stored, and must refuse to overwrite an existing file",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Prove it works with <code class=\"inline-code\">pg_switch_wal()</code>, <code class=\"inline-code\">pg_stat_archiver</code> and the archive folder",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Alert on a growing number of <code class=\"inline-code\">.ready</code> files and on <code class=\"inline-code\">archive command failed</code> in the log",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">archive_timeout</code> limits how long a change can wait before it is archived; about a minute is reasonable",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Clean up with <code class=\"inline-code\">pg_archivecleanup</code> using the <code class=\"inline-code\">.backup</code> file of the oldest base backup you keep, dry run first",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 20 we use the base backup and WAL archive from this part to perform point-in-time recovery step by step."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "If your archive_command fails silently for a week, your nightly backup cannot take you past last week.\n\nPart 19 of my PostgreSQL DBA series covers WAL archiving on PostgreSQL 18 (Ubuntu, PGDG packages), tested step by step.\n\nWhat to remember:\n\n→ Three settings: wal_level = replica, archive_mode = on (needs a restart) and archive_command (a reload is enough).\n\n→ The command must return 0 only when the file is really stored, and must refuse to overwrite. The docs example: test ! -f /archive/%f && cp %p /archive/%f\n\n→ Prove it works: SELECT pg_switch_wal(); then check pg_stat_archiver and the archive folder.\n\n→ Alert on .ready files piling up in pg_wal/archive_status. A failing archive keeps WAL on disk until pg_wal fills and the server stops.\n\n→ Never set archive_command to /bin/true to free space. It breaks the WAL chain your recovery depends on.\n\nFollow the series: Part 20 uses this archive for point-in-time recovery.\n\nHow do you monitor WAL archiving on your servers today: log alerts, pg_stat_archiver, or a backup tool?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #Backup",
+  "slides": [
+   {
+    "title": "PostgreSQL WAL Archiving, Step by Step",
+    "body": "Part 19 of the PostgreSQL DBA series: archive_mode, archive_command and monitoring"
+   },
+   {
+    "title": "Why archive WAL?",
+    "points": [
+     "A base backup is a snapshot of one moment",
+     "Archived WAL holds every change after it",
+     "Together they let you recover to a later point in time",
+     "The archiver copies each full 16 MB segment out of pg_wal"
+    ]
+   },
+   {
+    "title": "Turn it on in postgresql.conf",
+    "points": [
+     "wal_level = replica and archive_mode = on (restart)",
+     "archive_command = 'test ! -f /arch/%f && cp %p /arch/%f'",
+     "archive_timeout = 60 (reload is enough)"
+    ],
+    "code": "SELECT name, setting, context\n  FROM pg_settings\n WHERE name LIKE 'archive%';",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Prove it works",
+    "body": "Force a segment switch, then check the archiver counters and the archive folder.",
+    "code": "SELECT pg_switch_wal();\n\nSELECT archived_count,\n       last_archived_wal,\n       failed_count,\n       last_failed_wal\n  FROM pg_stat_archiver;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Watch for files waiting",
+    "points": [
+     ".ready = waiting to be archived, .done = safe to recycle",
+     "A growing .ready count means the archive is failing",
+     "Log: archive command failed with exit code 1"
+    ],
+    "code": "SELECT count(*)\n  FROM pg_ls_archive_statusdir()\n WHERE name LIKE '%.ready';",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Clean up old WAL safely",
+    "points": [
+     "Keep everything from your oldest kept base backup onwards",
+     "Use its .backup history file name with pg_archivecleanup",
+     "Run with --dry-run first",
+     "Never use /bin/true as archive_command to save space"
+    ]
+   }
+  ]
+ }
+}
