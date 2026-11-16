@@ -1,0 +1,938 @@
+{
+ "schemaVersion": 1,
+ "title": "ORA-01403 No Data Found in Oracle: Causes and Fixes",
+ "slug": "ora-01403-no-data-found",
+ "category": "plsql",
+ "description": "Fix ORA-01403 no data found in Oracle PL/SQL: handle NO_DATA_FOUND, avoid it with BULK COLLECT or cursors, and solve the 'data exists' cases.",
+ "focusKeyword": "ora-01403 no data found",
+ "tags": [
+  "oracle",
+  "plsql",
+  "ora-errors",
+  "exception-handling"
+ ],
+ "related": [
+  "/posts/sql/top-10-common-oracle-errors-and-proven-ways-to-fix-them/",
+  "/posts/plsql/oracle-bulk-collect-limit-example/",
+  "/posts/interview-questions/what-is-cursor-in-sql-types-examples-benefits/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle docs: ORA-01403 error help",
+   "url": "https://docs.oracle.com/en/error-help/db/ora-01403/"
+  },
+  {
+   "title": "Oracle 19c PL/SQL: SELECT INTO Statement",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/SELECT-INTO-statement.html"
+  },
+  {
+   "title": "Oracle 19c PL/SQL: Predefined Exceptions",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/predefined-exceptions.html"
+  },
+  {
+   "title": "Oracle 19c PL/SQL: Processing Query Result Sets",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/processing-query-result-sets.html"
+  },
+  {
+   "title": "Oracle 19c PL/SQL: Cursors Overview (SQL%NOTFOUND and SELECT INTO)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/cursors-overview.html"
+  },
+  {
+   "title": "Oracle 19c PL/SQL: Bulk SQL and Bulk Binding",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/bulk-sql-and-bulk-binding.html"
+  },
+  {
+   "title": "Oracle 19c SQL Reference: Data Type Comparison Rules",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Data-Type-Comparison-Rules.html"
+  },
+  {
+   "title": "Oracle 11g PL/SQL: Handling PL/SQL Errors (predefined exception descriptions)",
+   "url": "https://docs.oracle.com/cd/B28359_01/appdev.111/b28370/errors.htm"
+  },
+  {
+   "title": "My Oracle Support Doc ID 285496.1: Using a FUNCTION in SQL Does not Return ORA-01403 When NO_DATA_FOUND",
+   "url": "https://support.oracle.com/knowledge/Oracle%20Database%20Products/285496_1.html"
+  }
+ ],
+ "reviewNotes": "Examples written from the 19c docs and not executed; all need a test run (SQL*Plus or SQL Developer with SERVEROUTPUT ON). Please verify: (1) ORA-06512 line numbers in each error output (anonymous blocks at line 4/5/7; GET_SALARY line 12; GET_DEPT_NAME line 6) and replace schema name APP; (2) the function-in-SQL behaviour (NO_DATA_FOUND becomes NULL) is from MOS Doc 285496.1 whose body I could not read, plus community sources; (3) that RAISE_APPLICATION_ERROR from GET_SALARY does propagate when called via SELECT ... FROM dual; (4) the associative-array NO_DATA_FOUND description is confirmed in the 11g predefined exceptions table, not in the 19c page text I fetched. Overlap check: the published 'Top 10 common Oracle errors' post has a short ORA-01403 section; this is a dedicated deep guide and links to it.",
+ "generatedAt": "2026-11-16T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>ORA-01403: no data found</b> means a <code class=\"inline-code\">SELECT ... INTO</code> statement in PL/SQL returned zero rows. <code class=\"inline-code\">SELECT INTO</code> must put exactly one row into its variables. When the WHERE clause matches nothing, PL/SQL raises the predefined exception <code class=\"inline-code\">NO_DATA_FOUND</code> and, if nothing handles it, your block stops with ORA-01403."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The fix is almost never to hide the error. You decide what \"no row\" means for your code: a default value, a clear business error, or simply skipping the record. Then you write that decision into an exception handler or use a statement that does not raise the error. This guide shows each option with runnable examples, and explains the confusing case where you get ORA-01403 even though the data seems to exist."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What ORA-01403 means and when Oracle raises it",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">NO_DATA_FOUND</code> is one of the predefined exceptions that PL/SQL declares in package <code class=\"inline-code\">STANDARD</code>. Its SQLCODE is <b>+100</b>, not a negative number like most errors. You will usually see it together with ORA-06512, which tells you the line where it happened."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The most common source is <code class=\"inline-code\">SELECT INTO</code>. The Oracle docs say it directly: if the <code class=\"inline-code\">SELECT INTO</code> statement returns no rows, PL/SQL raises <code class=\"inline-code\">NO_DATA_FOUND</code>. If it returns more than one row you get a different error, ORA-01422 (<code class=\"inline-code\">TOO_MANY_ROWS</code>)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Many statements that look similar do <i>not</i> raise it. Knowing which is which removes most of the confusion:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Statement or action",
+      "What happens when nothing matches"
+     ],
+     [
+      "SELECT ... INTO variable",
+      "Raises NO_DATA_FOUND (ORA-01403)"
+     ],
+     [
+      "EXECUTE IMMEDIATE ... INTO variable",
+      "Raises NO_DATA_FOUND (ORA-01403)"
+     ],
+     [
+      "Reading a missing element of an associative array",
+      "Raises NO_DATA_FOUND (ORA-01403)"
+     ],
+     [
+      "SELECT COUNT(*) or MAX(...) INTO variable",
+      "No error. Returns 0 or NULL"
+     ],
+     [
+      "SELECT ... BULK COLLECT INTO collection",
+      "No error. The collection is empty (COUNT = 0)"
+     ],
+     [
+      "FETCH from an explicit cursor",
+      "No error. cursor%NOTFOUND becomes TRUE"
+     ],
+     [
+      "UPDATE or DELETE that matches no rows",
+      "No error. SQL%ROWCOUNT is 0"
+     ],
+     [
+      "PL/SQL function called from a SQL query",
+      "No error. The function result is NULL"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The last row surprises a lot of developers. It is covered in its own section below."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create two small tables. Note two details on purpose: <code class=\"inline-code\">emp_code</code> is a <code class=\"inline-code\">CHAR</code> column, and one hire date has a time part. Both are used later to explain the \"data exists but ORA-01403\" case. Employee 104 points to department 40, which does not exist."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE departments (\n  dept_id    NUMBER PRIMARY KEY,\n  dept_name  VARCHAR2(30) NOT NULL\n);\n\nCREATE TABLE employees (\n  emp_id     NUMBER PRIMARY KEY,\n  emp_code   CHAR(6),\n  emp_name   VARCHAR2(50) NOT NULL,\n  dept_id    NUMBER,\n  salary     NUMBER(10,2),\n  hire_date  DATE\n);\n\nINSERT INTO departments VALUES (10, 'Sales');\nINSERT INTO departments VALUES (20, 'Finance');\nINSERT INTO departments VALUES (30, 'IT');\n\nINSERT INTO employees VALUES (101, 'E101', 'Asha Rao',    10, 52000, DATE '2023-04-10');\nINSERT INTO employees VALUES (102, 'E102', 'Ravi Kumar',  20, 61000, DATE '2022-11-01');\nINSERT INTO employees VALUES (103, 'E103', 'Meena Iyer',  30, 75000, DATE '2021-07-19');\nINSERT INTO employees VALUES (104, 'E104', 'John Mathew', 40, 48000,\n       TO_DATE('2024-01-15 09:30', 'YYYY-MM-DD HH24:MI'));\nCOMMIT;\n\nSET SERVEROUTPUT ON",
+    "caption": "Sample tables used in every example"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reproduce the error",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This anonymous block looks up employee 999, who does not exist:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  l_name employees.emp_name%TYPE;\nBEGIN\n  SELECT emp_name INTO l_name\n    FROM employees\n   WHERE emp_id = 999;\n  DBMS_OUTPUT.PUT_LINE('Name: ' || l_name);\nEND;\n/",
+    "caption": "SELECT INTO with no matching row"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR at line 1:\nORA-01403: no data found\nORA-06512: at line 4",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read the stack from the bottom. <code class=\"inline-code\">ORA-06512: at line 4</code> points at the <code class=\"inline-code\">SELECT</code> (line 1 is <code class=\"inline-code\">DECLARE</code>). The <code class=\"inline-code\">PUT_LINE</code> never ran, because the exception jumped straight out of the block. In Oracle Database 23ai the message may also include a help link, but the codes are the same."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 1: handle NO_DATA_FOUND with a default value",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If a missing row is normal for your logic, catch the exception right where the query runs and set a sensible value. Wrap the query in its own small BEGIN ... END block so the rest of the code continues."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  l_name employees.emp_name%TYPE;\nBEGIN\n  BEGIN\n    SELECT emp_name INTO l_name\n      FROM employees\n     WHERE emp_id = 999;\n  EXCEPTION\n    WHEN NO_DATA_FOUND THEN\n      l_name := 'Unknown';\n  END;\n\n  DBMS_OUTPUT.PUT_LINE('Name: ' || l_name);\nEND;\n/",
+    "caption": "Inner block with a local handler"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Name: Unknown\n\nPL/SQL procedure successfully completed.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The inner block keeps the handler close to the statement it protects. If you put the handler at the end of a long procedure instead, you cannot tell which of several queries failed, and the remaining work after the failed query is skipped."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Skip missing rows inside a loop",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same pattern lets a loop carry on past bad IDs. Here <code class=\"inline-code\">SYS.ODCINUMBERLIST</code>, a number collection type supplied by Oracle, holds the IDs to process:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  l_ids  SYS.ODCINUMBERLIST := SYS.ODCINUMBERLIST(101, 999, 103);\n  l_name employees.emp_name%TYPE;\nBEGIN\n  FOR i IN 1 .. l_ids.COUNT LOOP\n    BEGIN\n      SELECT emp_name INTO l_name\n        FROM employees\n       WHERE emp_id = l_ids(i);\n      DBMS_OUTPUT.PUT_LINE(l_ids(i) || ': ' || l_name);\n    EXCEPTION\n      WHEN NO_DATA_FOUND THEN\n        DBMS_OUTPUT.PUT_LINE(l_ids(i) || ': not found, skipped');\n    END;\n  END LOOP;\nEND;\n/",
+    "caption": "Process every ID even when one is missing"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "101: Asha Rao\n999: not found, skipped\n103: Meena Iyer\n\nPL/SQL procedure successfully completed.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Process many rows? Use one query",
+    "text": "Running one <code class=\"inline-code\">SELECT INTO</code> per ID is fine for a handful of values. For thousands, join the ID list to the table in a single query or use BULK COLLECT. You avoid the error and many round trips between PL/SQL and SQL."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 2: raise a clear business error instead",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Sometimes a missing row really is a problem, for example when a caller passes an employee ID that should exist. Do not swallow it. Convert the vague ORA-01403 into a message that tells the caller what went wrong, with <code class=\"inline-code\">RAISE_APPLICATION_ERROR</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "CREATE OR REPLACE FUNCTION get_salary (p_emp_id IN NUMBER)\n  RETURN NUMBER\nIS\n  l_salary employees.salary%TYPE;\nBEGIN\n  SELECT salary INTO l_salary\n    FROM employees\n   WHERE emp_id = p_emp_id;\n  RETURN l_salary;\nEXCEPTION\n  WHEN NO_DATA_FOUND THEN\n    RAISE_APPLICATION_ERROR(-20010,\n      'Employee ' || p_emp_id || ' not found');\nEND;\n/\n\nSELECT get_salary(999) FROM dual;",
+    "caption": "Translate ORA-01403 into a meaningful error"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ORA-20010: Employee 999 not found\nORA-06512: at \"APP.GET_SALARY\", line 12",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The caller now gets an error code in the -20000 to -20999 range reserved for applications, and a message with the actual ID. Your schema name will appear instead of <code class=\"inline-code\">APP</code>. As the next sections show, this also matters when the function is called from SQL."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 3: use a statement that does not raise the error",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Option A: an aggregate function",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An aggregate such as <code class=\"inline-code\">MAX</code> or <code class=\"inline-code\">COUNT</code> always returns exactly one row, even when no rows match. The Oracle docs suggest <code class=\"inline-code\">COUNT(*)</code> for this reason."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  l_name employees.emp_name%TYPE;\nBEGIN\n  SELECT MAX(emp_name) INTO l_name\n    FROM employees\n   WHERE emp_id = 999;\n\n  DBMS_OUTPUT.PUT_LINE('Name: ' || NVL(l_name, 'Unknown'));\nEND;\n/",
+    "caption": "MAX returns NULL instead of raising"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Name: Unknown\n\nPL/SQL procedure successfully completed.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "MAX also hides duplicates",
+    "text": "If the WHERE clause matches two rows, <code class=\"inline-code\">MAX</code> quietly picks one of them instead of raising ORA-01422. Use this trick only when the filter is on a primary key or unique column, where more than one row is impossible."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Option B: an explicit cursor and %NOTFOUND",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A <code class=\"inline-code\">FETCH</code> from an explicit cursor never raises ORA-01403. It sets <code class=\"inline-code\">%NOTFOUND</code> to TRUE instead, and you test it with a normal IF."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  CURSOR c_emp IS\n    SELECT emp_name FROM employees WHERE emp_id = 999;\n  l_name employees.emp_name%TYPE;\nBEGIN\n  OPEN c_emp;\n  FETCH c_emp INTO l_name;\n  IF c_emp%NOTFOUND THEN\n    DBMS_OUTPUT.PUT_LINE('No employee with that ID');\n  ELSE\n    DBMS_OUTPUT.PUT_LINE('Name: ' || l_name);\n  END IF;\n  CLOSE c_emp;\nEND;\n/",
+    "caption": "FETCH sets %NOTFOUND instead of raising"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "No employee with that ID\n\nPL/SQL procedure successfully completed.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is more code than <code class=\"inline-code\">SELECT INTO</code> with a handler, and it does not complain if more than one row matches. Prefer it when you really want \"the first row, if any\" logic."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Option C: BULK COLLECT for zero or more rows",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the query can legitimately return zero, one or many rows, fetch into a collection. The docs state that PL/SQL does not raise an exception when a <code class=\"inline-code\">BULK COLLECT</code> statement returns no rows, so you must check the collection yourself."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  TYPE t_names IS TABLE OF employees.emp_name%TYPE;\n  l_names t_names;\nBEGIN\n  SELECT emp_name BULK COLLECT INTO l_names\n    FROM employees\n   WHERE dept_id = 50;\n\n  DBMS_OUTPUT.PUT_LINE('Rows found: ' || l_names.COUNT);\nEND;\n/",
+    "caption": "An empty result is just COUNT = 0"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Rows found: 0\n\nPL/SQL procedure successfully completed.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ORA-01403 no data found but data exists",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the most searched version of the problem. You run the query in SQL Developer or SQL*Plus, it returns a row, yet the PL/SQL code fails. Work through these causes in order."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "1. The row is not committed, or you are in a different session",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Other sessions cannot see rows you inserted until you commit. If you inserted test data in one SQL Developer tab and run the procedure from another connection or a job, the procedure sees nothing. Commit, then retry."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "2. You are connected to a different schema or database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same table name can exist in more than one schema, and in a multitenant setup in more than one pluggable database. The procedure runs with its owner's tables by default (definer's rights), not necessarily the ones you checked. Confirm where you are:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT USER,\n       SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') AS current_schema,\n       SYS_CONTEXT('USERENV', 'CON_NAME')       AS container\n  FROM dual;",
+    "caption": "Check user, schema and container"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "3. A CHAR column compared with a VARCHAR2 variable",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This one is subtle. <code class=\"inline-code\">emp_code</code> is <code class=\"inline-code\">CHAR(6)</code>, so Oracle stores <code class=\"inline-code\">'E101'</code> padded with two trailing spaces. In plain SQL, <code class=\"inline-code\">WHERE emp_code = 'E101'</code> finds the row, because both sides are CHAR or a text literal and Oracle uses blank-padded comparison. In PL/SQL you often compare with a <code class=\"inline-code\">VARCHAR2</code> variable, and then Oracle uses nonpadded comparison, so <code class=\"inline-code\">'E101  '</code> is not equal to <code class=\"inline-code\">'E101'</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  l_code VARCHAR2(6) := 'E101';\n  l_name employees.emp_name%TYPE;\nBEGIN\n  SELECT emp_name INTO l_name\n    FROM employees\n   WHERE emp_code = l_code;\n  DBMS_OUTPUT.PUT_LINE('Name: ' || l_name);\nEND;\n/",
+    "caption": "Works in SQL, fails in PL/SQL"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR at line 1:\nORA-01403: no data found\nORA-06512: at line 5",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix it by declaring the variable with the column type, <code class=\"inline-code\">l_code employees.emp_code%TYPE</code>. The value is then padded to six characters and the comparison matches. Avoid wrapping the column in <code class=\"inline-code\">RTRIM</code>, because a function on the column stops Oracle from using a normal index on it. For new tables, use <code class=\"inline-code\">VARCHAR2</code> rather than <code class=\"inline-code\">CHAR</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "4. A DATE column with a time part",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle <code class=\"inline-code\">DATE</code> always stores a time. John's hire date is 15 January 2024 at 09:30, so <code class=\"inline-code\">WHERE hire_date = DATE '2024-01-15'</code> matches nothing, because that literal means midnight. Your tool may only display the date part, which hides the difference."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT emp_name\n  FROM employees\n WHERE hire_date >= DATE '2024-01-15'\n   AND hire_date <  DATE '2024-01-16';",
+    "caption": "Search a whole day with a range"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "EMP_NAME\n-----------\nJohn Mathew",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The range finds every time on that day and can still use an index on <code class=\"inline-code\">hire_date</code>. <code class=\"inline-code\">TRUNC(hire_date) = DATE ...</code> also works, but it needs a function-based index to be fast."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "5. The error came from a different statement",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The failing query may not be the one you tested. Look at every ORA-06512 line in the stack. The top one is where the exception was raised, for example inside a function called by your procedure. In your own error logging, call <code class=\"inline-code\">DBMS_UTILITY.FORMAT_ERROR_BACKTRACE</code> inside the handler so you keep that line number."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "6. Case, spaces or a bind value you did not expect",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">'asha rao'</code> does not equal <code class=\"inline-code\">'Asha Rao'</code>, and a value read from a screen may carry a trailing space. Print the exact value you query with, for example <code class=\"inline-code\">DBMS_OUTPUT.PUT_LINE('[' || l_code || ']')</code>, so hidden spaces show up between the brackets."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why a function in a SELECT returns NULL instead of ORA-01403",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here is a function with no exception handler. It looks up a department name:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "CREATE OR REPLACE FUNCTION get_dept_name (p_dept_id IN NUMBER)\n  RETURN VARCHAR2\nIS\n  l_name departments.dept_name%TYPE;\nBEGIN\n  SELECT dept_name INTO l_name FROM departments WHERE dept_id = p_dept_id;\n  RETURN l_name;\nEND;\n/\n\nSELECT emp_name, get_dept_name(dept_id) AS dept_name\n  FROM employees\n ORDER BY emp_id;",
+    "caption": "A lookup function called from SQL"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "EMP_NAME",
+      "DEPT_NAME"
+     ],
+     [
+      "Asha Rao",
+      "Sales"
+     ],
+     [
+      "Ravi Kumar",
+      "Finance"
+     ],
+     [
+      "Meena Iyer",
+      "IT"
+     ],
+     [
+      "John Mathew",
+      "(null)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "John's department 40 does not exist, so the function raised <code class=\"inline-code\">NO_DATA_FOUND</code>. The query did not fail. The SQL engine treats <code class=\"inline-code\">NO_DATA_FOUND</code> from a function like an empty result and returns NULL for that row. Oracle Support documents this behaviour (Doc ID 285496.1). Call the same function from PL/SQL and you get the error:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  l_dept departments.dept_name%TYPE;\nBEGIN\n  l_dept := get_dept_name(40);\n  DBMS_OUTPUT.PUT_LINE('Dept: ' || l_dept);\nEND;\n/",
+    "caption": "Same function, called from PL/SQL"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR at line 1:\nORA-01403: no data found\nORA-06512: at \"APP.GET_DEPT_NAME\", line 6\nORA-06512: at line 4",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "So the same function behaves differently depending on who calls it. Make the behaviour explicit inside the function: return a default on purpose, or raise an application error as in Fix 2, which does reach the SQL caller. For reports like this one, an outer join is usually the better choice anyway, because SQL does the lookup in one pass instead of running a query per row:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT e.emp_name, d.dept_name\n  FROM employees e\n  LEFT JOIN departments d ON d.dept_id = e.dept_id\n ORDER BY e.emp_id;",
+    "caption": "Outer join instead of a lookup function"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ORA-01403 from an associative array",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Reading an associative array (INDEX BY table) element that was never assigned also raises <code class=\"inline-code\">NO_DATA_FOUND</code>. There is no SELECT anywhere, which makes this one hard to spot."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "plsql",
+    "code": "DECLARE\n  TYPE t_dept_map IS TABLE OF VARCHAR2(30) INDEX BY PLS_INTEGER;\n  l_depts t_dept_map;\nBEGIN\n  l_depts(10) := 'Sales';\n  l_depts(20) := 'Finance';\n  DBMS_OUTPUT.PUT_LINE(l_depts(40));\nEND;\n/",
+    "caption": "Key 40 was never assigned"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR at line 1:\nORA-01403: no data found\nORA-06512: at line 7",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Check the key with the <code class=\"inline-code\">EXISTS</code> method before reading it: <code class=\"inline-code\">IF l_depts.EXISTS(40) THEN ... ELSE ... END IF;</code>. <code class=\"inline-code\">EXISTS</code> returns FALSE for a missing key instead of raising an error."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b><code class=\"inline-code\">WHEN OTHERS THEN NULL</code>.</b> It hides ORA-01403 and every other error, including real bugs. Catch <code class=\"inline-code\">NO_DATA_FOUND</code> by name and handle only that.",
+      "items": []
+     },
+     {
+      "content": "<b>Testing <code class=\"inline-code\">SQL%NOTFOUND</code> after <code class=\"inline-code\">SELECT INTO</code>.</b> The exception is raised before your IF runs, so the check never helps. Use a handler, or a cursor FETCH where <code class=\"inline-code\">%NOTFOUND</code> does work.",
+      "items": []
+     },
+     {
+      "content": "<b>Running COUNT(*) first, then SELECT INTO.</b> Two queries do the work of one, and another session can delete the row between them. One <code class=\"inline-code\">SELECT INTO</code> with a handler is simpler and correct.",
+      "items": []
+     },
+     {
+      "content": "<b>Expecting UPDATE or DELETE to raise ORA-01403.</b> They never do. Check <code class=\"inline-code\">SQL%ROWCOUNT = 0</code> right after the statement if \"no rows changed\" is an error for you.",
+      "items": []
+     },
+     {
+      "content": "<b>One handler at the bottom of a long procedure.</b> You lose track of which query failed, and all the work after it is skipped. Put small handlers around the queries that can legitimately find nothing.",
+      "items": []
+     },
+     {
+      "content": "<b>Returning NULL silently from lookup functions.</b> Callers cannot tell \"not found\" from \"value is NULL\". Document the contract, or raise a clear error.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Best practices",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Decide per query whether \"no row\" is normal (use a default) or a bug (raise an application error). Write that decision down in the handler.",
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">%TYPE</code> for variables you compare with columns. It prevents the CHAR versus VARCHAR2 trap and keeps lengths in sync.",
+      "items": []
+     },
+     {
+      "content": "Make sure the column in a single-row lookup is indexed, ideally a primary key or unique key. Then <code class=\"inline-code\">SELECT INTO</code> is a fast index lookup, and duplicates cannot cause ORA-01422.",
+      "items": []
+     },
+     {
+      "content": "Log <code class=\"inline-code\">DBMS_UTILITY.FORMAT_ERROR_BACKTRACE</code> when you re-raise, so the original line number is not lost.",
+      "items": []
+     },
+     {
+      "content": "Prefer joins over row-by-row lookup functions in queries. They are faster and do not hide errors.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is ORA-01403 no data found in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It is the error behind the predefined PL/SQL exception <code class=\"inline-code\">NO_DATA_FOUND</code> (SQLCODE +100). It is raised when <code class=\"inline-code\">SELECT INTO</code> or <code class=\"inline-code\">EXECUTE IMMEDIATE ... INTO</code> returns no rows, or when code reads an associative array element that does not exist."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I handle the no data found exception in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Add <code class=\"inline-code\">EXCEPTION WHEN NO_DATA_FOUND THEN ...</code> to the block that contains the query, ideally a small inner block around just that query. In the handler, assign a default, skip the record, or call <code class=\"inline-code\">RAISE_APPLICATION_ERROR</code> with a clear message."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What does ORA-01403 with ORA-06512 mean?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "ORA-01403 is the actual error. ORA-06512 lines are the call stack: each one names the program unit and line number the error passed through. The first ORA-06512 after ORA-01403 shows where the failing statement is."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does BULK COLLECT raise NO_DATA_FOUND?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. A <code class=\"inline-code\">BULK COLLECT</code> that returns no rows leaves the collection empty and raises nothing. Check <code class=\"inline-code\">collection.COUNT = 0</code> yourself."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why do I get ORA-01403 when the data exists?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The usual causes are uncommitted data, a different schema or container, a CHAR column compared with a VARCHAR2 variable, a DATE with a time part, or the error coming from a different query than the one you tested. Check the ORA-06512 line first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "ORA-01403 means <code class=\"inline-code\">SELECT INTO</code> found no row, or a missing associative array key was read.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Read the first ORA-06512 line to find the failing statement.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Handle <code class=\"inline-code\">NO_DATA_FOUND</code> by name in a small inner block, never with WHEN OTHERS THEN NULL.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use a default when a missing row is normal, and RAISE_APPLICATION_ERROR when it is a bug.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use BULK COLLECT or a cursor when zero or many rows are valid results.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "For \"data exists\" cases, check commits, schema, CHAR vs VARCHAR2 and time parts of dates.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Remember that functions called from SQL turn NO_DATA_FOUND into NULL.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "SELECT INTO found no row, your procedure died with ORA-01403, and the same query works fine in SQL Developer. Here is why.\n\nORA-01403 is NO_DATA_FOUND. SELECT INTO must return exactly one row. Zero rows raises it.\n\nWhat actually fixes it:\n→ Wrap the query in a small inner BEGIN ... EXCEPTION WHEN NO_DATA_FOUND block and set a default. Never use WHEN OTHERS THEN NULL.\n→ If a missing row is a bug, convert it: RAISE_APPLICATION_ERROR(-20010, 'Employee not found').\n→ BULK COLLECT, cursor FETCH, MAX() and UPDATE never raise ORA-01403. Check COUNT, %NOTFOUND or SQL%ROWCOUNT instead.\n→ \"But the data exists\": a CHAR column compared with a VARCHAR2 variable does not match because of trailing spaces. Declare the variable with %TYPE.\n→ A function called inside a SELECT that hits NO_DATA_FOUND returns NULL instead of failing. Same function from PL/SQL raises the error.\n\nWhich of these has bitten you in a real project: the CHAR padding, the DATE time part, or the silent NULL from a function?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #PLSQL #OracleSQL #SQLInterview",
+  "slides": [
+   {
+    "title": "ORA-01403 No Data Found: Fix It Properly",
+    "body": "Why SELECT INTO fails, and why it fails even when the data exists"
+   },
+   {
+    "title": "What raises ORA-01403",
+    "points": [
+     "SELECT INTO that returns zero rows",
+     "EXECUTE IMMEDIATE ... INTO with zero rows",
+     "Reading a missing associative array key",
+     "Two or more rows is a different error: ORA-01422"
+    ]
+   },
+   {
+    "title": "Handle it next to the query",
+    "code": "BEGIN\n  SELECT emp_name INTO l_name\n    FROM employees\n   WHERE emp_id = 999;\nEXCEPTION\n  WHEN NO_DATA_FOUND THEN\n    l_name := 'Unknown';\nEND;",
+    "lang": "plsql"
+   },
+   {
+    "title": "These never raise it",
+    "points": [
+     "BULK COLLECT: check collection COUNT = 0",
+     "Cursor FETCH: check %NOTFOUND",
+     "MAX() or COUNT(*): returns NULL or 0",
+     "UPDATE or DELETE: check SQL%ROWCOUNT = 0"
+    ]
+   },
+   {
+    "title": "Data exists? Check CHAR padding",
+    "body": "A CHAR(6) column stores 'E101' with trailing spaces. Compared with a VARCHAR2 variable, Oracle uses nonpadded comparison, so no row matches.",
+    "code": "-- fails: VARCHAR2 variable\nl_code VARCHAR2(6) := 'E101';\n-- works: same type as column\nl_code employees.emp_code%TYPE := 'E101';",
+    "lang": "plsql"
+   },
+   {
+    "title": "Functions in SELECT hide it",
+    "points": [
+     "NO_DATA_FOUND inside a function called from SQL becomes NULL",
+     "The same call from PL/SQL raises ORA-01403",
+     "Handle it inside the function, or use an outer join"
+    ]
+   }
+  ]
+ }
+}
