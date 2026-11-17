@@ -67,7 +67,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain initdb, locale, encoding, checksums and data directory; distinguish package-managed cluster setup.
   - Format: Terminal + diagram · Level: Beginner
   - Hook: What does initdb really create?
-- [ ] Ep 015 | 2026-11-18 | Start, Stop, Restart and Reload PostgreSQL
+- [x] Ep 015 | 2026-11-18 | Start, Stop, Restart and Reload PostgreSQL (posted 2026-11-18 13:00, Buffer 6afbeacb4b26315855c4c0af)
   - Objective: Compare service actions and configuration reload behavior; mention parameter context and safe maintenance.
   - Format: Terminal demo · Level: Beginner
   - Hook: Restart or reload? A DBA must know the difference.

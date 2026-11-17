@@ -48,3 +48,4 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-14 | 13:00 | Instagram | Series Ep 012 | PostgreSQL Versions and Release Types | reels/2026-11-14-1300 | 6af6a3cc5ec1c9d5be612049
 - 2026-11-15 | 13:00 | Instagram | Series Ep 013 | Install PostgreSQL on Linux: Packages and Service | reels/2026-11-15-1300 | 6af7f55781e1228421e7083b
 - 2026-11-16 | 13:00 | Instagram | Series Ep 014 | Initialize a PostgreSQL Cluster | reels/2026-11-16-1300 | 6af94699918fe79d2ec42ee0
+- 2026-11-18 | 13:00 | Instagram | Series Ep 015 | Start, Stop, Restart and Reload PostgreSQL | reels/2026-11-18-1300 | 6afbeacb4b26315855c4c0af

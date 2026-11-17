@@ -7,5 +7,7 @@ pg_ctl stop has three modes: smart waits for clients, fast (the default) rolls b
 Each setting has a context in pg_settings. postmaster settings like shared_buffers need a restart; after a reload, pending_restart shows true. A typo in postgresql.conf is ignored but logged, and pg_reload_conf() still returns true, so check pg_file_settings and the server log.
 
 Episode 15 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
 Send this to a friend who's learning PostgreSQL.
+
 #postgresql #dba #postgres #database #sql
