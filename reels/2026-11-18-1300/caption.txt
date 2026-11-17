@@ -1,0 +1,11 @@
+Restart or reload? A PostgreSQL DBA must know the difference.
+
+pg_ctl start, stop, restart and reload do very different things. Reload only sends SIGHUP: the server rereads postgresql.conf and pg_hba.conf, and sessions stay connected. Restart is a full stop followed by a start, so every session is disconnected.
+
+pg_ctl stop has three modes: smart waits for clients, fast (the default) rolls back active transactions and disconnects clients, and immediate skips a clean shutdown, so the next start runs crash recovery. The docs recommend immediate only in emergencies.
+
+Each setting has a context in pg_settings. postmaster settings like shared_buffers need a restart; after a reload, pending_restart shows true. A typo in postgresql.conf is ignored but logged, and pg_reload_conf() still returns true, so check pg_file_settings and the server log.
+
+Episode 15 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+Send this to a friend who's learning PostgreSQL.
+#postgresql #dba #postgres #database #sql

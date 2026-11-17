@@ -1,0 +1,734 @@
+{
+ "ep": 15,
+ "total": 140,
+ "title": "Start, Stop, Restart and Reload PostgreSQL",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "Restart or reload? A DBA must know the difference.",
+   "cap": "*Restart* or *reload?* Know the *difference.*"
+  },
+  {
+   "say": "This is episode fifteen of the PostgreSQL DBA series: four server actions, and when to use each.",
+   "cap": "Episode 15: *start,* *stop,* *restart,* *reload.*",
+   "cue": "four"
+  },
+  {
+   "say": "The tool is pg_ctl. Dash capital D tells it which data directory to control.",
+   "cap": "*pg_ctl* controls one server. *-D* picks the data directory.",
+   "cue": "tool"
+  },
+  {
+   "say": "Start runs the server in the background. Use dash l, or a redirect, to log its output.",
+   "cap": "*start* runs it in the background. *-l* writes a *log.*",
+   "cue": "Start"
+  },
+  {
+   "say": "Stop shuts the server down. Restart is simply a stop, followed by a start.",
+   "cap": "*stop* shuts down. *restart* = stop + start.",
+   "cue": "Restart"
+  },
+  {
+   "say": "Reload only sends a SIGHUP signal. The server rereads its config files, and sessions stay connected.",
+   "cap": "*reload* sends *SIGHUP.* Config files are *reread.*",
+   "cue": "rereads"
+  },
+  {
+   "say": "Here it is on a test cluster. Start waits until the server is ready, then prints: server started.",
+   "cap": "start *waits,* then prints *server started.*",
+   "cue": "waits"
+  },
+  {
+   "say": "Reload prints one line: server signaled. Restart shows a full stop, then a full start.",
+   "cap": "reload: *server signaled.* restart: *stop,* then *start.*",
+   "cue": "Restart"
+  },
+  {
+   "say": "Stop has three modes, chosen with dash m. Smart waits for every client to disconnect.",
+   "cap": "Three modes with *-m.* *smart* waits for clients.",
+   "cue": "Smart"
+  },
+  {
+   "say": "Fast is the default. It rolls back active transactions, disconnects clients, then shuts down.",
+   "cap": "*fast* is the *default:* rolls back, disconnects.",
+   "cue": "default"
+  },
+  {
+   "say": "Immediate aborts all server processes without a clean shutdown, so the next start runs crash recovery.",
+   "cap": "*immediate:* no clean shutdown, *crash* *recovery* next.",
+   "cue": "aborts"
+  },
+  {
+   "say": "After an immediate stop, our test log says: automatic recovery in progress. Output trimmed.",
+   "cap": "Log: *automatic* *recovery* in progress.",
+   "cue": "automatic"
+  },
+  {
+   "say": "The docs: use immediate only in emergencies, and avoid SIGKILL on the server.",
+   "cap": "*Immediate* only in *emergencies.* Avoid *kill -9.*",
+   "cue": "SIGKILL"
+  },
+  {
+   "say": "So when is reload enough? Every setting has a context, shown in pg_settings.",
+   "cap": "Every setting has a *context* in *pg_settings.*",
+   "cue": "context"
+  },
+  {
+   "say": "postmaster means restart only, like shared_buffers. work_mem is a user setting, so reload is enough.",
+   "cap": "*postmaster* = restart only. *work_mem:* reload is enough.",
+   "cue": "work_mem"
+  },
+  {
+   "say": "ALTER SYSTEM sets log_min_duration_statement to five hundred milliseconds. Then, pg_reload_conf.",
+   "cap": "*ALTER SYSTEM,* then *pg_reload_conf().*",
+   "cue": "pg_reload_conf"
+  },
+  {
+   "say": "SHOW returns five hundred milliseconds. It applied, with no restart.",
+   "cap": "*500ms.* Applied with *no restart.*",
+   "cue": "applied"
+  },
+  {
+   "say": "Now we set shared_buffers to two hundred fifty six megabytes, and reload again.",
+   "cap": "Now *shared_buffers* to *256MB,* and reload.",
+   "cue": "reload"
+  },
+  {
+   "say": "SHOW still says one hundred twenty eight megabytes, and pending_restart is true.",
+   "cap": "Still *128MB.* *pending_restart* is *true.*",
+   "cue": "pending_restart"
+  },
+  {
+   "say": "After a restart, SHOW returns two hundred fifty six megabytes.",
+   "cap": "After *restart:* *256MB.*",
+   "cue": "returns"
+  },
+  {
+   "say": "Common mistake: trusting reload. With a typo in postgresql.conf, pg_reload_conf still returned true.",
+   "cap": "A *typo,* and reload *still* returned *true.*",
+   "cue": "true"
+  },
+  {
+   "say": "Invalid settings are ignored, but logged. pg_file_settings shows the bad entry.",
+   "cap": "*pg_file_settings* shows the *error.*",
+   "cue": "shows"
+  },
+  {
+   "say": "DBA takeaway, a common practice: reload, check pending_restart and the log, and plan restarts for a maintenance window.",
+   "cap": "Reload, *check,* and plan *restarts* in a *window.*",
+   "cue": "plan"
+  },
+  {
+   "say": "Recap: reload rereads the config files, and restart is a stop plus a start.",
+   "cap": "Recap: *reload* rereads, *restart* = stop + start.",
+   "cue": "restart"
+  },
+  {
+   "say": "Fast is the default stop, immediate means crash recovery, and context tells you what needs a restart.",
+   "cap": "*fast* default, *immediate* recovers, check *context.*",
+   "cue": "context"
+  },
+  {
+   "say": "Next up: creating and dropping databases safely. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *create* and *drop* databases. *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "*Restart* or *reload?* A DBA must know the *difference.*",
+   "sub": "Episode 15 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 15 · INSTALLATION & ADMINISTRATION",
+   "title": "Start, Stop, Restart and Reload PostgreSQL",
+   "sub": "pg_ctl, shutdown modes, setting context"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 6,
+   "heading": "What each action does",
+   "nodes": [
+    {
+     "id": "ctl",
+     "label": "pg_ctl",
+     "sub": "-D data directory",
+     "x": 540,
+     "y": 500,
+     "w": 340,
+     "h": 120,
+     "icon": "terminal",
+     "color": "orange",
+     "shape": "pill",
+     "at": 2
+    },
+    {
+     "id": "start",
+     "label": "start",
+     "sub": "background, -l log",
+     "x": 210,
+     "y": 750,
+     "w": 280,
+     "h": 130,
+     "icon": "bolt",
+     "color": "green",
+     "at": 3
+    },
+    {
+     "id": "stop",
+     "label": "stop",
+     "sub": "shut down",
+     "x": 540,
+     "y": 750,
+     "w": 280,
+     "h": 130,
+     "icon": "lock",
+     "color": "red",
+     "at": 4
+    },
+    {
+     "id": "restart",
+     "label": "restart",
+     "sub": "stop + start",
+     "x": 870,
+     "y": 750,
+     "w": 280,
+     "h": 130,
+     "icon": "sync",
+     "color": "amber",
+     "at": 4
+    },
+    {
+     "id": "reload",
+     "label": "reload",
+     "sub": "sends SIGHUP",
+     "x": 260,
+     "y": 1020,
+     "w": 320,
+     "h": 130,
+     "icon": "sync",
+     "color": "cyan",
+     "at": 5
+    },
+    {
+     "id": "srv",
+     "label": "postgres server",
+     "sub": "keeps running",
+     "x": 800,
+     "y": 1020,
+     "w": 360,
+     "h": 130,
+     "icon": "server",
+     "color": "blue",
+     "shape": "db",
+     "at": 5
+    },
+    {
+     "id": "conf",
+     "label": "Config files",
+     "sub": "reread on SIGHUP",
+     "x": 800,
+     "y": 1270,
+     "w": 360,
+     "h": 120,
+     "icon": "file",
+     "color": "purple",
+     "at": 5
+    }
+   ],
+   "edges": [
+    {
+     "from": "ctl",
+     "to": "start",
+     "at": 3,
+     "color": "green"
+    },
+    {
+     "from": "ctl",
+     "to": "stop",
+     "at": 4,
+     "color": "red"
+    },
+    {
+     "from": "ctl",
+     "to": "restart",
+     "at": 4,
+     "color": "amber"
+    },
+    {
+     "from": "reload",
+     "to": "srv",
+     "label": "SIGHUP",
+     "at": 5,
+     "flow": true,
+     "color": "cyan"
+    },
+    {
+     "from": "srv",
+     "to": "conf",
+     "label": "rereads",
+     "at": 5,
+     "flow": true,
+     "color": "purple"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "ctl"
+    },
+    {
+     "at": 3,
+     "id": "start"
+    },
+    {
+     "at": 4,
+     "id": "restart"
+    },
+    {
+     "at": 5,
+     "id": "reload"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 6,
+   "to": 8,
+   "heading": "pg_ctl in action",
+   "title": "bash: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- as postgres, test cluster",
+     "at": 6
+    },
+    {
+     "kind": "cmd",
+     "text": "pg_ctl -D demo -l demo.log start",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "waiting for server to start.... done",
+     "at": 6
+    },
+    {
+     "kind": "out",
+     "text": "server started",
+     "at": 6
+    },
+    {
+     "kind": "cmd",
+     "text": "pg_ctl -D demo reload",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "server signaled",
+     "at": 7
+    },
+    {
+     "kind": "cmd",
+     "text": "pg_ctl -D demo -l demo.log restart",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "waiting for server to shut down.... done",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "server stopped",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "waiting for server to start.... done",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "server started",
+     "at": 7
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 8,
+   "to": 11,
+   "heading": "Three shutdown modes",
+   "columns": 1,
+   "items": [
+    {
+     "at": 8,
+     "icon": "clock",
+     "title": "-m smart",
+     "text": "No new connections, waits for every client to disconnect",
+     "color": "green"
+    },
+    {
+     "at": 9,
+     "icon": "bolt",
+     "title": "-m fast (default)",
+     "text": "Rolls back active transactions, disconnects clients",
+     "color": "amber"
+    },
+    {
+     "at": 10,
+     "icon": "alert",
+     "title": "-m immediate",
+     "text": "No clean shutdown: crash recovery on the next start",
+     "color": "red"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 11,
+   "to": 12,
+   "heading": "After an immediate stop",
+   "title": "bash: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "pg_ctl -D demo stop -m immediate",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "server stopped",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "text": "pg_ctl -D demo -l demo.log start",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "server started",
+     "at": 11
+    },
+    {
+     "kind": "comment",
+     "text": "-- demo.log, output trimmed",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "LOG: database system was not",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "properly shut down; automatic",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "recovery in progress",
+     "at": 11
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 12,
+   "to": 13,
+   "kind": "warning",
+   "title": "Emergencies only",
+   "text": "The docs: use immediate mode only in emergencies, and avoid SIGKILL (kill -9) on the server."
+  },
+  {
+   "type": "terminal",
+   "from": 13,
+   "to": 15,
+   "heading": "Each setting has a context",
+   "title": "psql: demo cluster",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT name, context",
+     "at": 13,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "FROM pg_settings",
+     "at": 13,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "comment",
+     "text": "-- WHERE name IN (...) trimmed",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": " listen_addresses | postmaster",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": " max_connections  | postmaster",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": " shared_buffers   | postmaster",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": " work_mem         | user",
+     "at": 14
+    },
+    {
+     "kind": "comment",
+     "text": "-- postmaster = restart needed",
+     "at": 14
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 15,
+   "to": 17,
+   "heading": "Reload is enough",
+   "title": "psql: demo cluster",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "ALTER SYSTEM SET",
+     "at": 15,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "log_min_duration_statement",
+     "at": 15,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "= '500ms';",
+     "at": 15,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "out",
+     "text": "ALTER SYSTEM",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT pg_reload_conf();",
+     "at": 15,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "out",
+     "text": " t",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "text": "SHOW",
+     "at": 16,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "log_min_duration_statement;",
+     "at": 16,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "out",
+     "text": " 500ms",
+     "at": 16
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 17,
+   "to": 20,
+   "heading": "Restart needed",
+   "title": "psql: demo cluster",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "ALTER SYSTEM SET",
+     "at": 17,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "shared_buffers = '256MB';",
+     "at": 17,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT pg_reload_conf();",
+     "at": 17,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "SHOW shared_buffers;",
+     "at": 18,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "out",
+     "text": " 128MB",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT name FROM pg_settings",
+     "at": 18,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "WHERE pending_restart;",
+     "at": 18,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "out",
+     "text": " shared_buffers",
+     "at": 18
+    },
+    {
+     "kind": "comment",
+     "text": "-- after pg_ctl restart:",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "text": "SHOW shared_buffers;",
+     "at": 19,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "out",
+     "text": " 256MB",
+     "at": 19
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 20,
+   "to": 22,
+   "heading": "Reload said true. Was it?",
+   "title": "psql: demo cluster",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- typo in postgresql.conf:",
+     "at": 20
+    },
+    {
+     "kind": "comment",
+     "text": "-- work_mem = 64XB",
+     "at": 20
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT pg_reload_conf();",
+     "at": 20,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "out",
+     "text": " t",
+     "at": 20
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT name, error",
+     "at": 21,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "FROM pg_file_settings",
+     "at": 21,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "WHERE error IS NOT NULL;",
+     "at": 21,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "out",
+     "text": " work_mem | setting could not",
+     "at": 21
+    },
+    {
+     "kind": "out",
+     "text": "            be applied",
+     "at": 21
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 22,
+   "to": 23,
+   "kind": "tip",
+   "title": "DBA takeaway",
+   "text": "A common practice: reload first, check pending_restart and the log, plan restarts for a maintenance window."
+  },
+  {
+   "type": "checklist",
+   "from": 23,
+   "to": 25,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 23,
+     "title": "reload: rereads config files"
+    },
+    {
+     "at": 23,
+     "title": "restart: stop plus start"
+    },
+    {
+     "at": 24,
+     "title": "Default stop mode: fast"
+    },
+    {
+     "at": 24,
+     "title": "immediate: crash recovery next"
+    },
+    {
+     "at": 24,
+     "title": "Check context, pending_restart"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 25,
+   "to": 26,
+   "next": "Ep 16 · Create and drop databases"
+  }
+ ]
+}

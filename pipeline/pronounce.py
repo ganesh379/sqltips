@@ -38,6 +38,8 @@ WORDS = {
     "lsclusters": "L-S clusters", "PGDG": "P-G-D-G",
     "fsync": "F-sync", "systemctl": "system control", "sudo": "soo-doo",
     "etcd": "E-T-C-D",
+    # signals (ep 15)
+    "SIGHUP": "sig-hup", "SIGKILL": "sig-kill", "SIGTERM": "sig-term",
     # acronyms
     "SQL": "S-Q-L", "DBA": "D-B-A", "DBAs": "D-B-As", "DBMS": "D-B-M-S", "RDBMS": "R-D-B-M-S",
     "WAL": "wall", "wal": "wall", "MVCC": "M-V-C-C", "XID": "X-I-D", "XIDs": "X-I-Ds",
