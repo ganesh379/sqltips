@@ -62,3 +62,4 @@
 - 2026-11-16 [Oracle] ora-01403 no data found -> _drafts/2026-11-16-oracle-ora-01403-no-data-found.json
 - 2026-11-16 [PostgreSQL] postgresql wal archiving -> _drafts/2026-11-16-postgresql-postgresql-dba-part-19-wal-archiving.json
 - 2026-11-17 [Oracle] oracle not exists vs not in -> _drafts/2026-11-17-oracle-oracle-not-exists-vs-not-in.json
+- 2026-11-17 [PostgreSQL] postgresql point in time recovery -> _drafts/2026-11-17-postgresql-postgresql-dba-part-20-point-in-time-recovery.json

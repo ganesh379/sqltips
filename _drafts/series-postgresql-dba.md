@@ -18,3 +18,4 @@
 - Part 17 | postgresql-dba-part-17-pg-dump-pg-restore | 2026-11-12
 - Part 18 | postgresql-dba-part-18-pg-basebackup | 2026-11-13
 - Part 19 | postgresql-dba-part-19-wal-archiving | 2026-11-16
+- Part 20 | postgresql-dba-part-20-point-in-time-recovery | 2026-11-17

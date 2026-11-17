@@ -1,0 +1,1517 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 20: Point-in-Time Recovery (PITR) Step by Step",
+ "slug": "postgresql-dba-part-20-point-in-time-recovery",
+ "category": "postgresql",
+ "description": "Recover PostgreSQL to the moment before a mistake: find the bad commit with pg_waldump, set recovery_target_time and restore a dropped table.",
+ "focusKeyword": "postgresql point in time recovery",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "pitr",
+  "backup-and-recovery",
+  "wal"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-3-data-directory-pgdata/",
+  "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/",
+  "/posts/postgresql/postgresql-dba-part-14-transaction-id-wraparound-freezing/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: Continuous Archiving and Point-in-Time Recovery (PITR)",
+   "url": "https://www.postgresql.org/docs/current/continuous-archiving.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Write Ahead Log settings (Archive Recovery, Recovery Target)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-wal.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: System Administration Functions (recovery control, restore points)",
+   "url": "https://www.postgresql.org/docs/current/functions-admin.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_waldump",
+   "url": "https://www.postgresql.org/docs/current/pgwaldump.html"
+  }
+ ],
+ "reviewNotes": "Series part 20. Part 19 (postgresql-dba-part-19-wal-archiving) is not live yet: it is named without a link in the intro and not in related. Publish Part 19 first (Parts 15-18 are also not live; Part 17 and Part 18 are mentioned by name only). IMPORTANT: PostgreSQL 18 could NOT be installed in this run's sandbox. The PGDG repository was reachable, but postgresql-18 depends on liburing2 from the Ubuntu archive, and archive.ubuntu.com / security.ubuntu.com were blocked by the sandbox network policy (proxy 403). Every command was therefore run on the Ubuntu distribution package PostgreSQL 16.15 (16.15-0ubuntu0.24.04.1) on Ubuntu 24.04.5 LTS, following the PostgreSQL 18 documentation (docs/current, footer 18.7). In the article, paths, cluster names and pg_lsclusters lines were written for 18 (e.g. /var/lib/postgresql/18/pitr instead of /16/pitr); every output that contains such paths or that could differ on 18 (server log lines, pg_basebackup progress, backup history file, pg_restore -v, pg_controldata) is captioned '(expected output)'. SQL query results (SELECTs, pg_switch_wal, pg_create_restore_point, pg_waldump commit lines) are real from the 16.15 run. Log timestamps/PIDs were stripped from log excerpts and long pg_waldump lines were cut (marked). The recovery messages used are present in both 16 and 18 per the docs, but please re-run the lab on a real 18 host before publishing if possible. Real behaviours found while testing and used in the article: (1) a SELECT on the dropped table hangs while recovery is paused just before the DROP commit, because the startup process holds the replayed AccessExclusiveLock (verified with pg_locks); (2) a recovery_target_time earlier than the backup end did not error but stopped at the first commit after consistency; (3) 'IST' in recovery_target_time is rejected; (4) sequences can jump after recovery (nextval returned 37 after 6 rows). Editor checks: the expected pg_lsclusters/log paths for 18; that Ubuntu's PostgreSQL 18 postgresql.conf still has include_dir = 'conf.d' (true on 16 and in recent postgresql-common). LinkedIn post wording 'Two traps worth knowing' replaces any first-person testing claim.",
+ "generatedAt": "2026-11-17T13:10:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is Part 20 of the PostgreSQL DBA series. Point-in-time recovery (PITR) lets you bring a PostgreSQL cluster back to the exact moment before a mistake, for example one second before someone ran <code class=\"inline-code\">DROP TABLE</code> on a production table. You do it by restoring a base backup and replaying archived WAL up to a stop point you choose. By the end of this part you will be able to find the exact time of a bad transaction, recover a copy of the cluster to just before it, copy the lost data back, and run the full in-place recovery procedure from the PostgreSQL documentation."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 19 we covered WAL archiving with archive_command, and in Part 18 we took base backups with pg_basebackup. This part puts the two together. Without both of them, point-in-time recovery is not possible."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "How a base backup, the WAL archive and a recovery target work together",
+      "items": []
+     },
+     {
+      "content": "How to find the exact time, transaction ID and LSN of a bad change with <code class=\"inline-code\">pg_waldump</code>",
+      "items": []
+     },
+     {
+      "content": "How to recover into a separate cluster with <code class=\"inline-code\">restore_command</code>, <code class=\"inline-code\">recovery_target_time</code> and <code class=\"inline-code\">recovery.signal</code>",
+      "items": []
+     },
+     {
+      "content": "How to pause at the target, check the data, and finish recovery with <code class=\"inline-code\">pg_wal_replay_resume()</code>",
+      "items": []
+     },
+     {
+      "content": "How to run the official in-place recovery procedure and what a new timeline means",
+      "items": []
+     },
+     {
+      "content": "The real error messages you will meet and how to fix each one",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 19 of this series, especially Part 18 (pg_basebackup) and Part 19 (WAL archiving).",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server (we call it db1, 10.0.0.11) with PostgreSQL 18 from the PGDG repository and the cluster 18 main running.",
+      "items": []
+     },
+     {
+      "content": "WAL archiving turned on as in Part 19: <code class=\"inline-code\">archive_mode = on</code> and <code class=\"inline-code\">archive_command</code> copying files to <code class=\"inline-code\">/mnt/wal_archive</code>.",
+      "items": []
+     },
+     {
+      "content": "Enough free disk for a second copy of the cluster. We restore into a second cluster called 18 pitr on port 5433, so the original stays untouched.",
+      "items": []
+     },
+     {
+      "content": "sudo access, and the postgres operating system user for PostgreSQL commands.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of a base backup as a photo of the data directory at one moment. The WAL archive is the notebook in which PostgreSQL wrote down every change after that photo was taken. Point-in-time recovery means: put the photo back, then re-apply the notebook line by line, and stop reading at the line you choose."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "That stop point is called the <b>recovery target</b>. You can give it as a time, a named restore point, a transaction ID or a WAL position (LSN, log sequence number, which is a byte position in the WAL stream). If you give no target, PostgreSQL replays all the WAL it can find and recovers to the latest possible state."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Three things switch a cluster into this kind of recovery, which the documentation calls <b>archive recovery</b>: the restored base backup (with its <code class=\"inline-code\">backup_label</code> file), an empty file named <code class=\"inline-code\">recovery.signal</code> in the data directory, and a <code class=\"inline-code\">restore_command</code> that tells PostgreSQL how to fetch an archived WAL file. <code class=\"inline-code\">restore_command</code> is the reverse of <code class=\"inline-code\">archive_command</code>: <code class=\"inline-code\">%f</code> is replaced by the file name PostgreSQL wants and <code class=\"inline-code\">%p</code> by the path where it must be copied."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "db1 (10.0.0.11)\n\n  /var/lib/postgresql/backups/base_2026_11_17   base backup from Part 18 (the photo)\n  /mnt/wal_archive                              archived WAL from Part 19 (the notebook)\n                 |\n                 |  restore_command = 'cp /mnt/wal_archive/%f %p'\n                 v\n  cluster 18/pitr, port 5433   replays WAL, stops at the recovery target,\n                               then becomes a normal read-write server",
+    "caption": "The PITR lab used in this part"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When recovery reaches the target, <code class=\"inline-code\">recovery_target_action</code> decides what happens next. The default, <code class=\"inline-code\">pause</code>, stops replay and lets you run read-only queries so you can check you stopped at the right place. <code class=\"inline-code\">promote</code> ends recovery and opens the server for writes. <code class=\"inline-code\">shutdown</code> stops the server. Pausing only lets you run queries when <code class=\"inline-code\">hot_standby</code> is on, which is the default; if it is off, <code class=\"inline-code\">pause</code> acts like <code class=\"inline-code\">shutdown</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When recovery ends, PostgreSQL starts a new <b>timeline</b>. A timeline is a numbered branch of history. The original server keeps writing on timeline 1, the recovered copy writes on timeline 2, and the new WAL file names start with <code class=\"inline-code\">00000002</code>. This stops the two histories from overwriting each other in the archive. PostgreSQL records each branch in a small <code class=\"inline-code\">.history</code> file."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "The stop point must be later than the end of the base backup. You cannot use a backup to recover to a time when that backup was still running. To go back further, use an older base backup and the WAL archived since it was taken."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Set up a test scenario",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To practise safely, we create a small table, take a base backup, make some good changes, and then make a mistake on purpose. Run all of this on a test server, not on production."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Create the sample data",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres user, create a database and a payments table:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql",
+    "caption": "Open psql as postgres"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE shop;\n\\c shop\nCREATE TABLE payments (\n  payment_id  serial PRIMARY KEY,\n  customer    text    NOT NULL,\n  amount      numeric(10,2) NOT NULL,\n  paid_at     timestamptz NOT NULL DEFAULT now()\n);\nINSERT INTO payments (customer, amount) VALUES\n  ('Asha', 1500.00), ('Ravi', 899.50), ('Meena', 2400.00);\nSELECT * FROM payments;",
+    "caption": "Sample table in the shop database"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " payment_id | customer | amount  |            paid_at\n------------+----------+---------+-------------------------------\n          1 | Asha     | 1500.00 | 2026-11-17 12:47:45.136979+00\n          2 | Ravi     |  899.50 | 2026-11-17 12:47:45.136979+00\n          3 | Meena    | 2400.00 | 2026-11-17 12:47:45.136979+00\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Three rows exist. Leave psql with <code class=\"inline-code\">\\q</code>. The server time zone is UTC here, which is why timestamps end in <code class=\"inline-code\">+00</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Take a base backup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres user, take a plain-format base backup exactly as in Part 18:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres mkdir -p /var/lib/postgresql/backups\nsudo -u postgres pg_basebackup -D /var/lib/postgresql/backups/base_2026_11_17 \\\n  --checkpoint=fast --label=base_2026_11_17 --progress",
+    "caption": "Base backup"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-D",
+      "Directory to write the backup into. It must not exist or must be empty."
+     ],
+     [
+      "--checkpoint=fast",
+      "Ask for an immediate checkpoint so the backup starts at once."
+     ],
+     [
+      "--label",
+      "A label stored in backup_label to identify the backup."
+     ],
+     [
+      "--progress",
+      "Show progress while the backup runs."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "waiting for checkpoint\n30680/30680 kB (100%), 0/1 tablespace\n30680/30680 kB (100%), 1/1 tablespace",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Check that the backup history file reached the archive. It records where the backup started and stopped in the WAL:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres cat /mnt/wal_archive/000000010000000000000003.00000028.backup",
+    "caption": "Read the backup history file"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "START WAL LOCATION: 0/3000028 (file 000000010000000000000003)\nSTOP WAL LOCATION: 0/3000100 (file 000000010000000000000003)\nCHECKPOINT LOCATION: 0/3000060\nBACKUP METHOD: streamed\nBACKUP FROM: primary\nSTART TIME: 2026-11-17 12:47:45 UTC\nLABEL: base_2026_11_17\nSTART TIMELINE: 1\nSTOP TIME: 2026-11-17 12:47:45 UTC\nSTOP TIMELINE: 1",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">STOP TIME</code> is the earliest moment this backup can be recovered to. Your file name will differ; list <code class=\"inline-code\">/mnt/wal_archive</code> to find it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Make good changes and a restore point",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, in psql as postgres connected to shop, add two payments and create a named restore point. A restore point is a named marker written into the WAL that you can later use as a recovery target. Creating one before risky work, such as a month-end cleanup or a deployment, is a cheap habit that makes recovery much easier."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO payments (customer, amount) VALUES ('Kiran', 3200.00), ('Fatima', 750.00);\nSELECT pg_create_restore_point('before_month_end_cleanup');\nINSERT INTO payments (customer, amount) VALUES ('John', 1250.00);",
+    "caption": "Changes after the backup"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INSERT 0 2\n pg_create_restore_point\n-------------------------\n 0/40003B8\n(1 row)\n\nINSERT 0 1",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The function returns the WAL location of the marker. Only superusers can run <code class=\"inline-code\">pg_create_restore_point</code> by default. Use unique names: if two restore points share a name, recovery stops at the first one."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Make the mistake",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now drop the table, as if someone ran the command on the wrong server. Then make one more good change in a different table, so you can see what point-in-time recovery keeps and what it throws away."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT now();\nDROP TABLE payments;\nCREATE TABLE refunds (refund_id int, amount numeric);\nINSERT INTO refunds VALUES (1, 99.00);",
+    "caption": "The accident, followed by unrelated good work"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "              now\n-------------------------------\n 2026-11-17 12:48:11.504442+00\n(1 row)\n\nDROP TABLE\nCREATE TABLE\nINSERT 0 1",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In real life nobody records the time before a mistake. You usually get a rough time from the person who made it or from the application logs. Step 6 shows how to find the exact time."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Make sure the WAL is archived",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Recovery can only replay WAL that is in the archive. The current WAL file is archived only when it is full, when <code class=\"inline-code\">archive_timeout</code> passes, or when you force a switch. On db1, as postgres, force the switch and check the archive:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SELECT pg_switch_wal();\"\nsudo -u postgres ls /mnt/wal_archive",
+    "caption": "Force a WAL switch and list the archive"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_switch_wal\n---------------\n 0/4027FA8\n(1 row)\n\n000000010000000000000001\n000000010000000000000002\n000000010000000000000003\n000000010000000000000003.00000028.backup\n000000010000000000000004",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Segment <code class=\"inline-code\">000000010000000000000004</code> holds everything from Steps 3 and 4. If <code class=\"inline-code\">pg_stat_archiver</code> shows failures, fix archiving first (Part 19), because recovery cannot go past a missing WAL file."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find the exact moment of the mistake",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Read the archived WAL with pg_waldump",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_waldump</code> prints WAL records in a human-readable form. On db1, as postgres, list the commit records in the segment that holds the accident:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres /usr/lib/postgresql/18/bin/pg_waldump \\\n  --path=/mnt/wal_archive --rmgr=Transaction 000000010000000000000004",
+    "caption": "List transaction commits in one WAL segment"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "--path",
+      "Directory to search for WAL segment files."
+     ],
+     [
+      "--rmgr=Transaction",
+      "Only show records from the Transaction resource manager (commits and aborts). Use --rmgr=list to see all names."
+     ],
+     [
+      "000000010000000000000004",
+      "The start segment. It also sets the timeline to read (1 here)."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "rmgr: Transaction len (rec/tot):     34/    34, tx:        733, lsn: 0/04000328, prev 0/040002E8, desc: COMMIT 2026-11-17 12:47:56.427598 UTC\nrmgr: Transaction len (rec/tot):     34/    34, tx:        734, lsn: 0/04000448, prev 0/04000408, desc: COMMIT 2026-11-17 12:48:01.468474 UTC\nrmgr: Transaction len (rec/tot):   1829/  1829, tx:        735, lsn: 0/04010980, prev 0/04010948, desc: COMMIT 2026-11-17 12:48:11.505894 UTC; rels: base/16384/16386 base/1638...\nrmgr: Transaction len (rec/tot):   1093/  1093, tx:        736, lsn: 0/04027AE0, prev 0/04027A98, desc: COMMIT 2026-11-17 12:48:16.568649 UTC; inval msgs: catcache 80 ...\nrmgr: Transaction len (rec/tot):     34/    34, tx:        737, lsn: 0/04027F68, prev 0/04027F28, desc: COMMIT 2026-11-17 12:48:16.570048 UTC",
+    "caption": "Output (long lines cut)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Transaction 735 is the <code class=\"inline-code\">DROP TABLE</code>. Its commit record lists <code class=\"inline-code\">rels:</code>, the data files that were removed, and it committed at <code class=\"inline-code\">12:48:11.505894 UTC</code>. Transactions 733 and 734 are the good inserts. 736 and 737 are the <code class=\"inline-code\">refunds</code> work. The <code class=\"inline-code\">base/16384/16386</code> path is database 16384, file 16386; on the recovered copy you can confirm it is the payments table with <code class=\"inline-code\">SELECT relname FROM pg_class WHERE relfilenode = 16386;</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Write down three values: the commit time <code class=\"inline-code\">2026-11-17 12:48:11.505894+00</code>, the transaction ID <code class=\"inline-code\">735</code> and the commit LSN <code class=\"inline-code\">0/04010980</code>. Any of them can be used as the target. Run <code class=\"inline-code\">pg_waldump</code> on archived files, not on the live <code class=\"inline-code\">pg_wal</code> directory, because the documentation warns it can give wrong results while the server is running."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Recover a copy of the cluster to a point in time",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The safest first move is to recover into a separate cluster. Production keeps running, the damaged data stays untouched, and you can try again with a different target as many times as you need."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Create an empty cluster for the recovery",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, with sudo, create a new cluster called pitr on port 5433:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_createcluster 18 pitr --port 5433\npg_lsclusters",
+    "caption": "Create the target cluster"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log\n18  pitr    5433 down   postgres /var/lib/postgresql/18/pitr /var/log/postgresql/postgresql-18-pitr.log",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The new cluster has its own configuration in <code class=\"inline-code\">/etc/postgresql/18/pitr/</code>. Its <code class=\"inline-code\">postgresql.conf</code> has <code class=\"inline-code\">archive_mode</code> off, which is what we want: the recovered copy must not write its own WAL into the production archive."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Restore the base backup and empty pg_wal",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "The next command deletes everything in <code class=\"inline-code\">/var/lib/postgresql/18/pitr</code>. Check the path twice. Never point it at the data directory of a running cluster."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres user, replace the new cluster's files with the base backup, then delete the WAL files that came with the backup:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres bash -c 'rm -rf /var/lib/postgresql/18/pitr/*'\nsudo -u postgres cp -a /var/lib/postgresql/backups/base_2026_11_17/. /var/lib/postgresql/18/pitr/\nsudo -u postgres bash -c 'rm -f /var/lib/postgresql/18/pitr/pg_wal/0000*'\nsudo -u postgres ls -la /var/lib/postgresql/18/pitr/pg_wal/",
+    "caption": "Restore the backup files"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Command or option",
+      "What it does"
+     ],
+     [
+      "rm -rf .../pitr/*",
+      "Empties the new cluster's data directory but keeps the directory and its 700 permissions."
+     ],
+     [
+      "cp -a",
+      "Archive copy: keeps ownership, permissions and timestamps, which PostgreSQL checks at start."
+     ],
+     [
+      "rm -f .../pg_wal/0000*",
+      "Removes WAL files copied with the backup. The documentation says they are probably obsolete; PostgreSQL will fetch what it needs from the archive."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "total 12\ndrwx------  3 postgres postgres 4096 Nov 17 12:48 .\ndrwx------ 19 postgres postgres 4096 Nov 17 12:47 ..\ndrwx------  2 postgres postgres 4096 Nov 17 12:47 archive_status",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only the empty <code class=\"inline-code\">archive_status</code> folder remains in <code class=\"inline-code\">pg_wal</code>. The data directory is owned by postgres with <code class=\"inline-code\">drwx------</code>, which is correct."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Set the recovery target and create recovery.signal",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as postgres, put the recovery settings in a separate file in the cluster's <code class=\"inline-code\">conf.d</code> folder. Ubuntu's <code class=\"inline-code\">postgresql.conf</code> includes every <code class=\"inline-code\">.conf</code> file in that folder, so you can remove the settings later by deleting one file."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres tee /etc/postgresql/18/pitr/conf.d/pitr.conf <<'EOF'\nrestore_command = 'cp /mnt/wal_archive/%f %p'\nrecovery_target_time = '2026-11-17 12:48:11.505894+00'\nrecovery_target_inclusive = off\nrecovery_target_action = 'pause'\nEOF\nsudo -u postgres touch /var/lib/postgresql/18/pitr/recovery.signal",
+    "caption": "Recovery settings and the signal file"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "Default",
+      "What it does"
+     ],
+     [
+      "restore_command",
+      "empty",
+      "Shell command that copies archived WAL file %f to path %p. Required for archive recovery. Must return non-zero when a file does not exist."
+     ],
+     [
+      "recovery_target_time",
+      "empty",
+      "Replay up to this time stamp. Use a numeric UTC offset or a full zone name, never an abbreviation like IST."
+     ],
+     [
+      "recovery_target_inclusive",
+      "on",
+      "on stops just after the target, off stops just before it. Applies to time, xid and LSN targets."
+     ],
+     [
+      "recovery_target_action",
+      "pause",
+      "What to do at the target: pause, promote or shutdown."
+     ],
+     [
+      "recovery_target_timeline",
+      "latest",
+      "Which timeline to follow. latest follows the newest timeline found in the archive."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "We use the exact commit time of transaction 735 with <code class=\"inline-code\">recovery_target_inclusive = off</code>, so recovery stops just before that commit and the <code class=\"inline-code\">DROP TABLE</code> never happens. With the default <code class=\"inline-code\">on</code>, the drop would be replayed. For people in India, <code class=\"inline-code\">'2026-11-17 18:18:11.505894+05:30'</code> means the same moment."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The recovery target settings can only be set at server start, so they take effect only when the cluster starts. <code class=\"inline-code\">recovery.signal</code> is an empty file; its presence is what tells PostgreSQL to perform archive recovery instead of a normal start."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Start the cluster and read the log",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, with sudo, start the cluster and read its log:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_ctlcluster 18 pitr start\npg_lsclusters\nsudo grep -v '^cp: cannot' /var/log/postgresql/postgresql-18-pitr.log",
+    "caption": "Start recovery"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status          Owner    Data directory              Log file\n18  main    5432 online          postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log\n18  pitr    5433 online,recovery postgres /var/lib/postgresql/18/pitr /var/log/postgresql/postgresql-18-pitr.log\n\nLOG:  database system was interrupted; last known up at 2026-11-17 12:47:45 UTC\nLOG:  starting point-in-time recovery to 2026-11-17 12:48:11.505894+00\nLOG:  starting backup recovery with redo LSN 0/3000028, checkpoint LSN 0/3000060, on timeline ID 1\nLOG:  restored log file \"000000010000000000000003\" from archive\nLOG:  redo starts at 0/3000028\nLOG:  restored log file \"000000010000000000000004\" from archive\nLOG:  completed backup recovery with redo LSN 0/3000028 and end LSN 0/3000100\nLOG:  consistent recovery state reached at 0/3000100\nLOG:  database system is ready to accept read-only connections\nLOG:  recovery stopping before commit of transaction 735, time 2026-11-17 12:48:11.505894+00\nLOG:  pausing at the end of recovery\nHINT:  Execute pg_wal_replay_resume() to promote.",
+    "caption": "Output (expected output), log timestamps and PIDs removed"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read the log from top to bottom. PostgreSQL fetched segments 3 and 4 from the archive, reached a consistent state at the end of the backup, and stopped before the commit of transaction 735, the <code class=\"inline-code\">DROP TABLE</code>. The status <code class=\"inline-code\">online,recovery</code> means it is up but still in recovery and read-only."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">grep -v</code> hides lines like <code class=\"inline-code\">cp: cannot stat ... 00000002.history: No such file or directory</code>. These are normal: PostgreSQL asks <code class=\"inline-code\">restore_command</code> for files that may not exist, such as the history file of a newer timeline, and a non-zero exit simply means the file is not there."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Check the data while recovery is paused",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as postgres, connect to port 5433 and check where replay stopped:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -p 5433 -d shop -c \"SELECT pg_is_in_recovery(), pg_get_wal_replay_pause_state(), pg_last_wal_replay_lsn(), pg_last_xact_replay_timestamp();\"",
+    "caption": "Check the recovery state"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_is_in_recovery | pg_get_wal_replay_pause_state | pg_last_wal_replay_lsn | pg_last_xact_replay_timestamp\n-------------------+-------------------------------+------------------------+-------------------------------\n t                 | paused                        | 0/4010980              | 2026-11-17 12:48:01.468474+00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Recovery is paused at LSN <code class=\"inline-code\">0/4010980</code>, the commit LSN of the drop. The last replayed transaction is the John insert at 12:48:01. Now check that the table exists and that the later <code class=\"inline-code\">refunds</code> table does not:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -p 5433 -d shop -c \"SELECT to_regclass('payments') AS payments_table, to_regclass('refunds') AS refunds_table;\"",
+    "caption": "Check which tables exist at this point"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " payments_table | refunds_table\n----------------+---------------\n payments       |\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "In this exact scenario a <code class=\"inline-code\">SELECT * FROM payments</code> on the paused server waits forever. The stop point is inside the DROP transaction, so the startup process holds the <code class=\"inline-code\">AccessExclusiveLock</code> that DROP TABLE took, and queries on that table wait for it. <code class=\"inline-code\">to_regclass</code> only reads the catalog, so it does not wait. Once you end recovery in Step 12, the unfinished DROP is rolled back and the lock goes away. You can see the lock with <code class=\"inline-code\">SELECT relation::regclass, mode, pid FROM pg_locks WHERE mode = 'AccessExclusiveLock';</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the check shows you stopped in the wrong place, do not resume. Stop the cluster, repeat Step 8 to restore the backup again, set a different target in Step 9 and start again. Once a recovery ends and a new timeline starts, you cannot continue replaying from that copy."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: End recovery and verify",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as postgres, end recovery. <code class=\"inline-code\">pg_wal_replay_resume()</code> lifts the pause, and because the target has been reached, recovery finishes and the server becomes read-write:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -p 5433 -c \"SELECT pg_wal_replay_resume();\"\nsudo -u postgres psql -p 5433 -d shop -c \"SELECT pg_is_in_recovery();\" \\\n  -c \"SELECT payment_id, customer, amount FROM payments ORDER BY payment_id;\"",
+    "caption": "Finish recovery and read the table"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_is_in_recovery\n-------------------\n f\n(1 row)\n\n payment_id | customer | amount\n------------+----------+---------\n          1 | Asha     | 1500.00\n          2 | Ravi     |  899.50\n          3 | Meena    | 2400.00\n          4 | Kiran    | 3200.00\n          5 | Fatima   |  750.00\n          6 | John     | 1250.00\n(6 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All six payments are back, including the three made after the base backup. The log shows recovery finishing on a new timeline:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  redo done at 0/4010980 system usage: CPU: user: 0.00 s, system: 0.01 s, elapsed: 143.58 s\nLOG:  last completed transaction was at log time 2026-11-17 12:48:01.468474+00\nLOG:  selected new timeline ID: 2\nLOG:  archive recovery complete\nLOG:  checkpoint starting: end-of-recovery immediate wait\nLOG:  database system is ready to accept connections",
+    "caption": "Output (expected output), from /var/log/postgresql/postgresql-18-pitr.log"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL removed <code class=\"inline-code\">recovery.signal</code> and renamed <code class=\"inline-code\">backup_label</code> to <code class=\"inline-code\">backup_label.old</code>, so the cluster will not enter recovery again on its next start."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Copy the recovered table back to production",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The production cluster (port 5432) still has the <code class=\"inline-code\">refunds</code> work done after the accident, so we do not want to rewind all of it. Copy only the lost table across. On db1, as postgres, dump <code class=\"inline-code\">payments</code> from the recovered copy and restore it into production:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pg_dump -p 5433 -d shop -t payments -Fc -f /var/lib/postgresql/backups/payments_recovered.dump\nsudo -u postgres pg_restore -p 5432 -d shop -v /var/lib/postgresql/backups/payments_recovered.dump",
+    "caption": "Move the recovered table into production"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-p",
+      "Port of the server to connect to (5433 is the recovered copy, 5432 is production)."
+     ],
+     [
+      "-d",
+      "Database to connect to."
+     ],
+     [
+      "-t payments",
+      "pg_dump: dump only this table (with its sequence, indexes and constraints)."
+     ],
+     [
+      "-Fc",
+      "pg_dump: custom format, which pg_restore can read."
+     ],
+     [
+      "-f",
+      "pg_dump: output file."
+     ],
+     [
+      "-v",
+      "pg_restore: verbose, print each object as it is created."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_restore: connecting to database for restore\npg_restore: creating TABLE \"public.payments\"\npg_restore: creating SEQUENCE \"public.payments_payment_id_seq\"\npg_restore: creating SEQUENCE OWNED BY \"public.payments_payment_id_seq\"\npg_restore: creating DEFAULT \"public.payments payment_id\"\npg_restore: processing data for table \"public.payments\"\npg_restore: executing SEQUENCE SET payments_payment_id_seq\npg_restore: creating CONSTRAINT \"public.payments payments_pkey\"",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Verify on production that both the recovered table and the later work are there:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d shop -c \"SELECT count(*), sum(amount) FROM payments;\" -c \"SELECT * FROM refunds;\"",
+    "caption": "Check production"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " count |   sum\n-------+---------\n     6 | 9999.50\n(1 row)\n\n refund_id | amount\n-----------+--------\n         1 |  99.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The dump includes the table's indexes, constraints and grants. If other tables had foreign keys pointing to payments, the original <code class=\"inline-code\">DROP TABLE ... CASCADE</code> removed those constraints, so recreate them. Also note that the sequence may jump ahead after recovery, because PostgreSQL logs sequence values in batches. Gaps in <code class=\"inline-code\">payment_id</code> are normal. For more on dump and restore options, see Part 17."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Other recovery targets",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A time is the most common target, but you have four other choices. Use only one: setting two of them is an error."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "Example",
+      "When to use it"
+     ],
+     [
+      "recovery_target_name",
+      "'before_month_end_cleanup'",
+      "You created a restore point with pg_create_restore_point() before risky work."
+     ],
+     [
+      "recovery_target_xid",
+      "'735'",
+      "You know the transaction ID from pg_waldump. Use with recovery_target_inclusive = off to stop before it."
+     ],
+     [
+      "recovery_target_lsn",
+      "'0/4010980'",
+      "You know the exact WAL position, for example from pg_waldump."
+     ],
+     [
+      "recovery_target_time",
+      "'2026-11-17 12:48:11+00'",
+      "You know when the mistake happened."
+     ],
+     [
+      "recovery_target",
+      "'immediate'",
+      "Stop as soon as the backup is consistent, that is at the end of the base backup."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With <code class=\"inline-code\">recovery_target_name = 'before_month_end_cleanup'</code> and <code class=\"inline-code\">recovery_target_action = 'promote'</code>, the same lab gives this log:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  starting point-in-time recovery to \"before_month_end_cleanup\"\n...\nLOG:  recovery stopping at restore point \"before_month_end_cleanup\", time 2026-11-17 12:47:56.428779+00\nLOG:  redo done at 0/4000350 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.03 s\nLOG:  last completed transaction was at log time 2026-11-17 12:47:56.427598+00\nLOG:  selected new timeline ID: 2\nLOG:  archive recovery complete",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This time the table has five rows: John's payment was made after the restore point, so it is not replayed. That is the trade-off of every point-in-time recovery: everything after the target is lost on the recovered copy."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Recover the whole server in place",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Sometimes you must rewind the production cluster itself, for example when a bad deployment damaged many tables. The documentation gives a fixed procedure for this. It is the same as Steps 8 to 12, with extra steps to protect the current files. Everything written after the target, on every database in the cluster, is lost."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "",
+    "text": "These steps stop production and replace its data directory. Do not run them on a live server unless the outage and the data loss after the target have been agreed. Practise on a test server first. Keep the moved-aside data directory until the recovered server has been checked."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: Stop the server and move the data directory aside",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, with sudo, stop the cluster and move its data directory to a new name. Moving keeps a full copy without needing extra disk space. If you use tablespaces (Part 9), save their directories too."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl stop postgresql@18-main\nsudo -u postgres mv /var/lib/postgresql/18/main /var/lib/postgresql/18/main.damaged",
+    "caption": "Stop and keep the old files"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Check with <code class=\"inline-code\">pg_lsclusters</code>: 18 main shows <code class=\"inline-code\">down</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: Save WAL that was never archived",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The last WAL file may hold changes that were not archived yet. The documentation says to save <code class=\"inline-code\">pg_wal</code>. On db1, as postgres, copy it and find the newest WAL file with <code class=\"inline-code\">pg_controldata</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres mkdir -p /var/lib/postgresql/pg_wal_saved\nsudo -u postgres cp -a /var/lib/postgresql/18/main.damaged/pg_wal/. /var/lib/postgresql/pg_wal_saved/\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_controldata /var/lib/postgresql/18/main.damaged | grep -E \"cluster state|REDO WAL file\"",
+    "caption": "Save pg_wal"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Database cluster state:               shut down\nLatest checkpoint's REDO WAL file:    000000010000000000000009",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Segment <code class=\"inline-code\">000000010000000000000009</code> is the current one and is not in the archive yet. Higher-numbered files in <code class=\"inline-code\">pg_wal</code> are usually old segments recycled for reuse; they are harmless."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 16: Restore the backup and the unarchived WAL",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as postgres, create an empty data directory, copy the base backup in, empty its pg_wal and copy in the saved current segment. The documentation recommends copying, not moving, so the saved files stay unchanged if you need to start again."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres install -d -m 700 /var/lib/postgresql/18/main\nsudo -u postgres cp -a /var/lib/postgresql/backups/base_2026_11_17/. /var/lib/postgresql/18/main/\nsudo -u postgres bash -c 'rm -f /var/lib/postgresql/18/main/pg_wal/0000*'\nsudo -u postgres cp /var/lib/postgresql/pg_wal_saved/000000010000000000000009 /var/lib/postgresql/18/main/pg_wal/",
+    "caption": "Restore files into the original location"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">install -d -m 700</code> creates the directory owned by postgres with the 700 permissions PostgreSQL requires."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 17: Configure recovery and keep users out",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, write the same recovery settings as Step 9 into the main cluster's <code class=\"inline-code\">conf.d</code> folder, this time with <code class=\"inline-code\">promote</code>. Then follow the documentation's advice to block normal users during recovery with a temporary <code class=\"inline-code\">pg_hba.conf</code> that only allows the local postgres user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres tee /etc/postgresql/18/main/conf.d/pitr.conf <<'EOF'\nrestore_command = 'cp /mnt/wal_archive/%f %p'\nrecovery_target_time = '2026-11-17 12:48:11.505894+00'\nrecovery_target_inclusive = off\nrecovery_target_action = 'promote'\nEOF\nsudo cp -p /etc/postgresql/18/main/pg_hba.conf /etc/postgresql/18/main/pg_hba.conf.normal\necho \"local   all   postgres   peer\" | sudo -u postgres tee /etc/postgresql/18/main/pg_hba.conf\nsudo -u postgres touch /var/lib/postgresql/18/main/recovery.signal",
+    "caption": "Recovery settings, locked-down pg_hba.conf, recovery.signal"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">cp -p</code> keeps the owner (postgres) and permissions on the saved copy, so you can put it back later without a permission error."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 18: Start, verify and check the new timeline",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl start postgresql@18-main\nsudo -u postgres psql -d shop -c \"SELECT pg_is_in_recovery(), count(*) AS payments FROM payments;\" \\\n  -c \"SELECT timeline_id, redo_wal_file FROM pg_control_checkpoint();\"\nsudo -u postgres cat /mnt/wal_archive/00000002.history",
+    "caption": "Verify the in-place recovery"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_is_in_recovery | payments\n-------------------+----------\n f                 |        6\n(1 row)\n\n timeline_id |      redo_wal_file\n-------------+--------------------------\n           2 | 000000020000000000000004\n\n1\t0/4010980\tbefore 2026-11-17 12:48:11.505894+00",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The cluster is out of recovery, payments has six rows, and the server now runs on timeline 2. Because this cluster has archiving on, it archived <code class=\"inline-code\">00000002.history</code>, which says timeline 2 branched from timeline 1 at LSN <code class=\"inline-code\">0/4010980</code>, just before the target. The <code class=\"inline-code\">refunds</code> table no longer exists on this server: it was created after the target. If you need it, it is still in <code class=\"inline-code\">main.damaged</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same log messages as Step 10 and Step 12 appear in <code class=\"inline-code\">/var/log/postgresql/postgresql-18-main.log</code>, without the pause."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 19: Clean up",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, remove the recovery settings, put back the normal pg_hba.conf and reload. The recovery target settings have no effect without recovery.signal, but because they can only change at server start, pg_settings keeps showing them until the next restart. Restart at a convenient time so the next person who looks is not confused."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo rm /etc/postgresql/18/main/conf.d/pitr.conf\nsudo mv /etc/postgresql/18/main/pg_hba.conf.normal /etc/postgresql/18/main/pg_hba.conf\nsudo systemctl reload postgresql@18-main\nsudo -u postgres psql -c \"SELECT count(*) AS hba_rules FROM pg_hba_file_rules WHERE error IS NULL;\"\nsudo systemctl restart postgresql@18-main",
+    "caption": "Remove temporary settings"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " hba_rules\n-----------\n         7\n(1 row)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Seven rules loaded without errors, so normal connections work again. When you are sure the recovered data is correct, take a new base backup (Part 18): older backups are on timeline 1, and a fresh one gives you a clean starting point on timeline 2. Remove the lab cluster with <code class=\"inline-code\">sudo pg_dropcluster 18 pitr --stop</code> and delete <code class=\"inline-code\">main.damaged</code> and <code class=\"inline-code\">pg_wal_saved</code> only after everyone agrees nothing more is needed from them."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: must specify restore_command when standby mode is not enabled",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You created <code class=\"inline-code\">recovery.signal</code> but no <code class=\"inline-code\">restore_command</code> is set, often because the settings file is in the wrong cluster's folder. Check <code class=\"inline-code\">/etc/postgresql/18/<cluster>/conf.d/</code> and start again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: multiple recovery targets specified",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "FATAL:  multiple recovery targets specified\nDETAIL:  At most one of recovery_target, recovery_target_lsn, recovery_target_name, recovery_target_time, recovery_target_xid may be set.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You set two targets, for example a time and a restore point name. Keep one and comment out the other."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: recovery ended before configured recovery target was reached",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The target is later than the last WAL in the archive. Either the time is wrong (often a time zone mix-up: <code class=\"inline-code\">18:00+05:30</code> is <code class=\"inline-code\">12:30</code> UTC) or the needed WAL was never archived. Check <code class=\"inline-code\">pg_stat_archiver</code> on the source server, force <code class=\"inline-code\">pg_switch_wal()</code>, and confirm the segment is in the archive. Then restore the backup again and restart."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "invalid value for parameter \"recovery_target_time\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Time zone abbreviations such as <code class=\"inline-code\">IST</code> are not accepted. Write <code class=\"inline-code\">'2026-11-17 18:18:11+05:30'</code> or a full zone name such as <code class=\"inline-code\">'2026-11-17 18:18:11 Asia/Kolkata'</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: could not locate required checkpoint record",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "FATAL:  could not locate required checkpoint record\nHINT:  If you are restoring from a backup, touch \"/var/lib/postgresql/18/pitr/recovery.signal\" and add required recovery options.\n\tIf you are not restoring from a backup, try removing the file \"/var/lib/postgresql/18/pitr/backup_label\".\n\tBe careful: removing \"/var/lib/postgresql/18/pitr/backup_label\" will result in a corrupt cluster if restoring from a backup.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You forgot <code class=\"inline-code\">recovery.signal</code>. Create it as the hint says. Never delete <code class=\"inline-code\">backup_label</code> from a restored backup: the server would start but the data would be corrupt."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Recovery stops much earlier than the time you asked for",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the target time is before the base backup's <code class=\"inline-code\">STOP TIME</code>, PostgreSQL does not complain. In our test, a target of 12:40 stopped at the first commit after the backup became consistent (12:47:56). Always compare your target with the backup history file, and use an older backup if you need an earlier point."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "A query on the paused server never returns",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You paused inside the transaction you are trying to skip, so the startup process still holds its locks (see the warning in Step 11). Check catalog-only facts, end recovery, or choose a target a little earlier."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The recovered copy writes into the production archive",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the recovery cluster has <code class=\"inline-code\">archive_mode = on</code> with the same <code class=\"inline-code\">archive_command</code> (for example because you restored a <code class=\"inline-code\">postgresql.conf</code> copy, or settings came in through <code class=\"inline-code\">postgresql.auto.conf</code>), it archives a new timeline into the production archive. Later recoveries that use the default <code class=\"inline-code\">recovery_target_timeline = 'latest'</code> may then follow that test timeline. Keep archiving off on test copies, check <code class=\"inline-code\">SHOW archive_mode;</code> on port 5433, or set <code class=\"inline-code\">recovery_target_timeline = 'current'</code> when you recover."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "In your lab, take a new base backup into <code class=\"inline-code\">/var/lib/postgresql/backups/base_exercise</code> (Step 2). Then on production insert two more rows into payments, create a restore point named <code class=\"inline-code\">before_exercise</code>, run <code class=\"inline-code\">DELETE FROM payments;</code> and <code class=\"inline-code\">SELECT pg_switch_wal();</code>.",
+      "items": []
+     },
+     {
+      "content": "Recover a copy to the restore point using <code class=\"inline-code\">recovery_target_name</code> and <code class=\"inline-code\">recovery_target_action = 'promote'</code>, and confirm all rows are present on port 5433.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "Answer: remove and recreate the lab cluster (<code class=\"inline-code\">sudo pg_dropcluster 18 pitr --stop</code>, then <code class=\"inline-code\">sudo pg_createcluster 18 pitr --port 5433</code>). Repeat Step 8 with <code class=\"inline-code\">base_exercise</code> as the source. Use this <code class=\"inline-code\">pitr.conf</code>: <code class=\"inline-code\">restore_command = 'cp /mnt/wal_archive/%f %p'</code>, <code class=\"inline-code\">recovery_target_name = 'before_exercise'</code> and <code class=\"inline-code\">recovery_target_action = 'promote'</code>. Create <code class=\"inline-code\">recovery.signal</code>, start the cluster, and look for <code class=\"inline-code\">recovery stopping at restore point \"before_exercise\"</code> in the log. <code class=\"inline-code\">SELECT count(*) FROM payments;</code> on port 5433 should show every row, including the two new ones. The new backup matters: the restore point must be later than the end of the backup you restore."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# 1. (Before any accident) create a restore point before risky work (psql as postgres)\nSELECT pg_create_restore_point('before_month_end_cleanup');\n\n# 2. Make sure the latest WAL is archived\nsudo -u postgres psql -c \"SELECT pg_switch_wal();\"\nsudo -u postgres ls /mnt/wal_archive\n\n# 3. Find the exact commit time, xid and LSN of the bad transaction\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_waldump --path=/mnt/wal_archive --rmgr=Transaction 000000010000000000000004\n\n# 4. Create a separate cluster for the recovery\nsudo pg_createcluster 18 pitr --port 5433\n\n# 5. Restore the base backup and empty pg_wal (check the path first)\nsudo -u postgres bash -c 'rm -rf /var/lib/postgresql/18/pitr/*'\nsudo -u postgres cp -a /var/lib/postgresql/backups/base_2026_11_17/. /var/lib/postgresql/18/pitr/\nsudo -u postgres bash -c 'rm -f /var/lib/postgresql/18/pitr/pg_wal/0000*'\n\n# 6. Recovery settings and recovery.signal\nsudo -u postgres tee /etc/postgresql/18/pitr/conf.d/pitr.conf <<'EOF'\nrestore_command = 'cp /mnt/wal_archive/%f %p'\nrecovery_target_time = '2026-11-17 12:48:11.505894+00'\nrecovery_target_inclusive = off\nrecovery_target_action = 'pause'\nEOF\nsudo -u postgres touch /var/lib/postgresql/18/pitr/recovery.signal\n\n# 7. Start and read the log\nsudo pg_ctlcluster 18 pitr start\nsudo grep -v '^cp: cannot' /var/log/postgresql/postgresql-18-pitr.log\n\n# 8. Check while paused, then end recovery\nsudo -u postgres psql -p 5433 -c \"SELECT pg_is_in_recovery(), pg_get_wal_replay_pause_state(), pg_last_xact_replay_timestamp();\"\nsudo -u postgres psql -p 5433 -c \"SELECT pg_wal_replay_resume();\"\n\n# 9. Copy the lost table back to production\nsudo -u postgres pg_dump -p 5433 -d shop -t payments -Fc -f /var/lib/postgresql/backups/payments_recovered.dump\nsudo -u postgres pg_restore -p 5432 -d shop -v /var/lib/postgresql/backups/payments_recovered.dump\n\n# 10. In-place recovery outline: stop, move aside, save pg_wal, restore, settings, lock out users, start\nsudo systemctl stop postgresql@18-main\nsudo -u postgres mv /var/lib/postgresql/18/main /var/lib/postgresql/18/main.damaged\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_controldata /var/lib/postgresql/18/main.damaged | grep \"REDO WAL file\"\nsudo systemctl start postgresql@18-main\nsudo -u postgres psql -c \"SELECT timeline_id FROM pg_control_checkpoint();\"\n\n# 11. Clean up the lab cluster\nsudo pg_dropcluster 18 pitr --stop",
+    "caption": "Point-in-time recovery commands in order"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Point-in-time recovery = base backup + archived WAL + a recovery target",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Find the exact commit time, xid or LSN of the mistake with pg_waldump on the archive",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Recover into a separate cluster first: restore the backup, empty pg_wal, set restore_command and a target, create recovery.signal",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use recovery_target_inclusive = off to stop just before the bad transaction",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Check the data while paused, then finish with pg_wal_replay_resume()",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Copy only the lost objects back to production with pg_dump and pg_restore",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "For in-place recovery, keep the old data directory and unarchived WAL, and lock users out with pg_hba.conf",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Every recovery starts a new timeline; take a fresh base backup afterwards",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Create named restore points before risky changes",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 21 we move from hand-made scripts to production backups with pgBackRest."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "One wrong DROP TABLE at 6 pm. Can you get the table back without losing the rest of the day's work?\n\nWith PostgreSQL point-in-time recovery, yes. Here is the method:\n\n→ You need two things in place before the accident: a base backup (pg_basebackup) and WAL archiving.\n→ Find the exact moment of the mistake: pg_waldump on the archived WAL shows every COMMIT with its time, transaction ID and LSN.\n→ Restore the backup into a separate cluster, add recovery.signal, and set restore_command plus recovery_target_time.\n→ Set recovery_target_inclusive = off so recovery stops just before the bad commit, not just after it.\n→ Check the data while recovery is paused, run pg_wal_replay_resume(), then copy only the lost table back with pg_dump -t and pg_restore.\n\nTwo traps worth knowing: time zone abbreviations like IST are rejected (write +05:30), and a target earlier than the backup's end time quietly stops at the wrong place.\n\nThis is Part 20 of my PostgreSQL DBA series. Follow along for Part 21 on pgBackRest.\n\nHave you ever had to recover a dropped table in production? Which method did you use?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "Point-in-time recovery in PostgreSQL",
+    "body": "Get a dropped table back, step by step. PostgreSQL DBA series, Part 20"
+   },
+   {
+    "title": "What you need before the accident",
+    "points": [
+     "A base backup taken with pg_basebackup",
+     "WAL archiving on, copying files to an archive",
+     "The target time must be after the backup ended"
+    ]
+   },
+   {
+    "title": "Step 1: find the bad commit",
+    "body": "Run pg_waldump with --path=/mnt/wal_archive and --rmgr=Transaction on the archived WAL. It prints each COMMIT with its time, transaction ID and LSN. Note all three."
+   },
+   {
+    "title": "Step 2: restore into a new cluster",
+    "points": [
+     "pg_createcluster 18 pitr --port 5433",
+     "Copy the base backup into its data directory",
+     "Delete old files in pg_wal",
+     "touch recovery.signal"
+    ]
+   },
+   {
+    "title": "Step 3: set the recovery target",
+    "code": "restore_command =\n  'cp /mnt/wal_archive/%f %p'\nrecovery_target_time =\n  '2026-11-17 12:48:11.505894+00'\nrecovery_target_inclusive = off\nrecovery_target_action = 'pause'",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 4: check, finish, copy back",
+    "code": "SELECT pg_is_in_recovery(),\n  pg_get_wal_replay_pause_state();\nSELECT pg_wal_replay_resume();\n-- then pg_dump -t payments\n-- and pg_restore into production",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Traps to avoid",
+    "points": [
+     "IST is rejected: write +05:30 or Asia/Kolkata",
+     "inclusive = on replays the bad commit too",
+     "Recovery always starts a new timeline",
+     "Keep archive_mode off on the test copy"
+    ]
+   }
+  ]
+ }
+}
