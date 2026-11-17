@@ -1,0 +1,894 @@
+{
+ "schemaVersion": 1,
+ "title": "Oracle NOT EXISTS vs NOT IN: The NULL Trap and Performance",
+ "slug": "oracle-not-exists-vs-not-in",
+ "category": "plsql",
+ "description": "Why NOT IN returns no rows when the subquery has a NULL, when NOT EXISTS is safer, how IN vs EXISTS compare, and what the Oracle execution plan shows.",
+ "focusKeyword": "oracle not exists vs not in",
+ "tags": [
+  "oracle",
+  "oracle-sql",
+  "subqueries",
+  "null",
+  "performance"
+ ],
+ "related": [
+  "/posts/plsql/how-to-read-explain-plan-in-oracle/",
+  "/posts/interview-questions/tricky-sql-queries-for-interview-preparation/",
+  "/posts/interview-questions/query-optimization-in-sql-best-practices-and-examples/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle Database 19c SQL Language Reference: IN Condition",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/IN-Condition.html"
+  },
+  {
+   "title": "Oracle Database 19c SQL Language Reference: EXISTS Condition",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/EXISTS-Condition.html"
+  },
+  {
+   "title": "Oracle Database 19c SQL Tuning Guide: Joins (semijoins, antijoins, null-aware antijoins)",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/tgsql/joins.html"
+  }
+ ],
+ "reviewNotes": "Examples written from the 19c SQL Language Reference and SQL Tuning Guide; not executed, all outputs are expected outputs and need a test run. Please check: (1) the order 104 row in the outer-side NOT EXISTS output shows an empty CUSTOMER_ID cell for NULL; (2) the plan table is deliberately generic (SEMI/ANTI/ANTI NA/ANTI SNA from the Tuning Guide); the exact operation for each query depends on stats, so confirm with DBMS_XPLAN on a test DB if you want to add a real plan. Docs example: departments (PK) NOT IN employees (nullable) gives NESTED LOOPS ANTI SNA. (3) The 'OR branch' performance tip is based on the Tuning Guide's listed conditions for semijoin/antijoin.",
+ "generatedAt": "2026-11-17T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Oracle, <code class=\"inline-code\">NOT EXISTS</code> and <code class=\"inline-code\">NOT IN</code> return the same rows only when the subquery can never return a NULL. If even one NULL comes back from a <code class=\"inline-code\">NOT IN</code> subquery, the whole query returns <b>no rows</b>. <code class=\"inline-code\">NOT EXISTS</code> does not have this problem, so it is the safer default for \"find rows that have no match\" queries."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Performance is usually not the deciding factor. Since Oracle Database 11g the optimizer can turn both forms into an antijoin, even when NULLs are possible. So choose based on correctness first. This tutorial shows the NULL trap on a small table, the less known NULL trap on the outer side, how <code class=\"inline-code\">IN</code> and <code class=\"inline-code\">EXISTS</code> compare, and what to look for in the execution plan."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How NOT IN and NOT EXISTS work",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">NOT IN</code> compares a value against a list. Oracle documents it as equivalent to <code class=\"inline-code\">!= ALL</code>. So <code class=\"inline-code\">x NOT IN (1, 2, NULL)</code> is evaluated as <code class=\"inline-code\">x != 1 AND x != 2 AND x != NULL</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Any comparison with NULL gives <b>UNKNOWN</b>, not TRUE. An AND chain that contains an UNKNOWN can never be TRUE. A <code class=\"inline-code\">WHERE</code> clause only keeps rows where the condition is TRUE, so every row is filtered out."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">NOT EXISTS</code> asks a different question: \"does the subquery return at least one row for this outer row?\" It never compares the outer value against the full list. A NULL in the subquery table simply never matches anything, so it cannot change the answer for other rows."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Behaviour",
+      "NOT IN (subquery)",
+      "NOT EXISTS (subquery)"
+     ],
+     [
+      "Subquery returns a NULL",
+      "No rows returned at all",
+      "Not affected"
+     ],
+     [
+      "Outer column is NULL",
+      "That row is not returned (if subquery has rows)",
+      "That row is returned"
+     ],
+     [
+      "Subquery returns no rows",
+      "All outer rows returned",
+      "All outer rows returned"
+     ],
+     [
+      "Same result when",
+      "Both columns are NOT NULL (or NULLs filtered)",
+      "Always the reference behaviour"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "We use two small tables: customers and orders. The orders table allows a NULL customer_id for guest checkouts, and it has no foreign key, which is common in legacy and staging schemas. Run this in any Oracle 12c or later schema."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE customers (\n  customer_id   NUMBER        PRIMARY KEY,\n  customer_name VARCHAR2(50)  NOT NULL\n);\n\nCREATE TABLE orders (\n  order_id     NUMBER  PRIMARY KEY,\n  customer_id  NUMBER,          -- nullable: guest orders\n  amount       NUMBER(10,2)\n);\n\nINSERT INTO customers VALUES (1, 'Asha');\nINSERT INTO customers VALUES (2, 'Ravi');\nINSERT INTO customers VALUES (3, 'Meena');\nINSERT INTO customers VALUES (4, 'John');\n\nINSERT INTO orders VALUES (101, 1, 1200);\nINSERT INTO orders VALUES (102, 1,  450);\nINSERT INTO orders VALUES (103, 3,  980);\nCOMMIT;",
+    "caption": "Sample tables for this tutorial"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Right now, Asha (1) has two orders, Meena (3) has one, and Ravi (2) and John (4) have none. No order has a NULL customer_id yet."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find customers with no orders",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: NOT IN when there are no NULLs",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT customer_id, customer_name\n  FROM customers\n WHERE customer_id NOT IN (SELECT customer_id FROM orders)\n ORDER BY customer_id;",
+    "caption": "Customers who never ordered, using NOT IN"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "CUSTOMER_ID",
+      "CUSTOMER_NAME"
+     ],
+     [
+      "2",
+      "Ravi"
+     ],
+     [
+      "4",
+      "John"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is correct. The subquery returns 1, 1, 3, and neither 2 nor 4 is in that list."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: the same query with NOT EXISTS",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT c.customer_id, c.customer_name\n  FROM customers c\n WHERE NOT EXISTS (SELECT 1\n                     FROM orders o\n                    WHERE o.customer_id = c.customer_id)\n ORDER BY c.customer_id;",
+    "caption": "Customers who never ordered, using NOT EXISTS"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "CUSTOMER_ID",
+      "CUSTOMER_NAME"
+     ],
+     [
+      "2",
+      "Ravi"
+     ],
+     [
+      "4",
+      "John"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Same answer. The <code class=\"inline-code\">SELECT 1</code> inside the subquery is a habit, not a requirement. <code class=\"inline-code\">EXISTS</code> only checks whether a row exists, so the select list is ignored. <code class=\"inline-code\">SELECT *</code> or <code class=\"inline-code\">SELECT NULL</code> behaves the same."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The NULL trap: one guest order breaks NOT IN",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now a guest places an order, so the new row has no customer_id."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "INSERT INTO orders VALUES (104, NULL, 300);\nCOMMIT;",
+    "caption": "Add a guest order"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run the exact NOT IN query from Step 1 again."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT customer_id, customer_name\n  FROM customers\n WHERE customer_id NOT IN (SELECT customer_id FROM orders)\n ORDER BY customer_id;",
+    "caption": "Same NOT IN query, after the guest order"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "no rows selected",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Ravi and John still have no orders, but the query now returns nothing. For Ravi, Oracle evaluates <code class=\"inline-code\">2 != 1 AND 2 != 1 AND 2 != 3 AND 2 != NULL</code>. The last part is UNKNOWN, so the whole condition is not TRUE, and Ravi is filtered out. The same happens to every customer."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There is no error and no warning. A report or a cleanup job built on this query silently produces an empty result the day the first NULL appears. This is why the bug is easy to miss in testing and appears later in production."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The NOT EXISTS query still returns the right answer:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT c.customer_id, c.customer_name\n  FROM customers c\n WHERE NOT EXISTS (SELECT 1\n                     FROM orders o\n                    WHERE o.customer_id = c.customer_id)\n ORDER BY c.customer_id;",
+    "caption": "NOT EXISTS after the guest order"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "CUSTOMER_ID",
+      "CUSTOMER_NAME"
+     ],
+     [
+      "2",
+      "Ravi"
+     ],
+     [
+      "4",
+      "John"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For order 104, the correlation <code class=\"inline-code\">o.customer_id = c.customer_id</code> is UNKNOWN, so that order row is not a match. It is simply ignored, and the existence check for other customers is unchanged."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Same rule for a literal list",
+    "text": "The trap is not limited to subqueries. <code class=\"inline-code\">WHERE department_id NOT IN (10, 20, NULL)</code> also returns no rows. This often happens when the list is built from a bind variable or an application array that contains an empty value."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How to fix a NOT IN query",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you want to keep NOT IN, make sure the subquery cannot return NULL. The Oracle SQL Tuning Guide lists these options."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Option 1: filter NULLs in the subquery",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT customer_id, customer_name\n  FROM customers\n WHERE customer_id NOT IN (SELECT customer_id\n                             FROM orders\n                            WHERE customer_id IS NOT NULL)\n ORDER BY customer_id;",
+    "caption": "NOT IN with IS NOT NULL"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output): Ravi (2) and John (4), the same as NOT EXISTS. This is the clearest fix because it states the intent inside the query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Option 2: add a NOT NULL constraint",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the column should never be NULL, enforce it with <code class=\"inline-code\">ALTER TABLE ... MODIFY (column NOT NULL)</code>. That fixes the data and also tells the optimizer that NULLs are impossible. It is not an option for our orders table, because guest orders are allowed by design."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Option 3: rewrite as NOT EXISTS or an outer join",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">NOT EXISTS</code> is the usual rewrite. A <code class=\"inline-code\">LEFT JOIN ... WHERE o.customer_id IS NULL</code> also works and Oracle can run it as an antijoin too, but it is easier to get wrong when you add more join conditions. Prefer NOT EXISTS for readability."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT c.customer_id, c.customer_name\n  FROM customers c\n  LEFT JOIN orders o\n    ON o.customer_id = c.customer_id\n WHERE o.order_id IS NULL\n ORDER BY c.customer_id;",
+    "caption": "Outer join antijoin, same result"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Test for NULL on a column that can never be NULL in a real match, such as the primary key <code class=\"inline-code\">o.order_id</code>. Then the only rows with NULL there are the ones the outer join added for customers with no orders."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "About NVL",
+    "text": "The Tuning Guide also mentions wrapping the subquery column in <code class=\"inline-code\">NVL</code>, for example <code class=\"inline-code\">NVL(customer_id, -1)</code>. It works, but you must pick a value that can never be a real key. <code class=\"inline-code\">IS NOT NULL</code> is simpler and does not hide the column from an index."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The second trap: NULL on the outer side",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Most articles stop at NULLs in the subquery. The outer column can cause a difference too. Turn the question around: which orders point to a customer that does not exist? Add one orphan order first."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "INSERT INTO orders VALUES (105, 9, 750);  -- customer 9 does not exist\nCOMMIT;\n\nSELECT order_id, customer_id\n  FROM orders\n WHERE customer_id NOT IN (SELECT customer_id FROM customers)\n ORDER BY order_id;",
+    "caption": "Orders with no matching customer, NOT IN"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "CUSTOMER_ID"
+     ],
+     [
+      "105",
+      "9"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here the subquery reads customers.customer_id, a primary key, so it cannot return NULL. But the guest order 104 is missing. For that row Oracle evaluates <code class=\"inline-code\">NULL != 1 AND ...</code>, which is UNKNOWN, so the row is dropped."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT o.order_id, o.customer_id\n  FROM orders o\n WHERE NOT EXISTS (SELECT 1\n                     FROM customers c\n                    WHERE c.customer_id = o.customer_id)\n ORDER BY o.order_id;",
+    "caption": "Orders with no matching customer, NOT EXISTS"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "CUSTOMER_ID"
+     ],
+     [
+      "104",
+      ""
+     ],
+     [
+      "105",
+      "9"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "NOT EXISTS returns both, because no customer row matches a NULL. Which one is \"right\" depends on the question. If you want only real orphans, add <code class=\"inline-code\">AND o.customer_id IS NOT NULL</code> to the NOT EXISTS query. The point is that the two forms differ, so decide on purpose rather than by accident."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "IN vs EXISTS: these are equivalent",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For the positive forms, the Oracle Tuning Guide states that <code class=\"inline-code\">IN</code> and <code class=\"inline-code\">EXISTS</code> are functionally equivalent. NULLs do not matter here, because a NULL never makes <code class=\"inline-code\">x IN (...)</code> TRUE, and a missing match simply excludes the row in both forms."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Customers who have at least one order\nSELECT customer_id, customer_name\n  FROM customers\n WHERE customer_id IN (SELECT customer_id FROM orders);\n\nSELECT c.customer_id, c.customer_name\n  FROM customers c\n WHERE EXISTS (SELECT 1 FROM orders o\n                WHERE o.customer_id = c.customer_id);",
+    "caption": "IN and EXISTS give the same rows"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output of both (expected output, order not guaranteed without ORDER BY):"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "CUSTOMER_ID",
+      "CUSTOMER_NAME"
+     ],
+     [
+      "1",
+      "Asha"
+     ],
+     [
+      "3",
+      "Meena"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Asha appears once, even though she has two orders. That is the difference from a plain join: <code class=\"inline-code\">JOIN orders</code> would return Asha twice and you would need <code class=\"inline-code\">DISTINCT</code>. Oracle runs IN and EXISTS as a <b>semijoin</b>, which stops looking in orders after the first match for each customer."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The old advice \"use EXISTS for a big subquery and IN for a small one\" comes from rule-based optimizer days. With the cost-based optimizer, both forms are usually unnested into the same semijoin plan. Write whichever reads more clearly and check the plan if performance matters."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What the execution plan shows",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can see how Oracle handles each form with <code class=\"inline-code\">EXPLAIN PLAN</code> and <code class=\"inline-code\">DBMS_XPLAN</code>. The exact plan depends on data volume, indexes and statistics, so look at the join operation name rather than expecting a fixed plan."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "EXPLAIN PLAN FOR\nSELECT customer_id, customer_name\n  FROM customers\n WHERE customer_id NOT IN (SELECT customer_id FROM orders);\n\nSELECT * FROM TABLE(DBMS_XPLAN.DISPLAY(format => 'BASIC'));",
+    "caption": "Show the plan for the NOT IN query"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Query form",
+      "Join operation you can expect"
+     ],
+     [
+      "IN / EXISTS",
+      "NESTED LOOPS SEMI or HASH JOIN SEMI"
+     ],
+     [
+      "NOT EXISTS",
+      "NESTED LOOPS ANTI or HASH JOIN ANTI"
+     ],
+     [
+      "NOT IN, subquery column nullable",
+      "ANTI SNA or ANTI NA (null-aware antijoin)"
+     ],
+     [
+      "NOT IN with IS NOT NULL in subquery",
+      "Plain ANTI join"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">ANTI NA</code> means null-aware antijoin, and <code class=\"inline-code\">ANTI SNA</code> means single null-aware antijoin. They appear when Oracle must also handle the \"a NULL came back, so return nothing\" rule. Oracle introduced them in 11g. Before 11g, the optimizer could not use an antijoin for NOT IN when the subquery could return NULLs, which is where the reputation of NOT IN as slow comes from."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you see ANTI NA or ANTI SNA in a plan, treat it as a hint to ask: can this column really be NULL, and is the NULL behaviour what I want?"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Read the plan with confidence",
+    "text": "If you are new to plans, our guide on <a href=\"/posts/plsql/how-to-read-explain-plan-in-oracle/\">how to read explain plan in Oracle</a> explains each column and the order Oracle executes the steps in."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Using NOT IN on a nullable column.</b> The query works in test data and returns nothing once a NULL appears. Use NOT EXISTS or add <code class=\"inline-code\">WHERE col IS NOT NULL</code> to the subquery.",
+      "items": []
+     },
+     {
+      "content": "<b>Forgetting the correlation in NOT EXISTS.</b> <code class=\"inline-code\">WHERE NOT EXISTS (SELECT 1 FROM orders)</code> without <code class=\"inline-code\">o.customer_id = c.customer_id</code> returns no rows as soon as the orders table has any row at all.",
+      "items": []
+     },
+     {
+      "content": "<b>Correlating to the wrong alias.</b> Writing <code class=\"inline-code\">WHERE o.customer_id = o.customer_id</code> compares the column with itself, and the subquery is no longer correlated. Always qualify both sides with aliases.",
+      "items": []
+     },
+     {
+      "content": "<b>Testing a nullable column after a LEFT JOIN.</b> If you write <code class=\"inline-code\">WHERE o.amount IS NULL</code> and amount can be NULL, customers who do have an order with no amount slip into the result. Test a NOT NULL column such as <code class=\"inline-code\">o.order_id</code>.",
+      "items": []
+     },
+     {
+      "content": "<b>Expecting NOT IN and NOT EXISTS to treat a NULL outer value the same way.</b> NOT IN drops outer rows with NULL, NOT EXISTS keeps them.",
+      "items": []
+     },
+     {
+      "content": "<b>Replacing IN with a JOIN and getting duplicates.</b> IN and EXISTS return each outer row once. A join returns one row per match.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Index the column used in the subquery's correlation, here orders.customer_id. It helps both the semijoin and the antijoin when Oracle chooses nested loops.",
+      "items": []
+     },
+     {
+      "content": "Declare columns NOT NULL when the business rule says so. The optimizer then knows NOT IN and NOT EXISTS are equivalent and can use a plain antijoin.",
+      "items": []
+     },
+     {
+      "content": "Keep current statistics on both tables, so the optimizer can choose between nested loops and hash joins correctly.",
+      "items": []
+     },
+     {
+      "content": "Avoid putting the subquery inside an <code class=\"inline-code\">OR</code> branch. The Tuning Guide lists \"not inside an OR branch\" as a condition for semijoin and antijoin, so an OR can force slower row-by-row filtering.",
+      "items": []
+     },
+     {
+      "content": "Compare plans, not folklore. Run EXPLAIN PLAN on both forms with your real data before deciding one is faster.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is NOT EXISTS faster than NOT IN in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Not by rule. From Oracle 11g onwards both can run as an antijoin, and when the columns are NOT NULL they often get the same plan. Choose NOT EXISTS for correct NULL handling, then check the plan."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why does NOT IN return no rows in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Almost always because the subquery or the list contains a NULL. Run the subquery on its own and look for NULLs, or add <code class=\"inline-code\">WHERE column IS NOT NULL</code> to it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between EXISTS and IN in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "They return the same rows. IN compares a value to a set of values, EXISTS checks whether a correlated subquery returns any row. The optimizer usually turns both into the same semijoin."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I use NOT EXISTS with multiple columns?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes. Put every column in the correlation, for example <code class=\"inline-code\">WHERE s.order_id = o.order_id AND s.line_no = o.line_no</code>. Multi-column NOT IN, such as <code class=\"inline-code\">(a, b) NOT IN (SELECT ...)</code>, has the same NULL problem if any of those columns can be NULL."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is LEFT JOIN with IS NULL better than NOT EXISTS?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle can run both as an antijoin, so performance is often similar. NOT EXISTS is easier to read and harder to break when the query grows, which is why most teams prefer it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Use NOT EXISTS by default for \"rows with no match\" queries.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Never use NOT IN on a column that can be NULL, unless you filter NULLs in the subquery.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Remember that NOT IN also drops outer rows whose value is NULL.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "IN and EXISTS are equivalent. Both return each outer row once.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Look for ANTI NA or ANTI SNA in the plan as a sign of nullable NOT IN.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Declare NOT NULL constraints and index the correlated column.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "One NULL in a subquery can make your NOT IN query return zero rows. No error, no warning.\n\nOracle treats NOT IN as != ALL, so x NOT IN (1, 2, NULL) becomes x != 1 AND x != 2 AND x != NULL. That last part is UNKNOWN, and the row is filtered out.\n\nWhat to remember:\n\n→ NOT EXISTS only checks whether a matching row exists, so NULLs in the subquery do not break it.\n→ If you keep NOT IN, add WHERE customer_id IS NOT NULL inside the subquery.\n→ NOT IN also drops outer rows whose own value is NULL. NOT EXISTS keeps them.\n→ IN and EXISTS are equivalent. Both run as a semijoin and return each row once, unlike a JOIN.\n→ ANTI NA or ANTI SNA in the execution plan means Oracle is handling a nullable NOT IN.\n\nPerformance is rarely the reason to pick one. Since 11g both can run as an antijoin.\n\nHave you ever had a report go empty because of a NULL in a NOT IN list?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #SQLInterview",
+  "slides": [
+   {
+    "title": "NOT EXISTS vs NOT IN in Oracle",
+    "body": "Why one NULL can empty your result, and which one to use"
+   },
+   {
+    "title": "The NULL trap",
+    "body": "NOT IN means != ALL. If the subquery returns a NULL, every comparison chain ends in UNKNOWN, so the query returns no rows at all.",
+    "code": "SELECT customer_id\n  FROM customers\n WHERE customer_id NOT IN\n       (SELECT customer_id\n          FROM orders);\n-- one NULL in orders:\n-- no rows selected",
+    "lang": "sql"
+   },
+   {
+    "title": "NOT EXISTS is the safe default",
+    "points": [
+     "Checks only whether a matching row exists",
+     "NULLs in the subquery never match, so they are ignored",
+     "Returns the customers with no orders, as expected"
+    ],
+    "code": "SELECT c.customer_id\n  FROM customers c\n WHERE NOT EXISTS (\n   SELECT 1\n     FROM orders o\n    WHERE o.customer_id\n        = c.customer_id);",
+    "lang": "sql"
+   },
+   {
+    "title": "Keeping NOT IN? Filter NULLs",
+    "points": [
+     "Add IS NOT NULL inside the subquery",
+     "Or declare the column NOT NULL if the rule allows"
+    ],
+    "code": "WHERE customer_id NOT IN (\n  SELECT customer_id\n    FROM orders\n   WHERE customer_id IS NOT NULL)",
+    "lang": "sql"
+   },
+   {
+    "title": "NULL on the outer side too",
+    "body": "NOT IN drops outer rows whose own value is NULL. NOT EXISTS keeps them, because nothing matches a NULL. Decide which result you want."
+   },
+   {
+    "title": "IN vs EXISTS and the plan",
+    "points": [
+     "IN and EXISTS return the same rows, each once",
+     "Both usually run as a SEMI join",
+     "NOT EXISTS shows as an ANTI join",
+     "ANTI NA or ANTI SNA means a nullable NOT IN"
+    ]
+   }
+  ]
+ }
+}
