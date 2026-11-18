@@ -63,3 +63,4 @@
 - 2026-11-16 [PostgreSQL] postgresql wal archiving -> _drafts/2026-11-16-postgresql-postgresql-dba-part-19-wal-archiving.json
 - 2026-11-17 [Oracle] oracle not exists vs not in -> _drafts/2026-11-17-oracle-oracle-not-exists-vs-not-in.json
 - 2026-11-17 [PostgreSQL] postgresql point in time recovery -> _drafts/2026-11-17-postgresql-postgresql-dba-part-20-point-in-time-recovery.json
+- 2026-11-18 [Oracle] lag and lead function in oracle -> _drafts/2026-11-18-oracle-oracle-lag-lead-function-example.json

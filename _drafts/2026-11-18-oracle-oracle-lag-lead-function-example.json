@@ -1,0 +1,1038 @@
+{
+ "schemaVersion": 1,
+ "title": "LAG and LEAD Function in Oracle: Examples With Output",
+ "slug": "oracle-lag-lead-function-example",
+ "category": "plsql",
+ "description": "Learn the LAG and LEAD function in Oracle with runnable examples: previous row, next row, PARTITION BY, defaults, IGNORE NULLS and month-over-month change.",
+ "focusKeyword": "lag and lead function in oracle",
+ "tags": [
+  "oracle",
+  "analytic functions",
+  "window functions",
+  "sql"
+ ],
+ "related": [
+  "/posts/sql/mastering-sql-window-functions-types-and-uses-with-examples/",
+  "/posts/sql/top-10-sql-window-function-queries/",
+  "/posts/plsql/how-to-read-explain-plan-in-oracle/"
+ ],
+ "sources": [
+  {
+   "title": "Oracle Database 19c SQL Language Reference: LAG",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/LAG.html"
+  },
+  {
+   "title": "Oracle Database 19c SQL Language Reference: LEAD",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/LEAD.html"
+  },
+  {
+   "title": "Oracle Database 19c SQL Language Reference: Analytic Functions",
+   "url": "https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Analytic-Functions.html"
+  },
+  {
+   "title": "Oracle error help: ORA-30483",
+   "url": "https://docs.oracle.com/error-help/db/ora-30483"
+  }
+ ],
+ "reviewNotes": "All examples written from the Oracle 19c docs and not run; please test on 19c or later. Check: (1) the syntax block. The docs show the syntax only as a diagram; the article uses the form with IGNORE NULLS after the parentheses, matching the docs text. (2) The ORA-30483 wording 'window functions are not allowed here' came from Oracle Support note titles; confirm it on a real run of the WHERE example. (3) The expected outputs and date gaps were worked out by hand (2026 is not a leap year): 15/25/44 days for customer 1, 23/75 for customer 2, month totals 4500/4000/1350/3100. ROUND(-66.25,1) is expected to show -66.3. (4) The performance claims (WINDOW SORT, index may avoid the sort) are kept general on purpose; confirm the plan wording if you add a plan example. (5) NULL cells in the output tables are left blank, the way SQL*Plus shows them.",
+ "generatedAt": "2026-11-18T01:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">LAG</code> and <code class=\"inline-code\">LEAD</code> functions in Oracle let you read a value from another row of the same result set without a self join. <code class=\"inline-code\">LAG</code> looks back to an earlier row, <code class=\"inline-code\">LEAD</code> looks ahead to a later row, and the <code class=\"inline-code\">ORDER BY</code> inside <code class=\"inline-code\">OVER</code> decides what \"earlier\" and \"later\" mean."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You use them to compare each row with its neighbour: the change from the previous order, the days until the next order, month-over-month growth, or the last known value when data has gaps. This tutorial walks through each case on a small orders table, with the expected output after every query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How LAG and LEAD work",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both are analytic functions. Oracle first builds the result set (joins, <code class=\"inline-code\">WHERE</code>, <code class=\"inline-code\">GROUP BY</code>, <code class=\"inline-code\">HAVING</code>), then sorts the rows as the <code class=\"inline-code\">OVER</code> clause says, and then, for every row, reaches a fixed number of rows backwards (<code class=\"inline-code\">LAG</code>) or forwards (<code class=\"inline-code\">LEAD</code>) and returns a value from that row."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LAG  ( value_expr [, offset [, default ]] )\n     [ RESPECT NULLS | IGNORE NULLS ]\n     OVER ( [ PARTITION BY expr, ... ] ORDER BY expr, ... )\n\nLEAD ( value_expr [, offset [, default ]] )\n     [ RESPECT NULLS | IGNORE NULLS ]\n     OVER ( [ PARTITION BY expr, ... ] ORDER BY expr, ... )",
+    "caption": "Syntax (Oracle 19c SQL Language Reference)"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Part",
+      "What it means",
+      "Default"
+     ],
+     [
+      "value_expr",
+      "The column or expression to read from the other row. It cannot be another analytic function.",
+      "Required"
+     ],
+     [
+      "offset",
+      "How many rows back (LAG) or forward (LEAD). An integer greater than zero.",
+      "1"
+     ],
+     [
+      "default",
+      "Value returned when the offset goes past the start or end of the partition.",
+      "NULL"
+     ],
+     [
+      "RESPECT / IGNORE NULLS",
+      "Whether rows where value_expr is NULL are counted when stepping back or forward.",
+      "RESPECT NULLS"
+     ],
+     [
+      "PARTITION BY",
+      "Splits rows into groups. LAG and LEAD never cross a group boundary.",
+      "Whole result set is one group"
+     ],
+     [
+      "ORDER BY",
+      "Defines the row order inside each group. This is what makes \"previous\" meaningful.",
+      "Required"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The two functions are mirror images. <code class=\"inline-code\">LAG(amount)</code> on a row gives the amount of the row before it; <code class=\"inline-code\">LEAD(amount)</code> gives the amount of the row after it. Before these functions existed, the same result needed a self join on a row number, which is harder to read and usually slower."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create this small table and run the inserts so you can follow every example. The dates are set so the gaps between orders are easy to check by hand."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE orders (\n  order_id     NUMBER        PRIMARY KEY,\n  customer_id  NUMBER        NOT NULL,\n  order_date   DATE          NOT NULL,\n  amount       NUMBER(10,2)  NOT NULL\n);\n\nINSERT INTO orders VALUES (101, 1, DATE '2026-01-05', 1200);\nINSERT INTO orders VALUES (102, 1, DATE '2026-01-20',  800);\nINSERT INTO orders VALUES (103, 1, DATE '2026-02-14', 1500);\nINSERT INTO orders VALUES (104, 1, DATE '2026-03-30',  900);\nINSERT INTO orders VALUES (105, 2, DATE '2026-01-10', 2500);\nINSERT INTO orders VALUES (106, 2, DATE '2026-02-02', 2500);\nINSERT INTO orders VALUES (107, 2, DATE '2026-04-18', 3100);\nINSERT INTO orders VALUES (108, 3, DATE '2026-03-01',  450);\nCOMMIT;\n\n-- Show dates as YYYY-MM-DD in this session\nALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD';",
+    "caption": "Sample orders table"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "LAG example: compare each order with the previous one",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Start with one customer. For each order you want the previous order amount and the change from it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id,\n       order_date,\n       amount,\n       LAG(amount) OVER (ORDER BY order_date)          AS prev_amount,\n       amount - LAG(amount) OVER (ORDER BY order_date) AS change\n  FROM orders\n WHERE customer_id = 1\n ORDER BY order_date;",
+    "caption": "Previous order amount for customer 1"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "ORDER_DATE",
+      "AMOUNT",
+      "PREV_AMOUNT",
+      "CHANGE"
+     ],
+     [
+      "101",
+      "2026-01-05",
+      "1200",
+      "",
+      ""
+     ],
+     [
+      "102",
+      "2026-01-20",
+      "800",
+      "1200",
+      "-400"
+     ],
+     [
+      "103",
+      "2026-02-14",
+      "1500",
+      "800",
+      "700"
+     ],
+     [
+      "104",
+      "2026-03-30",
+      "900",
+      "1500",
+      "-600"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). The first order has no earlier row, so LAG returns NULL and the change is NULL too. Every other row shows the amount of the order placed just before it. The WHERE clause runs before LAG, so only customer 1's rows take part."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "LEAD example: days until the next order",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">LEAD</code> works the same way in the other direction. Subtracting one <code class=\"inline-code\">DATE</code> from another in Oracle gives a number of days, so you can measure the gap to the next order directly."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id,\n       order_date,\n       LEAD(order_date) OVER (ORDER BY order_date)              AS next_order_date,\n       LEAD(order_date) OVER (ORDER BY order_date) - order_date AS days_to_next\n  FROM orders\n WHERE customer_id = 1\n ORDER BY order_date;",
+    "caption": "Next order date for customer 1"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "ORDER_DATE",
+      "NEXT_ORDER_DATE",
+      "DAYS_TO_NEXT"
+     ],
+     [
+      "101",
+      "2026-01-05",
+      "2026-01-20",
+      "15"
+     ],
+     [
+      "102",
+      "2026-01-20",
+      "2026-02-14",
+      "25"
+     ],
+     [
+      "103",
+      "2026-02-14",
+      "2026-03-30",
+      "44"
+     ],
+     [
+      "104",
+      "2026-03-30",
+      "",
+      ""
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). This time the last row is the one with no neighbour, so it gets NULL. If you only need days between orders, LAG and LEAD give the same gaps, just attached to different rows: LEAD puts the gap on the earlier order, LAG puts it on the later one."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "If <code class=\"inline-code\">order_date</code> were a <code class=\"inline-code\">TIMESTAMP</code> instead of a <code class=\"inline-code\">DATE</code>, the subtraction would return an INTERVAL DAY TO SECOND, not a number. Use <code class=\"inline-code\">CAST(... AS DATE)</code> or <code class=\"inline-code\">EXTRACT(DAY FROM ...)</code> if you need a plain number."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "LAG with PARTITION BY: one result per customer",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Real queries cover many customers at once. Add <code class=\"inline-code\">PARTITION BY customer_id</code> so each customer is a separate group. LAG then restarts at the first order of every customer instead of reading another customer's order."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT customer_id,\n       order_id,\n       order_date,\n       amount,\n       LAG(amount) OVER (PARTITION BY customer_id\n                         ORDER BY order_date, order_id) AS prev_amount\n  FROM orders\n ORDER BY customer_id, order_date;",
+    "caption": "Previous order amount per customer"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "CUSTOMER_ID",
+      "ORDER_ID",
+      "ORDER_DATE",
+      "AMOUNT",
+      "PREV_AMOUNT"
+     ],
+     [
+      "1",
+      "101",
+      "2026-01-05",
+      "1200",
+      ""
+     ],
+     [
+      "1",
+      "102",
+      "2026-01-20",
+      "800",
+      "1200"
+     ],
+     [
+      "1",
+      "103",
+      "2026-02-14",
+      "1500",
+      "800"
+     ],
+     [
+      "1",
+      "104",
+      "2026-03-30",
+      "900",
+      "1500"
+     ],
+     [
+      "2",
+      "105",
+      "2026-01-10",
+      "2500",
+      ""
+     ],
+     [
+      "2",
+      "106",
+      "2026-02-02",
+      "2500",
+      "2500"
+     ],
+     [
+      "2",
+      "107",
+      "2026-04-18",
+      "3100",
+      "2500"
+     ],
+     [
+      "3",
+      "108",
+      "2026-03-01",
+      "450",
+      ""
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Each customer's first order gets NULL, which is exactly what you want: a first order has no previous order. Customer 3 has only one order, so its only row is NULL. <code class=\"inline-code\">order_id</code> is added to the ORDER BY as a tie-breaker, so if a customer ever places two orders on the same date the result is still predictable."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Offset and default value",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The second argument sets how far to look, and the third sets what to return when there is no row that far away."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: look two rows back",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_id,\n       amount,\n       LAG(amount, 1, 0) OVER (ORDER BY order_date) AS prev_or_zero,\n       LAG(amount, 2)    OVER (ORDER BY order_date) AS two_back\n  FROM orders\n WHERE customer_id = 2\n ORDER BY order_date;",
+    "caption": "Offset 2 and default 0 for customer 2"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_ID",
+      "AMOUNT",
+      "PREV_OR_ZERO",
+      "TWO_BACK"
+     ],
+     [
+      "105",
+      "2500",
+      "0",
+      ""
+     ],
+     [
+      "106",
+      "2500",
+      "2500",
+      ""
+     ],
+     [
+      "107",
+      "3100",
+      "2500",
+      "2500"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). <code class=\"inline-code\">PREV_OR_ZERO</code> uses offset 1 with default 0, so the first row shows 0 instead of NULL. <code class=\"inline-code\">TWO_BACK</code> uses offset 2 with no default: the first two rows have nothing two places back and return NULL, and order 107 reads order 105."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: default is not the same as NVL",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The default only applies when the offset points outside the partition. If the earlier row exists but its value is NULL, LAG returns that NULL, not the default. <code class=\"inline-code\">NVL(LAG(amount), 0)</code> replaces both cases. Pick the one that matches what you mean. Also keep the default the same data type as <code class=\"inline-code\">value_expr</code>, for example a date default for a date column, to avoid implicit conversion surprises."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "IGNORE NULLS: get the previous non-null value",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A common reporting problem is a series with gaps, where you want to carry the last known value forward. <code class=\"inline-code\">IGNORE NULLS</code> makes LAG skip rows whose value is NULL and keep stepping back until it finds a real value."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "CREATE TABLE price_history (\n  price_date  DATE PRIMARY KEY,\n  price       NUMBER(8,2)\n);\n\nINSERT INTO price_history VALUES (DATE '2026-06-01', 100);\nINSERT INTO price_history VALUES (DATE '2026-06-02', NULL);\nINSERT INTO price_history VALUES (DATE '2026-06-03', NULL);\nINSERT INTO price_history VALUES (DATE '2026-06-04', 104);\nINSERT INTO price_history VALUES (DATE '2026-06-05', NULL);\nCOMMIT;",
+    "caption": "Sample table with missing prices"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT price_date,\n       price,\n       LAG(price) OVER (ORDER BY price_date)              AS prev_respect,\n       LAG(price) IGNORE NULLS OVER (ORDER BY price_date) AS prev_ignore,\n       NVL(price,\n           LAG(price) IGNORE NULLS OVER (ORDER BY price_date)) AS filled_price\n  FROM price_history\n ORDER BY price_date;",
+    "caption": "RESPECT NULLS vs IGNORE NULLS"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "PRICE_DATE",
+      "PRICE",
+      "PREV_RESPECT",
+      "PREV_IGNORE",
+      "FILLED_PRICE"
+     ],
+     [
+      "2026-06-01",
+      "100",
+      "",
+      "",
+      "100"
+     ],
+     [
+      "2026-06-02",
+      "",
+      "100",
+      "100",
+      "100"
+     ],
+     [
+      "2026-06-03",
+      "",
+      "",
+      "100",
+      "100"
+     ],
+     [
+      "2026-06-04",
+      "104",
+      "",
+      "100",
+      "104"
+     ],
+     [
+      "2026-06-05",
+      "",
+      "104",
+      "104",
+      "104"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Look at 3 June. With the default <code class=\"inline-code\">RESPECT NULLS</code>, LAG reads 2 June, which is NULL. With <code class=\"inline-code\">IGNORE NULLS</code>, LAG skips 2 June and returns 100 from 1 June. <code class=\"inline-code\">FILLED_PRICE</code> keeps a real price when there is one and falls back to the last known price when there is not."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "<code class=\"inline-code\">LAST_VALUE(price) IGNORE NULLS OVER (ORDER BY price_date)</code> gives a similar fill-forward result. The difference is that it includes the current row, so you do not need the NVL wrapper."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Filter on LAG or LEAD results",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Analytic functions are calculated after <code class=\"inline-code\">WHERE</code>, so you cannot filter on them in the same query level. Compute them in an inline view and filter in the outer query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Orders where the amount dropped",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT customer_id, order_id, order_date, amount, prev_amount\n  FROM (SELECT customer_id, order_id, order_date, amount,\n               LAG(amount) OVER (PARTITION BY customer_id\n                                 ORDER BY order_date, order_id) AS prev_amount\n          FROM orders)\n WHERE amount < prev_amount\n ORDER BY customer_id, order_date;",
+    "caption": "Orders smaller than the customer's previous order"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "CUSTOMER_ID",
+      "ORDER_ID",
+      "ORDER_DATE",
+      "AMOUNT",
+      "PREV_AMOUNT"
+     ],
+     [
+      "1",
+      "102",
+      "2026-01-20",
+      "800",
+      "1200"
+     ],
+     [
+      "1",
+      "104",
+      "2026-03-30",
+      "900",
+      "1500"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Order 106 is not listed because 2500 is equal to the previous amount, not lower. First orders drop out on their own, because <code class=\"inline-code\">amount < NULL</code> is never true."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Customers who waited more than 30 days",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT customer_id, order_id, order_date, days_since_prev\n  FROM (SELECT customer_id, order_id, order_date,\n               order_date - LAG(order_date) OVER (PARTITION BY customer_id\n                                                  ORDER BY order_date, order_id)\n                 AS days_since_prev\n          FROM orders)\n WHERE days_since_prev > 30\n ORDER BY customer_id, order_date;",
+    "caption": "Gaps longer than 30 days between orders"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "CUSTOMER_ID",
+      "ORDER_ID",
+      "ORDER_DATE",
+      "DAYS_SINCE_PREV"
+     ],
+     [
+      "1",
+      "104",
+      "2026-03-30",
+      "44"
+     ],
+     [
+      "2",
+      "107",
+      "2026-04-18",
+      "75"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). Customer 2 went 75 days between 2 February and 18 April. This is a typical churn or re-engagement check, and it needs no self join."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Month-over-month change with LAG and GROUP BY",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "LAG can read an aggregate. In a <code class=\"inline-code\">GROUP BY</code> query, Oracle groups first and then applies the analytic function to the grouped rows, so <code class=\"inline-code\">LAG(SUM(amount))</code> gives the previous month's total."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "SELECT order_month, total, prev_total,\n       ROUND((total - prev_total) * 100 / NULLIF(prev_total, 0), 1) AS pct_change\n  FROM (SELECT TO_CHAR(TRUNC(order_date, 'MM'), 'YYYY-MM') AS order_month,\n               SUM(amount) AS total,\n               LAG(SUM(amount)) OVER (ORDER BY TRUNC(order_date, 'MM')) AS prev_total\n          FROM orders\n         GROUP BY TRUNC(order_date, 'MM'))\n ORDER BY order_month;",
+    "caption": "Monthly totals and change from the previous month"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "ORDER_MONTH",
+      "TOTAL",
+      "PREV_TOTAL",
+      "PCT_CHANGE"
+     ],
+     [
+      "2026-01",
+      "4500",
+      "",
+      ""
+     ],
+     [
+      "2026-02",
+      "4000",
+      "4500",
+      "-11.1"
+     ],
+     [
+      "2026-03",
+      "1350",
+      "4000",
+      "-66.3"
+     ],
+     [
+      "2026-04",
+      "3100",
+      "1350",
+      "129.6"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Output (expected output). January has no earlier month, so its change is NULL. <code class=\"inline-code\">NULLIF(prev_total, 0)</code> protects you from a divide-by-zero error if a month ever totals zero."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "LAG returns the previous row, not the previous calendar month. If a month has no orders at all, it is missing from the grouped result, and the next month is compared with the month before the gap. When that matters, generate the full list of months first and outer join your totals to it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "1. Forgetting PARTITION BY",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Without <code class=\"inline-code\">PARTITION BY customer_id</code>, the whole table is one group. With <code class=\"inline-code\">OVER (ORDER BY customer_id, order_date)</code>, order 105, the first order of customer 2, would show 900 as its previous amount, which is customer 1's last order. The numbers look plausible, which is why this bug survives testing. Partition by whatever defines \"the same thing\" in your question."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "2. Putting LAG in the WHERE clause",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "sql",
+    "code": "-- Fails: analytic functions are not allowed in WHERE\nSELECT order_id, amount\n  FROM orders\n WHERE amount < LAG(amount) OVER (ORDER BY order_date);",
+    "caption": "Wrong"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Oracle rejects this with ORA-30483: window functions are not allowed here. Analytic functions can appear only in the select list or the <code class=\"inline-code\">ORDER BY</code> clause. Use an inline view, as in the filtering section above."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "3. An ORDER BY that has ties",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If two rows have the same <code class=\"inline-code\">order_date</code> within a customer, Oracle can return them in either order, and LAG may pick a different \"previous\" row on different runs. Add a unique column, such as <code class=\"inline-code\">order_id</code>, to the ORDER BY inside OVER."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "4. Filtering out the rows LAG needs",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "WHERE runs before LAG. If you write <code class=\"inline-code\">WHERE order_date >= DATE '2026-02-01'</code> in the same query, the January orders are gone and February's first order gets NULL instead of its real previous order. Calculate LAG in an inline view over the full range, then filter the dates in the outer query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "5. Expecting OVER (ORDER BY) to sort the output",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The ORDER BY inside OVER only tells the function how to walk the rows. It does not promise the order of the final result. Always add a normal <code class=\"inline-code\">ORDER BY</code> at the end of the query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "LAG and LEAD read the rows once after a sort, while a self join reads the table twice and matches rows. On large tables this is usually the bigger saving. In the plan you will typically see a <code class=\"inline-code\">WINDOW SORT</code> step.",
+      "items": []
+     },
+     {
+      "content": "Several analytic functions with the same <code class=\"inline-code\">PARTITION BY</code> and <code class=\"inline-code\">ORDER BY</code> can share one sort. Keep the OVER clauses identical where you can.",
+      "items": []
+     },
+     {
+      "content": "An index on the partition and order columns, for example <code class=\"inline-code\">(customer_id, order_date)</code>, can let the optimizer read rows already sorted and skip the sort. Check the execution plan rather than assuming it.",
+      "items": []
+     },
+     {
+      "content": "Filter as early as is safe. Restricting to the customers you need in the WHERE clause shrinks the sort, as long as you do not remove rows that LAG must see (mistake 4).",
+      "items": []
+     },
+     {
+      "content": "The sort uses PGA memory and spills to the temporary tablespace when it does not fit, so very large partitions without filters can be slow.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "See the related tutorial on reading Oracle explain plans to confirm what the optimizer chose for your query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between LAG and LEAD in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "They take the same arguments and follow the same rules. LAG returns a value from a row before the current row, and LEAD returns a value from a row after it, in the order set by the ORDER BY inside OVER."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I use LAG without PARTITION BY?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes. PARTITION BY is optional. Without it, Oracle treats all rows of the result set as one group. The ORDER BY inside OVER is still required."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can LAG be used in a WHERE clause?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. Analytic functions are processed after WHERE, GROUP BY and HAVING, so Oracle raises ORA-30483. Compute LAG in a subquery or inline view, then filter in the outer query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I get the previous non-null value in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">LAG(column) IGNORE NULLS OVER (ORDER BY ...)</code>. It skips rows where the column is NULL and returns the nearest earlier non-null value."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I calculate the difference between the current and previous row?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Subtract LAG from the current value: <code class=\"inline-code\">amount - LAG(amount) OVER (PARTITION BY customer_id ORDER BY order_date)</code>. For dates, the result of subtracting two DATE values is the number of days between them."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">LAG</code> reads an earlier row, <code class=\"inline-code\">LEAD</code> reads a later row, with no self join.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Always set ORDER BY inside OVER, and add a unique tie-breaker column.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use PARTITION BY so values never cross from one customer or group to another.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use the offset for rows further away and the default for rows that do not exist.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use IGNORE NULLS to carry the last known value forward.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Filter on LAG or LEAD results in an outer query, never in the same WHERE clause.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Remember that the previous row is not always the previous month or day.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Comparing each row with the previous one in Oracle? You do not need a self join.\n\nLAG reads an earlier row. LEAD reads a later row. The ORDER BY inside OVER decides what earlier means.\n\n→ Change from last order: amount - LAG(amount) OVER (PARTITION BY customer_id ORDER BY order_date)\n→ Days to next order: LEAD(order_date) OVER (...) - order_date\n→ Forget PARTITION BY and customer 2's first order reads customer 1's last order\n→ LAG(price) IGNORE NULLS returns the last non-null value, handy for filling gaps\n→ You cannot use LAG in WHERE (ORA-30483). Compute it in an inline view, filter outside\n→ The default argument only applies when no row exists. NVL also replaces a real NULL\n\nOne more trap: LAG gives the previous row, not the previous month. A month with no sales simply disappears.\n\nWhich do you use more in reports, LAG or LEAD?\n\nFull tutorial with examples: link in the first comment.\n#Oracle #OracleSQL #PLSQL #SQLInterview",
+  "slides": [
+   {
+    "title": "LAG and LEAD in Oracle",
+    "body": "Compare every row with its neighbour, no self join"
+   },
+   {
+    "title": "What they do",
+    "points": [
+     "LAG reads a value from an earlier row",
+     "LEAD reads a value from a later row",
+     "ORDER BY inside OVER defines earlier and later",
+     "PARTITION BY keeps groups apart"
+    ]
+   },
+   {
+    "title": "Change from the previous order",
+    "code": "SELECT order_id, amount,\n  amount - LAG(amount) OVER (\n    PARTITION BY customer_id\n    ORDER BY order_date, order_id\n  ) AS change\nFROM orders;",
+    "lang": "sql"
+   },
+   {
+    "title": "Fill gaps with IGNORE NULLS",
+    "code": "SELECT price_date,\n  NVL(price,\n    LAG(price) IGNORE NULLS\n    OVER (ORDER BY price_date)\n  ) AS filled_price\nFROM price_history;",
+    "lang": "sql"
+   },
+   {
+    "title": "You cannot use LAG in WHERE",
+    "body": "Analytic functions run after WHERE, so Oracle raises ORA-30483. Compute LAG in an inline view and filter in the outer query."
+   },
+   {
+    "title": "Traps to avoid",
+    "points": [
+     "No PARTITION BY: values leak between customers",
+     "Ties in ORDER BY: add order_id as a tie-breaker",
+     "The default applies only when no row exists",
+     "Previous row is not always the previous month"
+    ]
+   }
+  ]
+ }
+}
