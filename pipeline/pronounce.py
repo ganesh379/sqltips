@@ -25,6 +25,9 @@ WORDS = {
     "gen_random_uuid": "gen random U-U-I-D",
     "psql": "P-S-Q-L", "PSQL": "P-S-Q-L", "appdb": "app D-B", "reportdb": "report D-B",
     "fdw": "F-D-W", "datname": "dat-name",
+    # create and drop databases (ep 16)
+    "CREATEDB": "create D-B", "template0": "template zero", "template1": "template one",
+    "datallowconn": "dat allow conn",
     # psql meta-commands (ep 10)
     "conninfo": "conn-info", "du": "D-U", "dt": "D-T",
     "pg": "P-G", "PG": "P-G",
@@ -106,7 +109,8 @@ SPOKEN_CAPS = {"VACUUM", "ANALYZE", "EXPLAIN", "SELECT", "INSERT", "UPDATE", "DE
                "LEFT", "RIGHT", "CROSS", "LATERAL", "ONLY", "WINDOW", "OVER", "FILTER", "USING",
                "VACUUMDB", "REASSIGN", "OWNED", "SECURITY", "POLICY", "ENABLE", "DISABLE", "RULE",
                "DECLARE", "CURSOR", "SYSTEM", "VERSION", "FETCH", "CALL", "DO", "ON", "OR", "IN", "AS", "BY", "IS", "TO",
-               "OF", "IF", "AT", "NO", "UP"}
+               "OF", "IF", "AT", "NO", "UP",
+               "ALLOW", "CONNECTIONS", "FORCE"}
 
 _KEYS = sorted(WORDS, key=len, reverse=True)
 _WORD_RE = re.compile(r"(?<![\w-])(" + "|".join(re.escape(k) for k in _KEYS) + r")(?![\w-])")

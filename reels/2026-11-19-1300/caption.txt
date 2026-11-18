@@ -1,0 +1,13 @@
+Creating a PostgreSQL database is easy. Deleting one safely matters.
+
+CREATE DATABASE clones a template. By default it copies template1, so anything you add there lands in every new database. template0 holds only the standard objects; copy it for a clean database or a new encoding or locale. You need superuser or the CREATEDB privilege.
+
+Two common errors: "CREATE DATABASE cannot run inside a transaction block", and "source database is being accessed by other users" when someone is connected to the template.
+
+DROP DATABASE deletes the data directory and cannot be undone. You cannot drop the database you are connected to, and other sessions make it fail. A safe sequence for a PostgreSQL DBA: ALTER DATABASE ... ALLOW_CONNECTIONS false, then DROP DATABASE ... WITH (FORCE). FORCE still fails if prepared transactions, active logical replication slots or subscriptions exist.
+
+Episode 16 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql

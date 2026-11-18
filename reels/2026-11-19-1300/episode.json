@@ -1,0 +1,579 @@
+{
+ "ep": 16,
+ "total": 140,
+ "title": "Create and Drop Databases Safely",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "Creating a database is easy. Deleting one safely matters.",
+   "cap": "*Creating* is easy. *Deleting* safely matters."
+  },
+  {
+   "say": "This is episode sixteen of the PostgreSQL DBA series: create databases the right way, and drop them without surprises.",
+   "cap": "Episode 16: *create* and *drop* databases.",
+   "cue": "create"
+  },
+  {
+   "say": "To create a database, you must be a superuser, or have the CREATEDB privilege.",
+   "cap": "You need *superuser* or *CREATEDB.*",
+   "cue": "superuser"
+  },
+  {
+   "say": "A new database never starts empty. CREATE DATABASE clones a template, and by default that is template1.",
+   "cap": "It *clones* a template. Default: *template1.*",
+   "cue": "clones"
+  },
+  {
+   "say": "So anything you add to template1 is copied into every new database made from it.",
+   "cap": "Objects in *template1* are *copied* into new databases.",
+   "cue": "copied"
+  },
+  {
+   "say": "template0 holds only the standard objects of your PostgreSQL version. It should never be changed.",
+   "cap": "*template0:* standard objects only. *Never* change it.",
+   "cue": "never"
+  },
+  {
+   "say": "Copy template0 when you need a new encoding or locale. A copy of template1 must keep its settings.",
+   "cap": "New *encoding* or *locale?* Copy *template0.*",
+   "cue": "encoding"
+  },
+  {
+   "say": "Here is a real test. We create appdb, owned by app_user, from template0, with a connection limit of twenty.",
+   "cap": "*appdb,* owner *app_user,* *template0,* limit *20.*",
+   "cue": "create"
+  },
+  {
+   "say": "pg_database shows the result. template0 has datallowconn set to false, so nobody can connect and change it.",
+   "cap": "*template0:* datallowconn = *false.*",
+   "cue": "false"
+  },
+  {
+   "say": "First mistake: CREATE DATABASE cannot run inside a transaction block. We tried, and got exactly that error.",
+   "cap": "*Not* inside a *transaction block.*",
+   "cue": "transaction"
+  },
+  {
+   "say": "Second mistake: copying a busy database. With one other session connected, it fails: source database is being accessed by other users.",
+   "cap": "Busy template: *being accessed* by *other users.*",
+   "cue": "fails"
+  },
+  {
+   "say": "Now the dangerous part. DROP DATABASE removes the catalog entries and deletes the data directory. It cannot be undone.",
+   "cap": "*DROP DATABASE* deletes the data. *No undo.*",
+   "cue": "dangerous"
+  },
+  {
+   "say": "Only the owner or a superuser can drop it, and never while connected to it. Connect to postgres first.",
+   "cap": "*Owner* or *superuser,* from *another* database.",
+   "cue": "connected"
+  },
+  {
+   "say": "If anyone else is connected, the drop fails with the same error: being accessed by other users.",
+   "cap": "Other sessions? The *drop fails.*",
+   "cue": "fails"
+  },
+  {
+   "say": "A safe sequence. First, ALTER DATABASE with ALLOW_CONNECTIONS false, so no new sessions can connect.",
+   "cap": "Step 1: *ALLOW_CONNECTIONS false.*",
+   "cue": "First"
+  },
+  {
+   "say": "New logins now fail with: database is not currently accepting connections. Existing sessions keep running.",
+   "cap": "New logins *refused.* Existing sessions *stay.*",
+   "cue": "fail"
+  },
+  {
+   "say": "Then DROP DATABASE WITH FORCE. It tries to terminate the existing connections, and here the drop succeeded.",
+   "cap": "Step 2: *WITH (FORCE)* ends the sessions.",
+   "cue": "FORCE"
+  },
+  {
+   "say": "FORCE still fails if prepared transactions, active logical replication slots, or subscriptions are present.",
+   "cap": "FORCE *fails* with prepared xacts, *slots,* subscriptions.",
+   "cue": "fails"
+  },
+  {
+   "say": "In scripts, IF EXISTS turns a missing database into a notice, instead of an error.",
+   "cap": "*IF EXISTS:* a *notice,* not an error.",
+   "cue": "notice"
+  },
+  {
+   "say": "DBA takeaway, a common practice: take a fresh backup, check the name twice, and confirm nobody still needs it.",
+   "cap": "*Backup* first, check the *name,* confirm with *owners.*",
+   "cue": "backup"
+  },
+  {
+   "say": "Recap: new databases clone template1 by default. Use template0 for a clean copy, or a new encoding.",
+   "cap": "Recap: *template1* default, *template0* for clean.",
+   "cue": "template0"
+  },
+  {
+   "say": "No transaction blocks, no busy templates, block connections before a drop, and remember: a drop is permanent.",
+   "cap": "*Block* connections, then *drop.* It's *permanent.*",
+   "cue": "block"
+  },
+  {
+   "say": "Next up: schemas and the search path. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *schemas* and *search_path.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "*Creating* a database is easy. *Deleting* one safely *matters.*",
+   "sub": "Episode 16 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 16 · INSTALLATION & ADMINISTRATION",
+   "title": "Create and Drop Databases Safely",
+   "sub": "templates, owners, connections, FORCE"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 7,
+   "heading": "Every new database is a copy",
+   "nodes": [
+    {
+     "id": "role",
+     "label": "CREATEDB role",
+     "sub": "or a superuser",
+     "x": 540,
+     "y": 490,
+     "w": 380,
+     "h": 120,
+     "icon": "key",
+     "color": "amber",
+     "shape": "pill",
+     "at": 2
+    },
+    {
+     "id": "cmd",
+     "label": "CREATE DATABASE",
+     "sub": "clones a template",
+     "x": 540,
+     "y": 700,
+     "w": 380,
+     "h": 120,
+     "icon": "terminal",
+     "color": "orange",
+     "at": 3
+    },
+    {
+     "id": "t1",
+     "label": "template1",
+     "sub": "default, your objects",
+     "x": 220,
+     "y": 930,
+     "w": 320,
+     "h": 150,
+     "icon": "database",
+     "color": "blue",
+     "shape": "db",
+     "at": 3
+    },
+    {
+     "id": "t0",
+     "label": "template0",
+     "sub": "pristine, never change",
+     "x": 860,
+     "y": 930,
+     "w": 320,
+     "h": 150,
+     "icon": "lock",
+     "color": "purple",
+     "shape": "db",
+     "at": 5
+    },
+    {
+     "id": "new",
+     "label": "New database",
+     "sub": "e.g. appdb",
+     "x": 540,
+     "y": 1250,
+     "w": 340,
+     "h": 140,
+     "icon": "database",
+     "color": "green",
+     "shape": "db",
+     "at": 3
+    }
+   ],
+   "edges": [
+    {
+     "from": "role",
+     "to": "cmd",
+     "at": 3,
+     "color": "amber"
+    },
+    {
+     "from": "cmd",
+     "to": "new",
+     "at": 3,
+     "color": "orange"
+    },
+    {
+     "from": "t1",
+     "to": "new",
+     "at": 4,
+     "flow": true,
+     "color": "blue"
+    },
+    {
+     "from": "t0",
+     "to": "new",
+     "at": 6,
+     "flow": true,
+     "color": "purple"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "role"
+    },
+    {
+     "at": 3,
+     "id": "cmd"
+    },
+    {
+     "at": 4,
+     "id": "t1"
+    },
+    {
+     "at": 5,
+     "id": "t0"
+    },
+    {
+     "at": 6,
+     "id": "new"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 7,
+   "to": 9,
+   "heading": "Create it explicitly",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "CREATE DATABASE appdb",
+     "at": 7,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "OWNER app_user",
+     "at": 7,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "TEMPLATE template0",
+     "at": 7,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "CONNECTION LIMIT 20;",
+     "at": 7,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "out",
+     "text": "CREATE DATABASE",
+     "at": 7
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT datname, datallowconn",
+     "at": 8,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "comment",
+     "text": "-- AS conn, ... trimmed",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "  datname  | conn | lim",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": " template0 | f    |  -1",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": " appdb     | t    |  20",
+     "at": 8
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 9,
+   "to": 11,
+   "heading": "Two common mistakes",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "BEGIN;",
+     "at": 9,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE DATABASE testdb;",
+     "at": 9,
+     "prompt": "postgres=*# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  CREATE DATABASE cannot run",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": "inside a transaction block",
+     "at": 9
+    },
+    {
+     "kind": "comment",
+     "text": "-- 1 other session is in appdb",
+     "at": 10
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE DATABASE appdb_copy",
+     "at": 10,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "TEMPLATE appdb;",
+     "at": 10,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  source database \"appdb\" is",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "being accessed by other users",
+     "at": 10
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 11,
+   "to": 12,
+   "kind": "warning",
+   "title": "DROP DATABASE is permanent",
+   "text": "It removes the catalog entries and deletes the data directory. It cannot be undone."
+  },
+  {
+   "type": "terminal",
+   "from": 12,
+   "to": 14,
+   "heading": "Why a drop fails",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- connected to appdb itself:",
+     "at": 12
+    },
+    {
+     "kind": "cmd",
+     "text": "DROP DATABASE appdb;",
+     "at": 12,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  cannot drop the currently",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "open database",
+     "at": 12
+    },
+    {
+     "kind": "comment",
+     "text": "-- from postgres, 1 other session:",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "text": "DROP DATABASE appdb;",
+     "at": 13,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  database \"appdb\" is being",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "accessed by other users",
+     "at": 13
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 14,
+   "to": 17,
+   "heading": "Drop it safely",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "ALTER DATABASE appdb",
+     "at": 14,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "ALLOW_CONNECTIONS false;",
+     "at": 14,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "out",
+     "text": "ALTER DATABASE",
+     "at": 14
+    },
+    {
+     "kind": "comment",
+     "text": "-- new login, output trimmed:",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "FATAL:  database \"appdb\" is not",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "currently accepting connections",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "text": "DROP DATABASE appdb",
+     "at": 16,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "WITH (FORCE);",
+     "at": 16,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "out",
+     "text": "DROP DATABASE",
+     "at": 16
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 17,
+   "to": 18,
+   "kind": "fact",
+   "title": "When FORCE still fails",
+   "text": "Prepared transactions, active logical replication slots or subscriptions in the target database."
+  },
+  {
+   "type": "terminal",
+   "from": 18,
+   "to": 19,
+   "heading": "Safe in scripts",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "DROP DATABASE IF EXISTS appdb;",
+     "at": 18,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "out",
+     "text": "NOTICE:  database \"appdb\" does not",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "exist, skipping",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "DROP DATABASE",
+     "at": 18
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 19,
+   "to": 20,
+   "kind": "tip",
+   "title": "DBA takeaway",
+   "text": "A common practice: fresh backup first, check the name twice, confirm nobody still needs it."
+  },
+  {
+   "type": "checklist",
+   "from": 20,
+   "to": 22,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 20,
+     "title": "Default template: template1"
+    },
+    {
+     "at": 20,
+     "title": "template0: clean copy, new locale"
+    },
+    {
+     "at": 21,
+     "title": "Never inside a transaction"
+    },
+    {
+     "at": 21,
+     "title": "Block connections, then drop"
+    },
+    {
+     "at": 21,
+     "title": "A drop cannot be undone"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 22,
+   "to": 23,
+   "next": "Ep 17 · Schemas and search path"
+  }
+ ]
+}
