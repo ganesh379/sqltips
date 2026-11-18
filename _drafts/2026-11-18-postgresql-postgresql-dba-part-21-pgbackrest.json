@@ -1,0 +1,1744 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 21: Production Backups with pgBackRest",
+ "slug": "postgresql-dba-part-21-pgbackrest",
+ "category": "postgresql",
+ "description": "Set up pgBackRest for PostgreSQL 18 on Ubuntu: encrypted repository, full, diff and incremental backups, retention, PITR and delta restore.",
+ "focusKeyword": "pgbackrest configuration",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "pgbackrest",
+  "backup-and-recovery",
+  "pitr"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-15-wal-write-ahead-log/",
+  "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/",
+  "/posts/postgresql/postgresql-dba-part-3-data-directory-pgdata/"
+ ],
+ "sources": [
+  {
+   "title": "pgBackRest User Guide (Debian & Ubuntu), v2.60.1",
+   "url": "https://pgbackrest.org/user-guide.html"
+  },
+  {
+   "title": "pgBackRest Configuration Reference",
+   "url": "https://pgbackrest.org/configuration.html"
+  },
+  {
+   "title": "pgBackRest Command Reference (backup, restore options)",
+   "url": "https://pgbackrest.org/command.html"
+  },
+  {
+   "title": "pgBackRest Release Notes (PostgreSQL 18 support from v2.55.0)",
+   "url": "https://pgbackrest.org/release.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Write Ahead Log settings (archive_mode, archive_command, wal_level)",
+   "url": "https://www.postgresql.org/docs/current/runtime-config-wal.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Continuous Archiving and Point-in-Time Recovery (PITR)",
+   "url": "https://www.postgresql.org/docs/current/continuous-archiving.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Backup and Restore",
+   "url": "https://www.postgresql.org/docs/current/backup.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: initdb (data checksums on by default)",
+   "url": "https://www.postgresql.org/docs/current/app-initdb.html"
+  }
+ ],
+ "reviewNotes": "Series part 21. Part 20 (postgresql-dba-part-20-point-in-time-recovery) is not live yet: it is named without a link in the intro and not in related. Publish Part 20 first (Parts 17-19 are also not live and are mentioned by name only). TEST ENVIRONMENT, PLEASE READ: Ubuntu 24.04.5 LTS. PostgreSQL 18 could NOT be installed: postgresql-18 from PGDG depends on liburing2 from the Ubuntu archive, and archive.ubuntu.com is blocked by the sandbox network policy (same as Part 20). All PostgreSQL commands ran on the Ubuntu package PostgreSQL 16.15 (16.15-0ubuntu0.24.04.1), cluster 16 main, following the PostgreSQL 18 docs (docs/current, 18.7). pgBackRest is the REAL PGDG package pgbackrest 2.60.1-1.pgdg24.04+1 (binary, /etc/pgbackrest.conf and directories installed exactly as the package's postinst does). Its dependency libssh2-1t64 was also blocked, so a local stub libssh2.so.1 was used; libssh2 is only used for SFTP repositories, which this article does not use. On a real server apt-get install pgbackrest pulls libssh2 normally. Every pgBackRest command, error message and SQL result in the article was actually run (stanza-create, check, full/diff/incr backup, info, expire, time-target restore into a second cluster with --archive-mode=off, delta restore after deleting pg_control, JSON info with jq, and all errors [031], [087], [082]+[037], [040], [038], [027]). Outputs that contain version-specific paths (16 changed to 18: /var/lib/postgresql/18/..., archive id 18-1, 'wal archive min/max (18)', pg_lsclusters, pg_ctl error) are captioned '(expected output...)'. Long option lists and timestamps were shortened where marked. Backup sizes on 18 will differ (18 also enables data checksums by default, so pgBackRest validates page checksums automatically). Not run here: cron (not installed in the sandbox; crontab lines come from the user guide pattern), systemctl (no systemd in the sandbox; pg_ctlcluster was used, the article uses the postgresql@18-* units), and the dedicated repository host section (config only, taken from the user guide, no output shown). Editor checks: re-run the lab on a real Ubuntu + PostgreSQL 18 host if possible; confirm the PostgreSQL 18 postgresql.conf comment lines in Step 4 'before'; the encryption passphrase shown in Step 2 is a real random value used only in the sandbox (the config uses a placeholder). Focus keyword 'pgbackrest configuration' is a Google autocomplete suggestion for 'pgbackrest'.",
+ "generatedAt": "2026-11-18T13:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is <b>Part 21 of the PostgreSQL DBA series</b>. In Part 20 we recovered a database to the moment before a mistake using a base backup and archived WAL, all by hand. In this part you will set up <b>pgBackRest</b>, the backup tool many teams run in production, so the same jobs become a few short commands: full, differential and incremental backups, automatic WAL archiving, encryption, retention, and restores to any point in time."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By the end you will have pgBackRest installed on Ubuntu with PostgreSQL 18, a working, encrypted backup repository, a backup schedule, and you will have done two restores yourself: a point-in-time restore into a separate test cluster, and a full restore of the main cluster after losing a critical file."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "What pgBackRest adds on top of <code class=\"inline-code\">pg_basebackup</code> and a hand-written <code class=\"inline-code\">archive_command</code>",
+      "items": []
+     },
+     {
+      "content": "How to install pgBackRest from the PGDG repository and write <code class=\"inline-code\">/etc/pgbackrest.conf</code>",
+      "items": []
+     },
+     {
+      "content": "What a stanza is, and how to create and check one",
+      "items": []
+     },
+     {
+      "content": "How full, differential and incremental backups differ, and how retention removes old ones",
+      "items": []
+     },
+     {
+      "content": "How to restore to a point in time into a test cluster, and how to rebuild a damaged cluster with <code class=\"inline-code\">--delta</code>",
+      "items": []
+     },
+     {
+      "content": "How to monitor backups and archiving from the shell and from SQL",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 20 of this series, especially Part 15 (WAL), Part 18 (pg_basebackup), Part 19 (WAL archiving) and Part 20 (point-in-time recovery).",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server (we call it <b>db1</b>) with PostgreSQL 18 from the PGDG apt repository, cluster <b>18 main</b> on port 5432, installed as in <a href=\"/posts/postgresql/postgresql-dba-part-2-install-postgresql-18-ubuntu/\">Part 2</a>.",
+      "items": []
+     },
+     {
+      "content": "A user with sudo rights. Every PostgreSQL and pgBackRest command runs as the <code class=\"inline-code\">postgres</code> operating system user.",
+      "items": []
+     },
+     {
+      "content": "Free disk space for the backup repository. For practice, a few hundred MB is enough.",
+      "items": []
+     },
+     {
+      "content": "If you followed Part 19, remove or replace the <code class=\"inline-code\">archive_command</code> you set there. A cluster should have one archiver, and in this part pgBackRest takes over that job.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Parts 18 to 20 you built a backup system by hand: <code class=\"inline-code\">pg_basebackup</code> for the data files and a <code class=\"inline-code\">cp</code> command in <code class=\"inline-code\">archive_command</code> for the WAL. Nothing checked that the WAL arrived, nothing deleted old backups, and nothing was encrypted."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>pgBackRest</b> is an open source tool that does all of these jobs. If <code class=\"inline-code\">pg_basebackup</code> is a camera that takes one photo of your data, pgBackRest is a photo library: it takes the photos, files them by date, keeps the right WAL next to each one, removes the oldest by a rule you set, and can rebuild the database from any of them."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A few words you will see everywhere in pgBackRest:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Term",
+      "Meaning"
+     ],
+     [
+      "Repository",
+      "Where pgBackRest stores backups and archived WAL. Here <code class=\"inline-code\">/var/lib/pgbackrest</code>; in production often a backup host or S3."
+     ],
+     [
+      "Stanza",
+      "The configuration for one PostgreSQL cluster. The user guide recommends naming it after what the cluster does (<code class=\"inline-code\">app</code>), not <code class=\"inline-code\">main</code>, because primary and standbys share it."
+     ],
+     [
+      "Full backup",
+      "Every file in the cluster. Depends on no other backup."
+     ],
+     [
+      "Differential backup (diff)",
+      "Only the files changed since the last <b>full</b> backup."
+     ],
+     [
+      "Incremental backup (incr)",
+      "Only the files changed since the last backup of <b>any</b> type. This is the default type."
+     ],
+     [
+      "archive-push / archive-get",
+      "Commands PostgreSQL calls to store a WAL segment (<code class=\"inline-code\">archive_command</code>) and fetch one during recovery (<code class=\"inline-code\">restore_command</code>)."
+     ],
+     [
+      "Expire",
+      "Removes backups and WAL beyond your retention. Runs after every successful backup."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "We build the simplest layout, the one the user guide starts with: everything on one server."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "db1 (Ubuntu, PostgreSQL 18, cluster \"18 main\", port 5432)\n\n  PostgreSQL --archive_command--> pgbackrest archive-push --+\n                                                            v\n  pgbackrest backup  ------- data files -------->  repository /var/lib/pgbackrest\n                                                     (encrypted, zstd compressed)\n  pgbackrest restore <------ backup + WAL -------+",
+    "caption": "Single-server setup used in this part"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "A repository on the database server is not enough on its own",
+    "text": "If db1's disk dies, backups on the same disk die with it. In production also keep a copy on another machine or in object storage (see the dedicated repository host section)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Install pgBackRest and prepare the directories",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Install the package",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> pgBackRest is in the same PGDG apt repository you added in Part 2, so one command installs it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo apt-get install -y pgbackrest",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Check that the program runs as the <code class=\"inline-code\">postgres</code> user, and look at what the package created."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest version\nls -ld /etc/pgbackrest.conf /var/lib/pgbackrest /var/log/pgbackrest /var/spool/pgbackrest",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pgBackRest 2.60.1\n-rw-r----- 1 postgres postgres  165 Nov 18 12:48 /etc/pgbackrest.conf\ndrwxr-x--- 2 postgres postgres 4096 Nov 18 12:48 /var/lib/pgbackrest\ndrwxr-x--- 2 postgres postgres 4096 Nov 18 12:48 /var/log/pgbackrest\ndrwxr-x--- 2 postgres postgres 4096 Nov 18 12:48 /var/spool/pgbackrest",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The version number depends on when you install. The Ubuntu package already created the repository directory <code class=\"inline-code\">/var/lib/pgbackrest</code>, the log directory and a spool directory, all owned by <code class=\"inline-code\">postgres</code> with mode 750, plus a sample configuration file <code class=\"inline-code\">/etc/pgbackrest.conf</code> that only <code class=\"inline-code\">postgres</code> can read. pgBackRest first looks for <code class=\"inline-code\">/etc/pgbackrest/pgbackrest.conf</code> and falls back to <code class=\"inline-code\">/etc/pgbackrest.conf</code> if that does not exist, so we use the file the package created."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Configure the repository and the stanza",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Create an encryption passphrase",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as any user.</b> pgBackRest can encrypt everything it writes to the repository, on the database server side, before the data leaves it. The user guide recommends a long random passphrase and suggests this command to make one:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "openssl rand -base64 48",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "iztoVhoipgQMwWUlvSo8phR2li6ipfWt/NK9QG/W/bgqjC8RXh0AE2spibHN9GTD",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Never reuse a passphrase printed in an article, including this one."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Store the passphrase outside the server",
+    "text": "Without the passphrase, an encrypted repository cannot be read, and your backups are useless. Save it in your password manager or secrets vault today. Also note that once the stanza is created, the repository's encryption settings cannot be changed."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Write /etc/pgbackrest.conf",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> Open the file with <code class=\"inline-code\">sudo -u postgres nano /etc/pgbackrest.conf</code> so the owner stays <code class=\"inline-code\">postgres</code>. The package's sample file looks like this:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "[global]\nrepo1-path=/var/lib/pgbackrest\n#repo1-retention-full=2\n#repo1-cipher-pass=...\n#repo1-cipher-type=aes-256-cbc\n\n#[main]\n#pg1-path=...",
+    "caption": "/etc/pgbackrest.conf before (last line shortened)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Replace it with the following, using your own passphrase from Step 2:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "[global]\nrepo1-path=/var/lib/pgbackrest\nrepo1-retention-full=2\nrepo1-cipher-type=aes-256-cbc\nrepo1-cipher-pass=<your passphrase from Step 2>\ncompress-type=zst\nrepo1-bundle=y\nrepo1-block=y\nprocess-max=2\nstart-fast=y\nlog-level-file=detail\n\n[app]\npg1-path=/var/lib/postgresql/18/main",
+    "caption": "/etc/pgbackrest.conf after"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">[global]</code> holds settings for every stanza and <code class=\"inline-code\">[app]</code> is our stanza. Comments go on their own line and values are not quoted. From the configuration reference:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "What it does"
+     ],
+     [
+      "repo1-path",
+      "Where backups and archived WAL are stored. Default <code class=\"inline-code\">/var/lib/pgbackrest</code>."
+     ],
+     [
+      "repo1-retention-full",
+      "Number of full backups to keep. Their diff and incr backups expire with them."
+     ],
+     [
+      "repo1-cipher-type",
+      "Repository encryption: <code class=\"inline-code\">none</code> (default) or <code class=\"inline-code\">aes-256-cbc</code>."
+     ],
+     [
+      "repo1-cipher-pass",
+      "The encryption passphrase."
+     ],
+     [
+      "compress-type",
+      "Compression. Default <code class=\"inline-code\">gz</code>; the user guide recommends <code class=\"inline-code\">zst</code> for new repositories (much faster, similar size)."
+     ],
+     [
+      "repo1-bundle",
+      "Combines small files into bundles to save space and time. Default <code class=\"inline-code\">n</code>."
+     ],
+     [
+      "repo1-block",
+      "Block incremental: diff and incr backups store only changed parts of files. Needs <code class=\"inline-code\">repo1-bundle=y</code>."
+     ],
+     [
+      "process-max",
+      "Processes for compression and transfer. Default 1. Keep it low enough not to slow the database."
+     ],
+     [
+      "start-fast",
+      "Forces a checkpoint so the backup starts at once. Default <code class=\"inline-code\">n</code>."
+     ],
+     [
+      "log-level-file",
+      "Detail of the log files in <code class=\"inline-code\">/var/log/pgbackrest</code>. Default <code class=\"inline-code\">info</code>."
+     ],
+     [
+      "pg1-path",
+      "The stanza's data directory. Must equal the <code class=\"inline-code\">data_directory</code> PostgreSQL reports."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "We leave <code class=\"inline-code\">log-level-console</code> at its default, <code class=\"inline-code\">warn</code>, so the PostgreSQL log stays quiet when PostgreSQL calls pgBackRest for each WAL segment. By hand, add <code class=\"inline-code\">--log-level-console=info</code> to see progress."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify:</b> make sure <code class=\"inline-code\">pg1-path</code> matches the server, and ask pgBackRest about the stanza."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -Atc \"SHOW data_directory;\"\nsudo -u postgres pgbackrest --stanza=app info",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "/var/lib/postgresql/18/main\nstanza: app\n    status: error (missing stanza path)",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This error is expected: the stanza does not exist in the repository until Step 5."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Send WAL to pgBackRest",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> A backup of a running cluster is only usable with the WAL written while it ran, so pgBackRest requires WAL archiving. You know these two settings from Part 19. Edit <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code> (see <a href=\"/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/\">Part 5</a> for how this file works):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "#archive_mode = off\t\t# enables archiving; off, on, or always\n#archive_command = ''\t\t# command to use to archive a WAL file",
+    "caption": "/etc/postgresql/18/main/postgresql.conf before"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "archive_mode = on\narchive_command = 'pgbackrest --stanza=app archive-push %p'",
+    "caption": "/etc/postgresql/18/main/postgresql.conf after"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL replaces <code class=\"inline-code\">%p</code> with the path of the finished WAL segment. <code class=\"inline-code\">archive-push</code> compresses it, encrypts it and stores it in the repository, and returns exit status zero only when the file is safely stored, which is what PostgreSQL requires of an archive command. The documented defaults are <code class=\"inline-code\">archive_mode = off</code> and an empty <code class=\"inline-code\">archive_command</code>. <code class=\"inline-code\">wal_level</code> must stay at its default <code class=\"inline-code\">replica</code> (or <code class=\"inline-code\">logical</code>); archiving cannot be enabled with <code class=\"inline-code\">minimal</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The PostgreSQL documentation says <code class=\"inline-code\">archive_mode</code> <i>can only be set at server start</i>, so this change needs a <b>restart</b>, not a reload. (<code class=\"inline-code\">archive_command</code> alone can be changed later with a reload.)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl restart postgresql@18-main",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify:</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SELECT name, setting FROM pg_settings WHERE name IN ('archive_mode','archive_command','wal_level') ORDER BY name;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "      name       |                 setting\n-----------------+-----------------------------------------\n archive_command | pgbackrest --stanza=app archive-push %p\n archive_mode    | on\n wal_level       | replica\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> set <code class=\"inline-code\">archive_mode = off</code> and restart again. Do not leave <code class=\"inline-code\">archive_mode = on</code> with a broken command for long: PostgreSQL keeps every WAL segment it could not archive in <code class=\"inline-code\">pg_wal</code>, and the disk slowly fills up."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Create the stanza",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> <code class=\"inline-code\">stanza-create</code> sets up the stanza's folders and info files in the repository."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest --stanza=app --log-level-console=info stanza-create",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-18 12:49:23.775 P00   INFO: stanza-create command begin 2.60.1: --exec-id=1252-22436de4 --log-level-console=info --log-level-file=detail --pg1-path=/var/lib/postgresql/18/main --repo1-cipher-pass=<redacted> --repo1-cipher-type=aes-256-cbc --repo1-path=/var/lib/pgbackrest --stanza=app\n2026-11-18 12:49:23.781 P00   INFO: stanza-create for stanza 'app' on repo1\n2026-11-18 12:49:23.784 P00   INFO: stanza-create command end: completed successfully (11ms)",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18)"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "--stanza=app",
+      "The stanza (cluster) the command works on."
+     ],
+     [
+      "--log-level-console=info",
+      "Prints info, warnings and errors on the screen. The default, <code class=\"inline-code\">warn</code>, prints only warnings and errors."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The first line shows every option in effect, with the passphrase <code class=\"inline-code\">&lt;redacted&gt;</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Check the configuration",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> The user guide recommends running <code class=\"inline-code\">check</code> after <code class=\"inline-code\">stanza-create</code>. It forces PostgreSQL to switch to a new WAL segment and waits until that segment arrives in the repository, so it tests the whole archive path end to end."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest --stanza=app --log-level-console=info check",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-18 12:49:23.796 P00   INFO: check command begin 2.60.1: --exec-id=1255-3a0cd5c6 --log-level-console=info ...\n2026-11-18 12:49:23.802 P00   INFO: check repo1 configuration (primary)\n2026-11-18 12:49:23.816 P00   INFO: check repo1 archive for WAL (primary)\n2026-11-18 12:49:24.117 P00   INFO: WAL segment 000000010000000000000001 successfully archived to '/var/lib/pgbackrest/archive/app/18-1/0000000100000000/000000010000000000000001-10adebfde2f56a5adb602ba41819d3c0325ecffe.zst' on repo1\n2026-11-18 12:49:24.117 P00   INFO: check command end: completed successfully (323ms)",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18), option list shortened"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The archived file name has three parts: the WAL segment name, a SHA-1 checksum pgBackRest uses to detect damage, and <code class=\"inline-code\">.zst</code> for zstd compression. <code class=\"inline-code\">18-1</code> means PostgreSQL 18, first database system in this stanza. Your segment number will differ on a server that has been running for a while."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify from PostgreSQL's side</b> with the <code class=\"inline-code\">pg_stat_archiver</code> view:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -x -c \"SELECT archived_count, last_archived_wal, last_archived_time, failed_count FROM pg_stat_archiver;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-[ RECORD 1 ]------+------------------------------\narchived_count     | 1\nlast_archived_wal  | 000000010000000000000001\nlast_archived_time | 2026-11-18 12:49:23.934199+00\nfailed_count       | 0",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Take full, differential and incremental backups",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For the examples we use a small <code class=\"inline-code\">orders</code> table in a database called <code class=\"inline-code\">shop</code>. Create it on db1 as postgres:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE shop;\n\\c shop\nCREATE TABLE orders (\n  order_id   bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  customer   text NOT NULL,\n  amount     numeric(10,2) NOT NULL,\n  created_at timestamptz NOT NULL DEFAULT now()\n);\nINSERT INTO orders (customer, amount)\nSELECT 'customer_' || g, (g * 10.5)::numeric(10,2)\nFROM generate_series(1, 1000) AS g;",
+    "caption": "Run in psql as postgres"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Take the first full backup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> The cluster stays online during the backup; users keep working."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest --stanza=app --type=full --log-level-console=info backup",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-18 12:49:26.474 P00   INFO: backup command begin 2.60.1: --compress-type=zst ... --stanza=app --start-fast --type=full\n2026-11-18 12:49:26.483 P00   INFO: execute backup start: backup begins after the requested immediate checkpoint completes\n2026-11-18 12:49:26.524 P00   INFO: backup start archive = 000000010000000000000002, lsn = 0/2000028\n2026-11-18 12:49:26.524 P00   INFO: check archive for segment 000000010000000000000002\n2026-11-18 12:49:27.362 P00   INFO: execute backup stop and wait for all WAL segments to archive\n2026-11-18 12:49:27.384 P00   INFO: backup stop archive = 000000010000000000000003, lsn = 0/3000050\n2026-11-18 12:49:27.386 P00   INFO: check archive for segment(s) 000000010000000000000002:000000010000000000000003\n2026-11-18 12:49:27.493 P00   INFO: new backup label = 20261118-124926F\n2026-11-18 12:49:27.514 P00   INFO: full backup size = 29.6MB, file total = 1267\n2026-11-18 12:49:27.514 P00   INFO: backup command end: completed successfully (1042ms)\n2026-11-18 12:49:27.514 P00   INFO: expire command begin 2.60.1: ...\n2026-11-18 12:49:27.514 P00   INFO: expire command end: completed successfully (0ms)",
+    "caption": "Output (option lists shortened; sizes on 18 differ)"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "--type=full",
+      "Backup type: <code class=\"inline-code\">full</code> copies all files, <code class=\"inline-code\">diff</code> copies changes since the last full, <code class=\"inline-code\">incr</code> copies changes since the last backup. The default is <code class=\"inline-code\">incr</code>; with no full backup yet, pgBackRest warns and takes a full one instead."
+     ],
+     [
+      "backup",
+      "The command: back up the cluster named by the stanza."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The log shows the steps from Part 18 done for you: a checkpoint, the backup start, the file copy, the stop, and a wait until WAL <code class=\"inline-code\">...02</code> to <code class=\"inline-code\">...03</code> is archived. Only then is the backup complete. The <b>label</b> <code class=\"inline-code\">20261118-124926F</code> is the start time plus <code class=\"inline-code\">F</code> for full. <code class=\"inline-code\">expire</code> then runs automatically; nothing is old enough to remove yet."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Look at the backup with info",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest info",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "stanza: app\n    status: ok\n    cipher: aes-256-cbc\n\n    db (current)\n        wal archive min/max (18): 000000010000000000000001/000000010000000000000003\n\n        full backup: 20261118-124926F\n            timestamp start/stop: 2026-11-18 12:49:26+00 / 2026-11-18 12:49:27+00\n            wal start/stop: 000000010000000000000002 / 000000010000000000000003\n            database size: 29.6MB, database backup size: 29.6MB\n            repo1: backup size: 3.6MB",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>database size</b> is the uncompressed size of the cluster; <b>repo1: backup size</b> is what the backup takes in the repository after compression. <b>wal start/stop</b> is the WAL range you need to make this backup consistent when you restore it, and <b>timestamp stop</b> tells you the earliest time you can recover to with this backup."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Take differential and incremental backups",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> Change some data between backups so there is something to copy:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d shop -c \"INSERT INTO orders (customer, amount) SELECT 'customer_' || g, 99.00 FROM generate_series(1001, 1500) AS g;\"\nsudo -u postgres pgbackrest --stanza=app --type=diff --log-level-console=info backup\nsudo -u postgres psql -d shop -c \"UPDATE orders SET amount = amount + 1 WHERE order_id <= 100;\"\nsudo -u postgres pgbackrest --stanza=app --type=incr --log-level-console=info backup",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "P00   INFO: last backup label = 20261118-124926F, version = 2.60.1\nP00   INFO: new backup label = 20261118-124926F_20261118-124930D\nP00   INFO: diff backup size = 320.3KB, file total = 1267\nP00   INFO: backup command end: completed successfully (1426ms)\nP00   INFO: last backup label = 20261118-124926F_20261118-124930D, version = 2.60.1\nP00   INFO: new backup label = 20261118-124926F_20261118-124932I\nP00   INFO: incr backup size = 208.3KB, file total = 1267\nP00   INFO: backup command end: completed successfully (960ms)",
+    "caption": "Output (key lines only, timestamps removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The diff backup's label starts with the full backup it depends on and ends in <code class=\"inline-code\">D</code>; the incremental ends in <code class=\"inline-code\">I</code>. Each copied only a few hundred KB instead of 29.6 MB. <code class=\"inline-code\">pgbackrest info</code> now lists all three, and the incremental shows <code class=\"inline-code\">backup reference total: 1 full, 1 diff</code>: to restore it, pgBackRest needs both of those backups too."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Type",
+      "Copies",
+      "Restore needs",
+      "Typical use"
+     ],
+     [
+      "full",
+      "Everything",
+      "Only itself",
+      "Weekly, or daily for small databases"
+     ],
+     [
+      "diff",
+      "Changes since the last full",
+      "The full + this diff",
+      "Daily between full backups"
+     ],
+     [
+      "incr",
+      "Changes since the last backup of any type",
+      "The full + any diff + every incr in between",
+      "Several times a day on busy systems"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Schedule the backups with cron",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> pgBackRest has no scheduler of its own; the user guide uses cron. Open the postgres user's crontab with <code class=\"inline-code\">sudo -u postgres crontab -e</code> and add a weekly full and a daily differential, the same pattern the user guide shows:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "#m h   dom mon dow   command\n30 01  *   *   0     pgbackrest --type=full --stanza=app backup\n30 01  *   *   1-6   pgbackrest --type=diff --stanza=app backup",
+    "caption": "crontab of the postgres user"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This runs a full backup at 01:30 every Sunday and a differential at 01:30 Monday to Saturday, in the server's time zone. Pick a quiet hour for your workload."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify:</b> <code class=\"inline-code\">sudo -u postgres crontab -l</code> prints the two lines back, and the next morning <code class=\"inline-code\">sudo -u postgres pgbackrest info</code> lists the new backup."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Retention: how old backups and WAL go away",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Watch expire remove the oldest full backup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "We set <code class=\"inline-code\">repo1-retention-full=2</code>. The reference explains that a new backup must complete before the old one is counted out, so with a count of 2 there will be three full backups for a moment, and then the oldest is removed together with every diff and incr that depends on it. Take two more full backups to see it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest --stanza=app --type=full --log-level-console=info backup\nsudo -u postgres pgbackrest --stanza=app --type=full --log-level-console=info backup",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "P00   INFO: new backup label = 20261118-125016F\nP00   INFO: repo1: 18-1 remove archive, start = 000000010000000000000001, stop = 000000010000000000000001\nP00   INFO: new backup label = 20261118-125017F\nP00   INFO: repo1: expire full backup set 20261118-124926F, 20261118-124926F_20261118-124930D, 20261118-124926F_20261118-124932I\nP00   INFO: repo1: remove expired backup 20261118-124926F_20261118-124932I\nP00   INFO: repo1: remove expired backup 20261118-124926F_20261118-124930D\nP00   INFO: repo1: remove expired backup 20261118-124926F\nP00   INFO: repo1: 18-1 remove archive, start = 000000010000000000000002, stop = 000000010000000000000009",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18), key lines only"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The first run removed only a WAL segment older than every backup, which can never be used. The second expired the first full backup with its diff and incr, and the WAL only they needed. Your recovery window is now from the oldest kept backup to the present; set <code class=\"inline-code\">repo1-retention-full</code> (or <code class=\"inline-code\">repo1-retention-full-type=time</code> with a number of days) to match how far back you must be able to go. Expire only runs after a <b>successful</b> backup, so failing backups also mean a growing repository."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Restore drill: recover to a point in time in a test cluster",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now the reason backups exist. Someone runs <code class=\"inline-code\">DELETE FROM orders;</code> without a <code class=\"inline-code\">WHERE</code>. As in Part 20, we restore a copy of the cluster to the moment before the mistake, check it, and copy the rows back. This time pgBackRest writes all the recovery settings for us."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "db1\n  cluster \"18 main\"    port 5432  (production, rows deleted)\n  cluster \"18 restore\" port 5433  (test copy, restored from repository /var/lib/pgbackrest)",
+    "caption": "Two clusters on one server"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Note the time, then make the mistake",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> In real life you find the time from the application log or with <code class=\"inline-code\">pg_waldump</code> as in Part 20. Here we write it down first. Use the time as PostgreSQL reports it, with the time zone offset: the user guide stresses this to avoid unexpected time zone conversions."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -Atc \"SELECT now();\"\nsudo -u postgres psql -d shop -c \"DELETE FROM orders;\"\nsudo -u postgres psql -Atc \"SELECT pg_switch_wal();\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-18 12:49:37.647005+00\nDELETE 1500\n0/8050CF0",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_switch_wal()</code> closes the current WAL segment so it is archived now. On a busy server that happens on its own within seconds."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Create an empty test cluster",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> Create a second cluster for the restore and empty its data directory."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Check the path twice",
+    "text": "The <code class=\"inline-code\">find ... -delete</code> command below permanently deletes everything in the directory you give it. Run it only on the new <code class=\"inline-code\">18/restore</code> directory, never on <code class=\"inline-code\">18/main</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_createcluster 18 restore --port 5433\nsudo -u postgres find /var/lib/postgresql/18/restore -mindepth 1 -delete",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "18 restore",
+      "Version and name of the new cluster. Its configuration goes in <code class=\"inline-code\">/etc/postgresql/18/restore/</code> and its data in <code class=\"inline-code\">/var/lib/postgresql/18/restore</code>."
+     ],
+     [
+      "--port 5433",
+      "Port for the new cluster, so it does not clash with main on 5432."
+     ],
+     [
+      "-mindepth 1 -delete",
+      "Deletes the contents of the directory but keeps the directory itself."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify:</b> <code class=\"inline-code\">pg_lsclusters</code> shows <code class=\"inline-code\">18 restore 5433 down</code>, and <code class=\"inline-code\">sudo -u postgres ls /var/lib/postgresql/18/restore</code> prints nothing. pgBackRest refuses to restore into a directory that still contains files (see Common mistakes)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: Restore to the time before the mistake",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest --stanza=app --log-level-console=info \\\n  --pg1-path=/var/lib/postgresql/18/restore \\\n  --type=time \"--target=2026-11-18 12:49:37.647005+00\" \\\n  --target-action=promote --archive-mode=off restore",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "P00   INFO: repo1: restore backup set 20261118-124926F_20261118-124932I, recovery will start at 2026-11-18 12:49:32\nP00   INFO: remap data directory to '/var/lib/postgresql/18/restore'\nP00   INFO: write updated /var/lib/postgresql/18/restore/postgresql.auto.conf\nP00   INFO: restore global/pg_control (performed last to ensure aborted restores cannot be started)\nP00   INFO: restore size = 29.6MB, file total = 1267\nP00   INFO: restore command end: completed successfully (594ms)",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18), timestamps removed"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "--pg1-path=...",
+      "Restore into this data directory instead of the one in the configuration file (<code class=\"inline-code\">remap data directory</code> in the log)."
+     ],
+     [
+      "--type=time",
+      "Recover to the time given in <code class=\"inline-code\">--target</code>. Other types: <code class=\"inline-code\">default</code> (to the end of the archived WAL), <code class=\"inline-code\">immediate</code>, <code class=\"inline-code\">lsn</code>, <code class=\"inline-code\">xid</code>, <code class=\"inline-code\">name</code>, <code class=\"inline-code\">standby</code>, <code class=\"inline-code\">preserve</code>, <code class=\"inline-code\">none</code>."
+     ],
+     [
+      "--target=...",
+      "The recovery target, here a timestamp with time zone. Quote the whole option because it contains a space."
+     ],
+     [
+      "--target-action=promote",
+      "What to do when the target is reached: <code class=\"inline-code\">pause</code> (the default), <code class=\"inline-code\">promote</code> (end recovery and open for writes on a new timeline) or <code class=\"inline-code\">shutdown</code>."
+     ],
+     [
+      "--archive-mode=off",
+      "Writes <code class=\"inline-code\">archive_mode = off</code> for the restored cluster, so this test copy never pushes its WAL into the production repository. Default <code class=\"inline-code\">preserve</code>."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice that we did not say which backup to use. With <code class=\"inline-code\">--type=time</code>, pgBackRest picks a backup that finished before the target time, here the incremental. Look at what it wrote for PostgreSQL:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres tail -5 /var/lib/postgresql/18/restore/postgresql.auto.conf",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# Recovery settings generated by pgBackRest restore on 2026-11-18 12:49:50\narchive_mode = 'off'\nrestore_command = 'pgbackrest --pg1-path=/var/lib/postgresql/18/restore --stanza=app archive-get %f \"%p\"'\nrecovery_target_time = '2026-11-18 12:49:37.647005+00'\nrecovery_target_action = 'promote'",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "These are the settings you wrote by hand in Part 20, and pgBackRest also created <code class=\"inline-code\">recovery.signal</code>. pgBackRest does not start PostgreSQL, so you can still check this file first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: Start the test cluster and check the data",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1:</b> start the cluster with sudo, then query it as postgres on port 5433."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl start postgresql@18-restore\nsudo -u postgres psql -p 5433 -d shop -c \"SELECT count(*), max(order_id) FROM orders;\" -c \"SELECT pg_is_in_recovery();\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " count | max\n-------+------\n  1500 | 1500\n(1 row)\n\n pg_is_in_recovery\n-------------------\n f\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All 1,500 rows are back, and the cluster has left recovery. The server log <code class=\"inline-code\">/var/log/postgresql/postgresql-18-restore.log</code> tells the story:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  starting point-in-time recovery to 2026-11-18 12:49:37.647005+00\nLOG:  restored log file \"000000010000000000000007\" from archive\nLOG:  redo starts at 0/7000028\nLOG:  restored log file \"000000010000000000000008\" from archive\nLOG:  consistent recovery state reached at 0/7000100\nLOG:  recovery stopping before commit of transaction 746, time 2026-11-18 12:49:39.679831+00\nLOG:  selected new timeline ID: 2\nLOG:  archive recovery complete\nLOG:  database system is ready to accept connections",
+    "caption": "Output (key lines, log prefix removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Transaction 746 is our <code class=\"inline-code\">DELETE</code>, committed two seconds after the target, so recovery stopped just before it. <code class=\"inline-code\">restored log file ... from archive</code> is <code class=\"inline-code\">archive-get</code> at work."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 16: Copy the rows back and remove the test cluster",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> Dump the table's data from the test copy and load it into production. A data-only dump of a table with an identity column also sets its sequence, which is the <code class=\"inline-code\">setval</code> line in the output."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres bash -c \"pg_dump -p 5433 -d shop -t orders --data-only | psql -q -p 5432 -d shop\"\nsudo -u postgres psql -d shop -Atc \"SELECT count(*) FROM orders;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " set_config\n------------\n\n(1 row)\n\n setval\n--------\n   1500\n(1 row)\n\n1500",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Production has its 1,500 rows again. Clean up the test cluster:"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Drop only the test cluster",
+    "text": "<code class=\"inline-code\">pg_dropcluster</code> deletes the cluster's data and configuration. Double-check that you typed <code class=\"inline-code\">restore</code>, not <code class=\"inline-code\">main</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_ctlcluster 18 restore stop\nsudo pg_dropcluster 18 restore\npg_lsclusters",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Rebuild a damaged cluster with --delta",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The second common case is not a user mistake but a broken server: a lost file, a bad disk, a failed upgrade. Here you want <b>all</b> committed data, so you restore with the default type, which replays every archived WAL segment. The <code class=\"inline-code\">--delta</code> option lets pgBackRest keep the files that are still correct and replace only the ones that differ from the backup, which can save a lot of time on a large cluster."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Never run this on a healthy production server",
+    "text": "These steps stop the main cluster and overwrite its data directory. Practise them on a test server. In a real incident, first copy the damaged data directory somewhere safe if you have the space, as Part 20 explained."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 17: Simulate the damage",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> Stop the cluster and delete <code class=\"inline-code\">global/pg_control</code>, the file PostgreSQL reads first at start-up. This is the same test the pgBackRest user guide uses."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl stop postgresql@18-main\nsudo -u postgres rm /var/lib/postgresql/18/main/global/pg_control\nsudo pg_ctlcluster 18 main start",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Error: /usr/lib/postgresql/18/bin/pg_ctl /usr/lib/postgresql/18/bin/pg_ctl start -D /var/lib/postgresql/18/main -l /var/log/postgresql/postgresql-18-main.log -s -o  -c config_file=\"/etc/postgresql/18/main/postgresql.conf\"  exited with status 1:\npostgres: could not find the database system\nExpected to find it in the directory \"/var/lib/postgresql/18/main\",\nbut could not open file \"/var/lib/postgresql/18/main/global/pg_control\": No such file or directory\npg_ctl: could not start server\nExamine the log output.",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 18: Restore with --delta and start",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres, with the cluster stopped.</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest --stanza=app --delta --log-level-console=info restore",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "P00   INFO: repo1: restore backup set 20261118-125017F, recovery will start at 2026-11-18 12:50:17\nP00   INFO: remove invalid files/links/paths from '/var/lib/postgresql/18/main'\nP00   INFO: write updated /var/lib/postgresql/18/main/postgresql.auto.conf\nP00   INFO: restore global/pg_control (performed last to ensure aborted restores cannot be started)\nP00   INFO: restore size = 29.7MB, file total = 1268\nP00   INFO: restore command end: completed successfully (292ms)",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18), timestamps removed"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "--delta",
+      "Restore using checksums: files that already match the backup are kept, others are replaced, and files that are not in the backup are removed. Without it, the data directory must be empty."
+     ],
+     [
+      "(no --type)",
+      "Type <code class=\"inline-code\">default</code>: recover to the end of the archived WAL stream."
+     ],
+     [
+      "(no --set)",
+      "Use the latest backup. Give <code class=\"inline-code\">--set=&lt;label&gt;</code> to choose another."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "pgBackRest restores <code class=\"inline-code\">pg_control</code> <b>last</b>, so a restore that is interrupted halfway leaves a cluster that will not start, instead of one that starts with half its files. Now start the cluster and check:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl start postgresql@18-main\nsudo -u postgres psql -d shop -Atc \"SELECT count(*) FROM orders;\"\nsudo -u postgres psql -Atc \"SELECT pg_is_in_recovery(), timeline_id FROM pg_control_checkpoint();\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "1500\nf|2",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All rows are there, including the ones we loaded back in Step 16, because recovery replayed every archived WAL segment. The cluster is out of recovery on <b>timeline 2</b>. A new timeline marks a new history after a restore, as you saw in Part 20."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Last step of every restore:</b> run <code class=\"inline-code\">check</code> and take a new full backup, so your newest backup belongs to the new timeline."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest --stanza=app --log-level-console=info check\nsudo -u postgres pgbackrest --stanza=app --type=full --log-level-console=info backup",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "P00   INFO: WAL segment 00000002000000000000000E successfully archived to '/var/lib/pgbackrest/archive/app/18-1/0000000200000000/00000002000000000000000E-2bb98e5a7b648ac934e514166c4b6831e06af2c2.zst' on repo1\nP00   INFO: check command end: completed successfully (128ms)\nP00   INFO: new backup label = 20261118-125046F\nP00   INFO: full backup size = 29.7MB, file total = 1268",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18), key lines only"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The archived segment name now starts with <code class=\"inline-code\">00000002</code>: WAL from timeline 2."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Monitor backups and archiving",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Check two things every day: when the last backup finished, and whether WAL archiving is failing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 19: Read backup status as JSON",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> <code class=\"inline-code\">info --output=json</code> is the machine-readable format the user guide keeps stable, unlike the text format. With <code class=\"inline-code\">jq</code> (<code class=\"inline-code\">sudo apt-get install -y jq</code>) a monitoring script can pull out single values:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest --output=json --stanza=app info | jq -r '.[0].status.message'\nsudo -u postgres pgbackrest --output=json --stanza=app info | jq -r '.[0].backup[-1].timestamp.stop | todate'\nsudo -u postgres pgbackrest --output=json --stanza=app info | jq -r '.[0].archive[-1].max'",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ok\n2026-11-18T12:50:47Z\n000000020000000000000010",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The lines are the stanza status, the time the newest backup finished, and the newest archived WAL segment. Alert if the status is not <code class=\"inline-code\">ok</code> or the last backup is older than your schedule allows. From PostgreSQL's side, a growing <code class=\"inline-code\">failed_count</code> in <code class=\"inline-code\">pg_stat_archiver</code> (Step 6) means WAL is piling up in <code class=\"inline-code\">pg_wal</code>. pgBackRest's detailed logs are in <code class=\"inline-code\">/var/log/pgbackrest/</code>, one file per stanza and command, such as <code class=\"inline-code\">app-backup.log</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Production layout: a dedicated repository host",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For production, the pgBackRest user guide recommends a <b>dedicated repository host</b>: a separate server that stores the backups and WAL archive, so losing the database server does not take the backups with it. The backup command runs on the repository host and talks to db1 over SSH (or pgBackRest's own TLS server)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "db1 (10.0.0.11, PostgreSQL 18)                 backup1 (10.0.0.21, pgBackRest only)\n  archive_command: archive-push  ---- WAL ---->  repo1-path=/var/lib/pgbackrest\n  postgres user                  <--- SSH --->   pgbackrest user, runs \"backup\" from cron",
+    "caption": "Dedicated repository host"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In short: the repository host's stanza gets <code class=\"inline-code\">pg1-host=db1</code> next to <code class=\"inline-code\">pg1-path</code>, and db1's file gets <code class=\"inline-code\">repo1-host=backup1</code> instead of <code class=\"inline-code\">repo1-path</code>. The pgBackRest version must be <b>exactly the same</b> on both hosts, or archiving and backups stop, and the repository is owned by a separate <code class=\"inline-code\">pgbackrest</code> user. A second repository in object storage such as S3 adds an off-site copy. The SSH key setup takes several steps of its own, so follow the user guide's \"Dedicated Repository Host\" section and finish with <code class=\"inline-code\">check</code> as in Step 6."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: [031]: the 'info' command must not be run as the root user",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "P00  ERROR: [031]: the 'info' command must not be run as the root user\n             HINT: running as root can create files that the regular user cannot access, causing later commands to fail.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You typed <code class=\"inline-code\">sudo pgbackrest ...</code>. Run every command as the owner of the cluster: <code class=\"inline-code\">sudo -u postgres pgbackrest ...</code>. Do not reach for <code class=\"inline-code\">--allow-root</code> to make the error go away."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: [087]: archive_mode must be enabled",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">check</code> or <code class=\"inline-code\">backup</code> ran before Step 4, or after you set <code class=\"inline-code\">archive_mode = on</code> but only reloaded. <code class=\"inline-code\">archive_mode</code> needs a restart: <code class=\"inline-code\">sudo systemctl restart postgresql@18-main</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: [082]: WAL segment ... was not archived before the 60000ms timeout",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "P00  ERROR: [082]: WAL segment 000000020000000000000011 was not archived before the 10000ms timeout\n             HINT: check the archive_command to ensure that all options are correct (especially --stanza).\n             HINT: check the PostgreSQL server log for errors.",
+    "caption": "Output (from a check run with --archive-timeout=10)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "WAL is not reaching the repository. Our test had a typo, <code class=\"inline-code\">--stanza=ap</code>, in <code class=\"inline-code\">archive_command</code>. The PostgreSQL log showed the real cause:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "P00  ERROR: [037]: option 'pg1-path' must be specified when relative wal paths are used\nLOG:  archive command failed with exit code 37\nDETAIL:  The failed archive command was: pgbackrest --stanza=ap archive-push pg_wal/000000020000000000000011",
+    "caption": "/var/log/postgresql/postgresql-18-main.log"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix the stanza name in <code class=\"inline-code\">postgresql.conf</code>, run <code class=\"inline-code\">SELECT pg_reload_conf();</code> (a reload is enough for <code class=\"inline-code\">archive_command</code>), and run <code class=\"inline-code\">check</code> again. PostgreSQL retries the waiting segments by itself; <code class=\"inline-code\">pg_stat_archiver.last_archived_wal</code> moves forward again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: [040]: unable to restore to path ... because it contains files",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "P00  ERROR: [040]: unable to restore to path '/var/lib/postgresql/18/restore' because it contains files\n             HINT: try using --delta if this is what you intended.",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A plain restore needs an empty data directory. Empty it as in Step 13, or use <code class=\"inline-code\">--delta</code> when you really mean to overwrite that cluster."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: [038]: unable to restore while PostgreSQL is running",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "P00  ERROR: [038]: unable to restore while PostgreSQL is running\n             HINT: presence of 'postmaster.pid' in '/var/lib/postgresql/18/main' indicates PostgreSQL is running.\n             HINT: remove 'postmaster.pid' only if PostgreSQL is not running.",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This check protects you. Stop the cluster with <code class=\"inline-code\">sudo systemctl stop postgresql@18-main</code> and try again. Only delete <code class=\"inline-code\">postmaster.pid</code> if you are sure no <code class=\"inline-code\">postgres</code> process is running, for example after a crash."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: [027]: no database found",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "pgBackRest could not match <code class=\"inline-code\">pg1-path</code> to the running cluster. Compare it with <code class=\"inline-code\">SHOW data_directory;</code> character by character. After a major upgrade the path changes (for example <code class=\"inline-code\">/17/main</code> to <code class=\"inline-code\">/18/main</code>)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Insert 10 rows into <code class=\"inline-code\">orders</code>, note the time, then <code class=\"inline-code\">UPDATE orders SET amount = 0;</code>. Restore a copy to port 5433 at the noted time and confirm the amounts are correct there.",
+      "items": []
+     },
+     {
+      "content": "Take an incremental backup, then use <code class=\"inline-code\">pgbackrest info</code> to find which other backups it depends on.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "1) Repeat Steps 12 to 15 with your own time in <code class=\"inline-code\">--target</code>; <code class=\"inline-code\">SELECT sum(amount) FROM orders;</code> on port 5433 should be non-zero, and on port 5432 it is 0. Drop the test cluster afterwards (Step 16). 2) Run <code class=\"inline-code\">sudo -u postgres pgbackrest --stanza=app --type=incr backup</code> then <code class=\"inline-code\">sudo -u postgres pgbackrest info</code>: the new incremental's <code class=\"inline-code\">backup reference total</code> line lists the full (and diff, if any) it needs. <code class=\"inline-code\">--set=&lt;label&gt;</code> with <code class=\"inline-code\">info</code> shows the full reference list."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Install and check\nsudo apt-get install -y pgbackrest\nsudo -u postgres pgbackrest version\n\n# Make an encryption passphrase, then edit /etc/pgbackrest.conf ([global] + [app] stanza)\nopenssl rand -base64 48\nsudo -u postgres nano /etc/pgbackrest.conf\n\n# postgresql.conf: archive_mode = on\n#                  archive_command = 'pgbackrest --stanza=app archive-push %p'\nsudo systemctl restart postgresql@18-main\n\n# Create and check the stanza\nsudo -u postgres pgbackrest --stanza=app --log-level-console=info stanza-create\nsudo -u postgres pgbackrest --stanza=app --log-level-console=info check\n\n# Backups\nsudo -u postgres pgbackrest --stanza=app --type=full --log-level-console=info backup\nsudo -u postgres pgbackrest --stanza=app --type=diff --log-level-console=info backup\nsudo -u postgres pgbackrest --stanza=app --type=incr --log-level-console=info backup\nsudo -u postgres pgbackrest info\n\n# Schedule (sudo -u postgres crontab -e)\n# 30 01 * * 0   pgbackrest --type=full --stanza=app backup\n# 30 01 * * 1-6 pgbackrest --type=diff --stanza=app backup\n\n# Point-in-time restore into an empty test cluster on port 5433\nsudo pg_createcluster 18 restore --port 5433\nsudo -u postgres find /var/lib/postgresql/18/restore -mindepth 1 -delete\nsudo -u postgres pgbackrest --stanza=app --pg1-path=/var/lib/postgresql/18/restore \\\n  --type=time \"--target=2026-11-18 12:49:37.647005+00\" \\\n  --target-action=promote --archive-mode=off restore\nsudo systemctl start postgresql@18-restore\nsudo pg_ctlcluster 18 restore stop && sudo pg_dropcluster 18 restore\n\n# Rebuild the main cluster in place (cluster stopped), then back up again\nsudo systemctl stop postgresql@18-main\nsudo -u postgres pgbackrest --stanza=app --delta --log-level-console=info restore\nsudo systemctl start postgresql@18-main\nsudo -u postgres pgbackrest --stanza=app --type=full backup\n\n# Monitoring\nsudo -u postgres pgbackrest --output=json --stanza=app info | jq -r '.[0].backup[-1].timestamp.stop | todate'\nsudo -u postgres psql -c \"SELECT failed_count, last_failed_wal FROM pg_stat_archiver;\"",
+    "caption": "Every command from this part, in order"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "pgBackRest is installed from PGDG and runs as the postgres user, never as root.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "/etc/pgbackrest.conf defines the repository, retention, encryption, zstd compression and the <code class=\"inline-code\">app</code> stanza with the exact <code class=\"inline-code\">pg1-path</code>.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "archive_command calls <code class=\"inline-code\">pgbackrest archive-push</code>, and archive_mode was turned on with a restart.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">stanza-create</code> and <code class=\"inline-code\">check</code> passed before the first backup.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Full, differential and incremental backups run from cron, and expire removes old backups and WAL automatically.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "You restored to a point in time into a test cluster with <code class=\"inline-code\">--archive-mode=off</code>, and rebuilt a damaged cluster with <code class=\"inline-code\">--delta</code>.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "You check backup age and <code class=\"inline-code\">pg_stat_archiver.failed_count</code> every day, and production keeps a copy of the repository off the database server.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 22 we make sure these backups really work: testing backups with regular restore drills and verification."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your backups are only as good as the WAL that goes with them. pgBackRest checks that for you.\n\nPart 21 of my PostgreSQL DBA series sets up pgBackRest on Ubuntu with PostgreSQL 18. What stood out:\n\n1. One line connects PostgreSQL to it: archive_command = 'pgbackrest --stanza=app archive-push %p'. archive_mode needs a restart, not a reload.\n2. Run pgbackrest check before the first backup. It forces a WAL switch and waits until the segment lands in the repository.\n3. A backup is not marked complete until the WAL it needs is archived. No more \"backup OK, restore fails\".\n4. repo1-retention-full=2 removes old backups and their WAL after each successful backup, so the disk does not fill up.\n5. Restore a test copy with --archive-mode=off. Otherwise the copy can push its WAL into your production repository.\n\nThe article also walks through a point-in-time restore after a DELETE without WHERE, and a --delta rebuild of a damaged cluster, with real output.\n\nWhich backup tool runs your PostgreSQL servers today: pg_basebackup scripts, pgBackRest, Barman, or a managed service?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #Backup",
+  "slides": [
+   {
+    "title": "PostgreSQL DBA Part 21: pgBackRest",
+    "body": "Production backups on Ubuntu with PostgreSQL 18, step by step"
+   },
+   {
+    "title": "What pgBackRest does for you",
+    "points": [
+     "Full, differential and incremental backups",
+     "Checks the WAL each backup needs is archived",
+     "Encryption, zstd compression and retention",
+     "Restores to any point in time"
+    ]
+   },
+   {
+    "title": "Step 1: connect the archive",
+    "code": "ALTER SYSTEM SET archive_mode = on;\nALTER SYSTEM SET archive_command =\n  'pgbackrest --stanza=app archive-push %p';\n-- archive_mode needs a restart",
+    "lang": "postgresql",
+    "body": "Or edit postgresql.conf. pg1-path in /etc/pgbackrest.conf must match data_directory exactly."
+   },
+   {
+    "title": "Step 2: create, check, back up",
+    "points": [
+     "stanza-create sets up the repository",
+     "check forces a WAL switch and waits for it",
+     "backup --type=full, then daily --type=diff",
+     "pgbackrest info lists every backup"
+    ]
+   },
+   {
+    "title": "Step 3: confirm archiving works",
+    "code": "SELECT archived_count,\n       last_archived_wal,\n       failed_count\n  FROM pg_stat_archiver;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 4: restore a test copy",
+    "points": [
+     "Empty data directory, cluster stopped",
+     "--type=time with --target before the mistake",
+     "--archive-mode=off so the copy never archives",
+     "Use --delta to rebuild a damaged cluster in place"
+    ]
+   }
+  ]
+ }
+}
