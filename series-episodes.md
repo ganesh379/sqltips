@@ -71,7 +71,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Compare service actions and configuration reload behavior; mention parameter context and safe maintenance.
   - Format: Terminal demo · Level: Beginner
   - Hook: Restart or reload? A DBA must know the difference.
-- [ ] Ep 016 | 2026-11-19 | Create and Drop Databases Safely
+- [x] Ep 016 | 2026-11-19 | Create and Drop Databases Safely (posted 2026-11-19 13:00, Buffer 6afd39f993fa11d37d0cc7e2)
   - Objective: Use CREATE DATABASE, template, owner and connection restrictions; explain destructive-operation precautions.
   - Format: SQL demo · Level: Beginner
   - Hook: Creating a database is easy; deleting one safely matters.
