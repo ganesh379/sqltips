@@ -1,0 +1,748 @@
+{
+ "ep": 17,
+ "total": 140,
+ "title": "Schemas and Search Path",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "Why did PostgreSQL find the wrong table?",
+   "cap": "Why did PostgreSQL find the *wrong table?*"
+  },
+  {
+   "say": "This is episode seventeen of the PostgreSQL DBA series: schemas, the search path, and qualified names.",
+   "cap": "Episode 17: *schemas* and the *search path.*",
+   "cue": "schemas"
+  },
+  {
+   "say": "A database contains schemas, and schemas contain tables, views, functions and other named objects.",
+   "cap": "A *database* holds *schemas.* Schemas hold *objects.*",
+   "cue": "schemas"
+  },
+  {
+   "say": "The docs compare schemas to directories, except that schemas cannot be nested.",
+   "cap": "Like *directories,* but *no nesting.*",
+   "cue": "directories"
+  },
+  {
+   "say": "The same name can live in different schemas. public dot orders and sales dot orders are two separate tables.",
+   "cap": "*public.orders* and *sales.orders* are *different* tables.",
+   "cue": "separate"
+  },
+  {
+   "say": "Every new database has a schema called public, and by default, new tables usually land there.",
+   "cap": "Every new database has a *public* schema.",
+   "cue": "public"
+  },
+  {
+   "say": "Type just orders, and PostgreSQL walks the search path, a list of schemas, taking the first match.",
+   "cap": "*search_path:* a list. The *first match* wins.",
+   "cue": "first"
+  },
+  {
+   "say": "The default is dollar user, then public. A schema named after your role comes first, if it exists.",
+   "cap": "Default: *\"$user\", public.* Missing ones are *skipped.*",
+   "cue": "exists"
+  },
+  {
+   "say": "pg_catalog is always searched too, and if the path does not list it, it goes first.",
+   "cap": "*pg_catalog* is *always* searched, first by default.",
+   "cue": "always"
+  },
+  {
+   "say": "A real test: orders exists in public and in sales. With the default path, we read the public copy.",
+   "cap": "Default path: *orders* means *public.orders.*",
+   "cue": "default"
+  },
+  {
+   "say": "Set the search path to sales, then public, and the same query reads the sales copy.",
+   "cap": "Same query, now it reads *sales.orders.*",
+   "cue": "sales"
+  },
+  {
+   "say": "Same SQL, different table. Change the path in a role or database setting, and unqualified names quietly change meaning.",
+   "cap": "Same SQL, *different table.* Nothing warns you.",
+   "cue": "quietly"
+  },
+  {
+   "say": "To see the resolved path, call current_schemas with true. Here: pg_catalog, sales, public.",
+   "cap": "*current_schemas(true)* shows the *resolved* path.",
+   "cue": "resolved"
+  },
+  {
+   "say": "If no schema in the path has the table, you get relation does not exist, even if another schema has it.",
+   "cap": "Not on the path? *relation does not exist.*",
+   "cue": "exist"
+  },
+  {
+   "say": "And with an empty search path, CREATE TABLE fails with: no schema has been selected to create in.",
+   "cap": "Empty path: *no schema* has been selected.",
+   "cue": "empty"
+  },
+  {
+   "say": "Now security. A schema on your search path is a schema you trust.",
+   "cap": "A schema on your path is a schema you *trust.*",
+   "cue": "trust"
+  },
+  {
+   "say": "The docs warn: anyone who can create objects there can take control, and run functions as though you ran them.",
+   "cap": "A malicious user can *take control* of your query.",
+   "cue": "control"
+  },
+  {
+   "say": "Since PostgreSQL fifteen, a fresh cluster stops everyone creating in public. Our test user got: permission denied.",
+   "cap": "Since 15: *permission denied* to create in *public.*",
+   "cue": "denied"
+  },
+  {
+   "say": "Upgraded from fourteen or older? The old grant may remain. The fix: revoke create on schema public from public.",
+   "cap": "Upgraded from 14? *REVOKE CREATE* on public.",
+   "cue": "fix"
+  },
+  {
+   "say": "Reading needs a privilege too. Without usage on a schema, you get: permission denied for schema sales.",
+   "cap": "No *USAGE* on a schema? *No access.*",
+   "cue": "usage"
+  },
+  {
+   "say": "DBA takeaway, a common practice: qualify names in scripts, and keep untrusted writable schemas off the path.",
+   "cap": "*Qualify* names. Keep *writable* schemas off the path.",
+   "cue": "qualify"
+  },
+  {
+   "say": "Recap: schemas are namespaces. The search path picks the first match, and pg_catalog is always searched.",
+   "cap": "Recap: *namespaces,* *first match,* *pg_catalog.*",
+   "cue": "namespaces"
+  },
+  {
+   "say": "Qualified names are explicit, and the path is a trust list.",
+   "cap": "*Qualify* names. The path is a *trust list.*",
+   "cue": "trust"
+  },
+  {
+   "say": "Next up: roles and users in PostgreSQL. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *roles vs users.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "Why did PostgreSQL find the *wrong table?*",
+   "sub": "Episode 17 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 17 · INSTALLATION & ADMINISTRATION",
+   "title": "Schemas and Search Path",
+   "sub": "namespaces, resolution, security"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 6,
+   "heading": "A database holds schemas",
+   "nodes": [
+    {
+     "id": "db",
+     "label": "appdb",
+     "sub": "one database",
+     "x": 540,
+     "y": 500,
+     "w": 360,
+     "h": 130,
+     "icon": "database",
+     "color": "blue",
+     "shape": "db",
+     "at": 2
+    },
+    {
+     "id": "pub",
+     "label": "public",
+     "sub": "schema",
+     "x": 270,
+     "y": 790,
+     "w": 340,
+     "h": 130,
+     "icon": "folder",
+     "color": "cyan",
+     "at": 2
+    },
+    {
+     "id": "sal",
+     "label": "sales",
+     "sub": "schema",
+     "x": 810,
+     "y": 790,
+     "w": 340,
+     "h": 130,
+     "icon": "folder",
+     "color": "purple",
+     "at": 2
+    },
+    {
+     "id": "po",
+     "label": "public.orders",
+     "sub": "table",
+     "x": 270,
+     "y": 1090,
+     "w": 340,
+     "h": 130,
+     "icon": "table",
+     "color": "cyan",
+     "at": 4
+    },
+    {
+     "id": "so",
+     "label": "sales.orders",
+     "sub": "table",
+     "x": 810,
+     "y": 1090,
+     "w": 340,
+     "h": 130,
+     "icon": "table",
+     "color": "purple",
+     "at": 4
+    },
+    {
+     "id": "new",
+     "label": "New tables",
+     "sub": "default: public",
+     "x": 270,
+     "y": 1290,
+     "w": 300,
+     "h": 110,
+     "icon": "file",
+     "color": "green",
+     "shape": "pill",
+     "at": 5
+    }
+   ],
+   "edges": [
+    {
+     "from": "db",
+     "to": "pub",
+     "at": 2,
+     "color": "cyan",
+     "flow": true
+    },
+    {
+     "from": "db",
+     "to": "sal",
+     "at": 2,
+     "color": "purple",
+     "flow": true
+    },
+    {
+     "from": "pub",
+     "to": "po",
+     "at": 4,
+     "color": "cyan"
+    },
+    {
+     "from": "sal",
+     "to": "so",
+     "at": 4,
+     "color": "purple"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "db"
+    },
+    {
+     "at": 3,
+     "id": "sal"
+    },
+    {
+     "at": 4,
+     "id": "so"
+    },
+    {
+     "at": 5,
+     "id": "pub"
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 6,
+   "to": 9,
+   "heading": "How a plain name is resolved",
+   "nodes": [
+    {
+     "id": "q",
+     "label": "FROM orders",
+     "sub": "no schema given",
+     "x": 540,
+     "y": 500,
+     "w": 380,
+     "h": 120,
+     "icon": "search",
+     "color": "orange",
+     "shape": "pill",
+     "at": 6
+    },
+    {
+     "id": "sp",
+     "label": "search_path",
+     "sub": "list of schemas",
+     "x": 790,
+     "y": 1000,
+     "w": 340,
+     "h": 130,
+     "icon": "layers",
+     "color": "amber",
+     "at": 6
+    },
+    {
+     "id": "user",
+     "label": "\"$user\"",
+     "sub": "if it exists",
+     "x": 290,
+     "y": 730,
+     "w": 340,
+     "h": 130,
+     "icon": "users",
+     "color": "blue",
+     "at": 7
+    },
+    {
+     "id": "pub",
+     "label": "public",
+     "sub": "has orders",
+     "x": 290,
+     "y": 1000,
+     "w": 340,
+     "h": 130,
+     "icon": "folder",
+     "color": "cyan",
+     "at": 7
+    },
+    {
+     "id": "res",
+     "label": "public.orders",
+     "sub": "first match wins",
+     "x": 290,
+     "y": 1260,
+     "w": 340,
+     "h": 120,
+     "icon": "check",
+     "color": "green",
+     "at": 7
+    },
+    {
+     "id": "cat",
+     "label": "pg_catalog",
+     "sub": "always searched",
+     "x": 790,
+     "y": 730,
+     "w": 340,
+     "h": 130,
+     "icon": "book",
+     "color": "purple",
+     "at": 8
+    }
+   ],
+   "edges": [
+    {
+     "from": "q",
+     "to": "user",
+     "at": 7,
+     "color": "blue"
+    },
+    {
+     "from": "user",
+     "to": "pub",
+     "label": "then",
+     "at": 7,
+     "color": "cyan"
+    },
+    {
+     "from": "pub",
+     "to": "res",
+     "at": 7,
+     "flow": true,
+     "color": "green"
+    },
+    {
+     "from": "q",
+     "to": "cat",
+     "label": "first",
+     "at": 8,
+     "dashed": true,
+     "color": "purple"
+    }
+   ],
+   "focus": [
+    {
+     "at": 6,
+     "id": "sp"
+    },
+    {
+     "at": 7,
+     "id": "user"
+    },
+    {
+     "at": 8,
+     "id": "cat"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 9,
+   "to": 11,
+   "heading": "Same query, two answers",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SHOW search_path;",
+     "at": 9,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "   search_path",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": " \"$user\", public",
+     "at": 9
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT note FROM orders;",
+     "at": 9,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": " public copy",
+     "at": 9
+    },
+    {
+     "kind": "cmd",
+     "text": "SET search_path TO sales, public;",
+     "at": 10,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "SET",
+     "at": 10
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT note FROM orders;",
+     "at": 10,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": " sales copy",
+     "at": 10
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 11,
+   "to": 12,
+   "kind": "warning",
+   "title": "Same SQL, different table",
+   "text": "Unqualified names follow search_path, which a role or database setting can change."
+  },
+  {
+   "type": "terminal",
+   "from": 12,
+   "to": 15,
+   "heading": "See what PostgreSQL sees",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT current_schemas(true);",
+     "at": 12,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": " {pg_catalog,sales,public}",
+     "at": 12
+    },
+    {
+     "kind": "comment",
+     "text": "-- default path; invoices is in sales",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT * FROM invoices;",
+     "at": 13,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  relation \"invoices\"",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "does not exist",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "text": "SET search_path = '';",
+     "at": 14,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE TABLE t1 (id int);",
+     "at": 14,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  no schema has been selected",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "to create in",
+     "at": 14
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 15,
+   "to": 17,
+   "heading": "Why the path is a trust list",
+   "nodes": [
+    {
+     "id": "you",
+     "label": "Your query",
+     "sub": "plain names",
+     "x": 270,
+     "y": 540,
+     "w": 340,
+     "h": 130,
+     "icon": "search",
+     "color": "blue",
+     "shape": "pill",
+     "at": 15
+    },
+    {
+     "id": "path",
+     "label": "search_path",
+     "sub": "trusted schemas",
+     "x": 810,
+     "y": 540,
+     "w": 340,
+     "h": 130,
+     "icon": "layers",
+     "color": "amber",
+     "at": 15
+    },
+    {
+     "id": "sch",
+     "label": "Shared schema",
+     "sub": "writable, on path",
+     "x": 540,
+     "y": 850,
+     "w": 380,
+     "h": 130,
+     "icon": "folder",
+     "color": "orange",
+     "at": 15
+    },
+    {
+     "id": "bad",
+     "label": "Other user",
+     "sub": "can CREATE there",
+     "x": 270,
+     "y": 1170,
+     "w": 380,
+     "h": 130,
+     "icon": "alert",
+     "color": "red",
+     "at": 16
+    },
+    {
+     "id": "fn",
+     "label": "Their function",
+     "sub": "runs as you",
+     "x": 810,
+     "y": 1170,
+     "w": 380,
+     "h": 130,
+     "icon": "bolt",
+     "color": "red",
+     "at": 16
+    }
+   ],
+   "edges": [
+    {
+     "from": "you",
+     "to": "path",
+     "at": 15,
+     "color": "blue"
+    },
+    {
+     "from": "path",
+     "to": "sch",
+     "at": 15,
+     "flow": true,
+     "color": "amber"
+    },
+    {
+     "from": "bad",
+     "to": "sch",
+     "label": "creates",
+     "at": 16,
+     "color": "red"
+    },
+    {
+     "from": "sch",
+     "to": "fn",
+     "label": "resolves to",
+     "at": 16,
+     "flow": true,
+     "color": "red"
+    }
+   ],
+   "focus": [
+    {
+     "at": 15,
+     "id": "sch"
+    },
+    {
+     "at": 16,
+     "id": "fn"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 17,
+   "to": 20,
+   "heading": "Privileges on schemas",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- as app_user:",
+     "at": 17
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE TABLE t2 (id int);",
+     "at": 17,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied for schema",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "public",
+     "at": 17
+    },
+    {
+     "kind": "comment",
+     "text": "-- fix for upgraded databases:",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "text": "REVOKE CREATE ON SCHEMA public",
+     "at": 18,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "FROM PUBLIC;",
+     "at": 18,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "REVOKE",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT note FROM sales.orders;",
+     "at": 19,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied for schema",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "sales",
+     "at": 19
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "tip",
+   "title": "DBA takeaway",
+   "text": "A common practice: qualify names in scripts, keep writable schemas off shared paths."
+  },
+  {
+   "type": "checklist",
+   "from": 21,
+   "to": 23,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 21,
+     "title": "Schemas are namespaces"
+    },
+    {
+     "at": 21,
+     "title": "search_path: first match wins"
+    },
+    {
+     "at": 21,
+     "title": "pg_catalog is always searched"
+    },
+    {
+     "at": 22,
+     "title": "Qualified names are explicit"
+    },
+    {
+     "at": 22,
+     "title": "The path is a trust list"
+    },
+    {
+     "at": 22,
+     "title": "public: no CREATE for all (15+)"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 23,
+   "to": 24,
+   "next": "Ep 18 · Roles vs users"
+  }
+ ]
+}

@@ -1,0 +1,13 @@
+Why did PostgreSQL find the wrong table? The search path decides.
+
+A PostgreSQL schema is a namespace inside a database. public.orders and sales.orders are two different tables. Every new database has a schema called public.
+
+When you write a plain name like orders, PostgreSQL walks search_path and takes the first match. The default is "$user", public, and pg_catalog is always searched, first unless you list it. Change search_path for a role or database and the same query can read a different table. Not on the path? ERROR: relation does not exist.
+
+Security for a PostgreSQL DBA: a schema on your search_path is a schema you trust. Since PostgreSQL 15, a fresh cluster no longer lets everyone CREATE in public ("permission denied for schema public"). Databases upgraded from 14 or older may still need REVOKE CREATE ON SCHEMA public FROM PUBLIC. A common practice: use schema-qualified names in scripts.
+
+Episode 17 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql
