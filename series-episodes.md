@@ -75,7 +75,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Use CREATE DATABASE, template, owner and connection restrictions; explain destructive-operation precautions.
   - Format: SQL demo · Level: Beginner
   - Hook: Creating a database is easy; deleting one safely matters.
-- [ ] Ep 017 | 2026-11-20 | Schemas and Search Path
+- [x] Ep 017 | 2026-11-20 | Schemas and Search Path (posted 2026-11-20 13:00, Buffer 6afe8a3ff6b6aa0cd4a452e1)
   - Objective: Explain schema namespaces, search_path resolution, security implications and qualified names.
   - Format: Animated namespace · Level: Beginner
   - Hook: Why did PostgreSQL find the wrong table?
