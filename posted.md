@@ -51,3 +51,4 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-18 | 13:00 | Instagram | Series Ep 015 | Start, Stop, Restart and Reload PostgreSQL | reels/2026-11-18-1300 | 6afbeacb4b26315855c4c0af
 - 2026-11-19 | 13:00 | Instagram | Series Ep 016 | Create and Drop Databases Safely | reels/2026-11-19-1300 | 6afd39f993fa11d37d0cc7e2
 - 2026-11-20 | 13:00 | Instagram | Series Ep 017 | Schemas and Search Path | reels/2026-11-20-1300 | 6afe8a3ff6b6aa0cd4a452e1
+- 2026-11-21 | 13:00 | Instagram | Series Ep 018 | Roles vs Users: PostgreSQL Role Model | reels/2026-11-21-1300 | 6affdcebd5f8acdd0d749aa3

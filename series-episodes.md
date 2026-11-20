@@ -79,7 +79,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain schema namespaces, search_path resolution, security implications and qualified names.
   - Format: Animated namespace · Level: Beginner
   - Hook: Why did PostgreSQL find the wrong table?
-- [ ] Ep 018 | 2026-11-21 | Roles vs Users: PostgreSQL Role Model
+- [x] Ep 018 | 2026-11-21 | Roles vs Users: PostgreSQL Role Model (posted 2026-11-21 13:00, Buffer 6affdcebd5f8acdd0d749aa3)
   - Objective: Explain roles, LOGIN, INHERIT, role membership and least privilege; user is a role with LOGIN.
   - Format: Role hierarchy animation · Level: Beginner
   - Hook: PostgreSQL users and roles are not two separate systems.
