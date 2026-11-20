@@ -1,0 +1,743 @@
+{
+ "ep": 18,
+ "total": 140,
+ "title": "Roles vs Users: PostgreSQL Role Model",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "PostgreSQL users and roles are not two separate systems.",
+   "cap": "Users and roles are *not two systems.*"
+  },
+  {
+   "say": "This is episode eighteen of the PostgreSQL DBA series. Today: the role model, LOGIN, membership, and inheritance.",
+   "cap": "Episode 18: *roles,* *LOGIN* and *membership.*",
+   "cue": "role"
+  },
+  {
+   "say": "In PostgreSQL there is only one kind of account. It is called a role.",
+   "cap": "Only one kind of account: a *role.*",
+   "cue": "role"
+  },
+  {
+   "say": "The docs say a role can act as a user, a group, or both. It depends on how you set it up.",
+   "cap": "A role can be a *user,* a *group,* or *both.*",
+   "cue": "group"
+  },
+  {
+   "say": "So what is a user? Simply a role with the LOGIN attribute.",
+   "cap": "A user is a role with *LOGIN.*",
+   "cue": "LOGIN"
+  },
+  {
+   "say": "CREATE USER is the same as CREATE ROLE, except that it adds LOGIN by default. Even its output says CREATE ROLE.",
+   "cap": "*CREATE USER* = *CREATE ROLE* + LOGIN.",
+   "cue": "output"
+  },
+  {
+   "say": "Roles are global across the whole cluster, not per database. And they are separate from operating system users.",
+   "cap": "Roles are *cluster-wide,* not per database.",
+   "cue": "separate"
+  },
+  {
+   "say": "A fresh cluster starts with one superuser role, often named postgres. A superuser bypasses every permission check, except the right to log in.",
+   "cap": "*postgres* superuser bypasses *all* checks but login.",
+   "cue": "bypasses"
+  },
+  {
+   "say": "Let's test it. We create a group role called readers, and app_user with CREATE USER.",
+   "cap": "Test: *readers* and *app_user.*",
+   "cue": "app_user"
+  },
+  {
+   "say": "The pg_roles view shows it: readers cannot log in, app_user can. Both inherit by default.",
+   "cap": "*rolcanlogin:* readers f, app_user t.",
+   "cue": "inherit"
+  },
+  {
+   "say": "Connect as readers, and PostgreSQL refuses: role readers is not permitted to log in.",
+   "cap": "*not permitted to log in*",
+   "cue": "refuses"
+  },
+  {
+   "say": "Now membership. We grant SELECT on orders to readers, then grant readers to app_user.",
+   "cap": "Privileges go to the *group.* People join it.",
+   "cue": "membership"
+  },
+  {
+   "say": "app_user never got SELECT directly, yet it can read orders, because members inherit the group's privileges.",
+   "cap": "app_user *inherits* SELECT from readers.",
+   "cue": "inherit"
+  },
+  {
+   "say": "In psql sixteen, backslash d r g lists role grants, with their options.",
+   "cap": "*\\drg* lists role grants.",
+   "cue": "options"
+  },
+  {
+   "say": "Our grant shows two options: INHERIT and SET. Output trimmed.",
+   "cap": "Options: *INHERIT* and *SET.*",
+   "cue": "INHERIT"
+  },
+  {
+   "say": "INHERIT means the group's privileges apply automatically. SET means the member may SET ROLE to become the group.",
+   "cap": "*INHERIT:* automatic. *SET:* can become the group.",
+   "cue": "SET"
+  },
+  {
+   "say": "A common mistake: assuming attributes like CREATEDB flow down to members. The docs say they never do.",
+   "cap": "Myth: *attributes* are inherited.",
+   "cue": "never"
+  },
+  {
+   "say": "Our test: app_user is a member of dbcreators, which has CREATEDB. Yet CREATE DATABASE fails with permission denied.",
+   "cap": "Member of a CREATEDB role: *permission denied.*",
+   "cue": "fails"
+  },
+  {
+   "say": "After SET ROLE dbcreators, the same command works.",
+   "cap": "*SET ROLE* first, then it works.",
+   "cue": "works"
+  },
+  {
+   "say": "LOGIN, SUPERUSER, CREATEDB and CREATEROLE are never inherited. To use them, you SET ROLE.",
+   "cap": "Special attributes: *never inherited.*",
+   "cue": "never"
+  },
+  {
+   "say": "DBA takeaway, a common practice: least privilege.",
+   "cap": "A common practice: *least privilege.*",
+   "cue": "least"
+  },
+  {
+   "say": "Grant privileges to group roles, and give login roles only the memberships they need.",
+   "cap": "Grant to *groups,* not people.",
+   "cue": "group"
+  },
+  {
+   "say": "And the docs advise doing most of your work as a role that is not a superuser.",
+   "cap": "Do daily work as a *non-superuser.*",
+   "cue": "superuser"
+  },
+  {
+   "say": "Recap: everything is a role, and a user is just a role with LOGIN. Roles are cluster-wide.",
+   "cap": "Recap: *one role model,* LOGIN makes a user.",
+   "cue": "everything"
+  },
+  {
+   "say": "Members inherit privileges by default, but special attributes need SET ROLE.",
+   "cap": "Privileges *inherit.* Attributes need *SET ROLE.*",
+   "cue": "attributes"
+  },
+  {
+   "say": "Next up: how to create a read-only user correctly. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *read-only users.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "Users and roles are *not two separate systems.*",
+   "sub": "Episode 18 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 18 \u00b7 INSTALLATION & ADMINISTRATION",
+   "title": "Roles vs Users",
+   "sub": "LOGIN, membership, inheritance"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 5,
+   "heading": "One kind of account: a role",
+   "nodes": [
+    {
+     "id": "role",
+     "label": "Role",
+     "sub": "only account type",
+     "x": 540,
+     "y": 520,
+     "w": 380,
+     "h": 140,
+     "icon": "users",
+     "color": "orange",
+     "shape": "pill",
+     "at": 2
+    },
+    {
+     "id": "user",
+     "label": "User",
+     "sub": "role with LOGIN",
+     "x": 270,
+     "y": 840,
+     "w": 340,
+     "h": 140,
+     "icon": "key",
+     "color": "blue",
+     "at": 3
+    },
+    {
+     "id": "group",
+     "label": "Group",
+     "sub": "usually NOLOGIN",
+     "x": 810,
+     "y": 840,
+     "w": 340,
+     "h": 140,
+     "icon": "layers",
+     "color": "purple",
+     "at": 3
+    },
+    {
+     "id": "both",
+     "label": "Both",
+     "sub": "login + members",
+     "x": 540,
+     "y": 1150,
+     "w": 340,
+     "h": 130,
+     "icon": "sync",
+     "color": "cyan",
+     "at": 3
+    },
+    {
+     "id": "login",
+     "label": "LOGIN",
+     "sub": "can connect",
+     "x": 270,
+     "y": 1300,
+     "w": 260,
+     "h": 110,
+     "icon": "lock",
+     "color": "green",
+     "shape": "pill",
+     "at": 4
+    }
+   ],
+   "edges": [
+    {
+     "from": "role",
+     "to": "user",
+     "at": 3,
+     "color": "blue",
+     "flow": true
+    },
+    {
+     "from": "role",
+     "to": "group",
+     "at": 3,
+     "color": "purple",
+     "flow": true
+    },
+    {
+     "from": "role",
+     "to": "both",
+     "at": 3,
+     "color": "cyan",
+     "dashed": true
+    },
+    {
+     "from": "user",
+     "to": "login",
+     "label": "has",
+     "at": 4,
+     "color": "green"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "role"
+    },
+    {
+     "at": 3,
+     "id": "group"
+    },
+    {
+     "at": 4,
+     "id": "user"
+    }
+   ]
+  },
+  {
+   "type": "compare",
+   "from": 5,
+   "to": 6,
+   "heading": "One default differs",
+   "left": {
+    "title": "CREATE ROLE",
+    "color": "purple",
+    "rows": [
+     "NOLOGIN by default",
+     "Typical for groups",
+     "Output: CREATE ROLE"
+    ]
+   },
+   "right": {
+    "title": "CREATE USER",
+    "color": "blue",
+    "rows": [
+     "LOGIN by default",
+     "Typical for people, apps",
+     "Output: CREATE ROLE"
+    ]
+   }
+  },
+  {
+   "type": "diagram",
+   "from": 6,
+   "to": 8,
+   "heading": "Roles live at cluster level",
+   "nodes": [
+    {
+     "id": "cl",
+     "label": "Cluster db1",
+     "sub": "one instance",
+     "x": 540,
+     "y": 500,
+     "w": 380,
+     "h": 130,
+     "icon": "server",
+     "color": "orange",
+     "at": 6
+    },
+    {
+     "id": "roles",
+     "label": "Roles",
+     "sub": "shared by all DBs",
+     "x": 540,
+     "y": 760,
+     "w": 380,
+     "h": 130,
+     "icon": "users",
+     "color": "blue",
+     "at": 6
+    },
+    {
+     "id": "d1",
+     "label": "appdb",
+     "sub": "database",
+     "x": 270,
+     "y": 1040,
+     "w": 300,
+     "h": 130,
+     "icon": "database",
+     "color": "cyan",
+     "shape": "db",
+     "at": 6
+    },
+    {
+     "id": "d2",
+     "label": "db2",
+     "sub": "database",
+     "x": 810,
+     "y": 1040,
+     "w": 300,
+     "h": 130,
+     "icon": "database",
+     "color": "cyan",
+     "shape": "db",
+     "at": 6
+    },
+    {
+     "id": "os",
+     "label": "OS users",
+     "sub": "separate",
+     "x": 270,
+     "y": 1290,
+     "w": 300,
+     "h": 120,
+     "icon": "terminal",
+     "color": "red",
+     "at": 6
+    },
+    {
+     "id": "su",
+     "label": "postgres",
+     "sub": "bootstrap superuser",
+     "x": 810,
+     "y": 1290,
+     "w": 340,
+     "h": 120,
+     "icon": "shield",
+     "color": "amber",
+     "at": 7
+    }
+   ],
+   "edges": [
+    {
+     "from": "cl",
+     "to": "roles",
+     "at": 6,
+     "color": "orange",
+     "flow": true
+    },
+    {
+     "from": "roles",
+     "to": "d1",
+     "at": 6,
+     "color": "blue"
+    },
+    {
+     "from": "roles",
+     "to": "d2",
+     "at": 6,
+     "color": "blue"
+    }
+   ],
+   "focus": [
+    {
+     "at": 6,
+     "id": "roles"
+    },
+    {
+     "at": 7,
+     "id": "su"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 8,
+   "to": 11,
+   "heading": "Users vs group roles",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "CREATE ROLE readers;",
+     "at": 8,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "CREATE ROLE",
+     "at": 8
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE USER app_user;",
+     "at": 8,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "CREATE ROLE",
+     "at": 8
+    },
+    {
+     "kind": "comment",
+     "text": "-- pg_roles: rolcanlogin, rolinherit",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": " readers  | f | t",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": " app_user | t | t",
+     "at": 9
+    },
+    {
+     "kind": "cmd",
+     "text": "psql -U readers -d appdb",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "FATAL:  role \"readers\" is not",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "permitted to log in",
+     "at": 10
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 11,
+   "to": 13,
+   "heading": "Grant to the group, not the person",
+   "nodes": [
+    {
+     "id": "t",
+     "label": "orders",
+     "sub": "table",
+     "x": 540,
+     "y": 490,
+     "w": 340,
+     "h": 130,
+     "icon": "table",
+     "color": "cyan",
+     "at": 11
+    },
+    {
+     "id": "g",
+     "label": "readers",
+     "sub": "group, NOLOGIN",
+     "x": 540,
+     "y": 790,
+     "w": 360,
+     "h": 140,
+     "icon": "layers",
+     "color": "purple",
+     "at": 11
+    },
+    {
+     "id": "u",
+     "label": "app_user",
+     "sub": "login role",
+     "x": 540,
+     "y": 1090,
+     "w": 360,
+     "h": 140,
+     "icon": "key",
+     "color": "blue",
+     "at": 11
+    },
+    {
+     "id": "ok",
+     "label": "can SELECT",
+     "sub": "inherited",
+     "x": 540,
+     "y": 1290,
+     "w": 320,
+     "h": 110,
+     "icon": "check",
+     "color": "green",
+     "shape": "pill",
+     "at": 12
+    }
+   ],
+   "edges": [
+    {
+     "from": "g",
+     "to": "t",
+     "label": "SELECT",
+     "at": 11,
+     "color": "cyan"
+    },
+    {
+     "from": "u",
+     "to": "g",
+     "label": "member of",
+     "at": 11,
+     "color": "purple",
+     "flow": true
+    },
+    {
+     "from": "u",
+     "to": "ok",
+     "at": 12,
+     "color": "green",
+     "flow": true
+    }
+   ],
+   "focus": [
+    {
+     "at": 11,
+     "id": "g"
+    },
+    {
+     "at": 12,
+     "id": "u"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 13,
+   "to": 16,
+   "heading": "Membership options",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "GRANT readers TO app_user;",
+     "at": 13,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "GRANT ROLE",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "text": "\\drg",
+     "at": 13,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": " Role name | Member of | Options",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": " app_user  | readers   | INHERIT, SET",
+     "at": 14
+    },
+    {
+     "kind": "comment",
+     "text": "-- INHERIT: privileges apply at once",
+     "at": 15
+    },
+    {
+     "kind": "comment",
+     "text": "-- SET: may SET ROLE readers",
+     "at": 15
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 16,
+   "to": 17,
+   "kind": "myth",
+   "title": "Attributes are inherited",
+   "text": "LOGIN, SUPERUSER, CREATEDB and CREATEROLE are never inherited by members."
+  },
+  {
+   "type": "terminal",
+   "from": 17,
+   "to": 20,
+   "heading": "Attributes need SET ROLE",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- dbcreators has CREATEDB",
+     "at": 17
+    },
+    {
+     "kind": "comment",
+     "text": "-- as app_user, a member:",
+     "at": 17
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE DATABASE testdb;",
+     "at": 17,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied to",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "create database",
+     "at": 17
+    },
+    {
+     "kind": "cmd",
+     "text": "SET ROLE dbcreators;",
+     "at": 18,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": "SET",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE DATABASE testdb;",
+     "at": 18,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": "CREATE DATABASE",
+     "at": 18
+    },
+    {
+     "kind": "comment",
+     "text": "-- attributes need SET ROLE",
+     "at": 19
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 20,
+   "to": 23,
+   "heading": "DBA takeaway",
+   "columns": 1,
+   "items": [
+    {
+     "at": 20,
+     "icon": "lock",
+     "title": "Least privilege",
+     "text": "A common practice: give each role only what it needs.",
+     "color": "green"
+    },
+    {
+     "at": 21,
+     "icon": "layers",
+     "title": "Grant to group roles",
+     "text": "Privileges go to groups like readers, not to each person.",
+     "color": "purple"
+    },
+    {
+     "at": 21,
+     "icon": "key",
+     "title": "Lean login roles",
+     "text": "Give login roles only the memberships they need.",
+     "color": "blue"
+    },
+    {
+     "at": 22,
+     "icon": "shield",
+     "title": "Avoid daily superuser",
+     "text": "Docs: do most work as a role that is not a superuser.",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "checklist",
+   "from": 23,
+   "to": 25,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 23,
+     "title": "Everything is a role"
+    },
+    {
+     "at": 23,
+     "title": "User = role with LOGIN"
+    },
+    {
+     "at": 23,
+     "title": "Roles are cluster-wide"
+    },
+    {
+     "at": 24,
+     "title": "Members inherit privileges"
+    },
+    {
+     "at": 24,
+     "title": "Attributes need SET ROLE"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 25,
+   "to": 26,
+   "next": "Ep 19 \u00b7 Read-only users"
+  }
+ ]
+}

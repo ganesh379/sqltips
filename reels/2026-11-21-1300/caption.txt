@@ -1,0 +1,13 @@
+PostgreSQL users and roles are not two separate systems. Here is the real role model.
+
+In PostgreSQL there is only one kind of account: a role. A "user" is simply a role with the LOGIN attribute. CREATE USER is the same as CREATE ROLE, except LOGIN is the default, and its output even says CREATE ROLE. Roles are global to the whole cluster, not per database.
+
+Group roles usually have NOLOGIN. Try to connect as one and you get: FATAL: role "readers" is not permitted to log in. Grant privileges to the group, then GRANT readers TO app_user. Members inherit the group's privileges by default, and psql's \drg shows each grant's INHERIT and SET options.
+
+The mistake many PostgreSQL DBA beginners make: attributes like LOGIN, SUPERUSER, CREATEDB and CREATEROLE are never inherited. A member of a CREATEDB role still gets "permission denied to create database" until it runs SET ROLE. A common practice is least privilege: grant to group roles, and do daily work as a non-superuser.
+
+Episode 18 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql

@@ -26,7 +26,7 @@ WORDS = {
     "psql": "P-S-Q-L", "PSQL": "P-S-Q-L", "appdb": "app D-B", "reportdb": "report D-B",
     "fdw": "F-D-W", "datname": "dat-name",
     # create and drop databases (ep 16)
-    "CREATEDB": "create D-B", "template0": "template zero", "template1": "template one",
+    "CREATEDB": "create D-B", "CREATEROLE": "create role", "INHERIT": "inherit", "NOINHERIT": "no inherit", "NOLOGIN": "no login", "dbcreators": "D-B creators", "template0": "template zero", "template1": "template one",
     "datallowconn": "dat allow conn",
     # psql meta-commands (ep 10)
     "conninfo": "conn-info", "du": "D-U", "dt": "D-T",
