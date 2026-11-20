@@ -1,0 +1,1386 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 22: Testing Backups with Restore Drills",
+ "slug": "postgresql-dba-part-22-testing-backups-restore-drills",
+ "category": "postgresql",
+ "description": "Verify PostgreSQL backups with a real restore drill: pg_verifybackup, WAL chain checks, a drill cluster, pg_amcheck, pg_checksums and RTO.",
+ "focusKeyword": "postgresql verify backup",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "backup-and-recovery",
+  "pg-amcheck",
+  "restore-drill"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-17-pg-dump-pg-restore/",
+  "/posts/postgresql/postgresql-dba-part-15-wal-write-ahead-log/",
+  "/posts/postgresql/postgresql-dba-part-9-tablespaces/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: pg_verifybackup",
+   "url": "https://www.postgresql.org/docs/18/app-pgverifybackup.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_amcheck",
+   "url": "https://www.postgresql.org/docs/18/app-pgamcheck.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: amcheck",
+   "url": "https://www.postgresql.org/docs/18/amcheck.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_checksums",
+   "url": "https://www.postgresql.org/docs/18/app-pgchecksums.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Data Checksums",
+   "url": "https://www.postgresql.org/docs/18/checksums.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: initdb (data checksums default)",
+   "url": "https://www.postgresql.org/docs/18/app-initdb.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Continuous Archiving and Point-in-Time Recovery",
+   "url": "https://www.postgresql.org/docs/18/continuous-archiving.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Write Ahead Log settings (recovery targets, archive_mode)",
+   "url": "https://www.postgresql.org/docs/18/runtime-config-wal.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Backup and Restore",
+   "url": "https://www.postgresql.org/docs/18/backup.html"
+  },
+  {
+   "title": "pgBackRest Command Reference (verify, restore --type)",
+   "url": "https://pgbackrest.org/command.html"
+  }
+ ],
+ "reviewNotes": "Series part 22. Publish Part 21 first (Parts 18-21 are also not live yet; Part 21 is named without a link and is not in related). TEST ENVIRONMENT: Ubuntu 24.04.5 LTS. PostgreSQL 18 could NOT be installed: postgresql-18 18.7-1.pgdg24.04+5 from PGDG depends on liburing2 from the Ubuntu archive, which the sandbox network policy blocks (same as Parts 20-21). Every command ran on Ubuntu's PostgreSQL 16.15 (16.15-0ubuntu0.24.04.1), with the cluster created with --data-checksums to match the PostgreSQL 18 default, following the PostgreSQL 18.7 documentation (docs/18; note that postgresql.org/docs/current now shows version 19, so the sources point to /docs/18/). Paths in the article use 18 (16 replaced by 18); outputs that contain such paths are captioned expected output. I checked the PGDG 18 packages: pg_amcheck, pg_verifybackup, pg_checksums and pg_waldump are in /usr/lib/postgresql/18/bin with no /usr/bin wrapper, and PGDG postgresql-common 297 does not override initdb options, so new 18 clusters get data checksums by default. All outputs are real from 16 (pg_verifybackup, pg_waldump gap error, recovery log, fingerprint diff, pg_amcheck with and without --install-missing, pg_checksums clean and with a deliberately damaged page in the drill copy, the pg_restore truncated-dump error, the drill script pass and the wrong-target FATAL). Possible differences on 18: the custom-format dump version, the exact wording of the checksum WARNING/ERROR (PostgreSQL 18 reworked read I/O), and file and block counts. NOT RUN: pgBackRest (the package needs libssh2 from the blocked Ubuntu archive), so the pgBackRest section has commands only, taken from the pgBackRest command reference, and no output; cron (not installed in the sandbox), the crontab lines were not run by cron but both scripts were run by hand with the same arguments; systemctl (no systemd), pg_ctlcluster was used, the article shows the equivalent systemctl commands. The script in Step 13 is the tested script with VER=16 changed to VER=18.",
+ "generatedAt": "2026-11-20T12:55:29Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is <b>Part 22 of the PostgreSQL DBA series</b>. In Part 21 we set up pgBackRest and ran our first restores with it. In this part you will learn how to <b>verify a PostgreSQL backup</b> properly: not only that the backup job said \"completed\", but that the backup restores, reaches the point in time you expect, and holds correct, uncorrupted data."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By the end you will be able to run a full restore drill on Ubuntu with PostgreSQL 18: check the backup files with <code class=\"inline-code\">pg_verifybackup</code>, check the WAL chain with <code class=\"inline-code\">pg_waldump</code>, restore into a throwaway cluster, compare the data with a saved reference, scan it for corruption with <code class=\"inline-code\">pg_amcheck</code> and <code class=\"inline-code\">pg_checksums</code>, measure how long it all took, and turn the whole drill into one script you can schedule every month."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "The four levels of backup verification, and why a successful backup job proves very little on its own",
+      "items": []
+     },
+     {
+      "content": "How to check base backup files and the archived WAL chain without restoring anything",
+      "items": []
+     },
+     {
+      "content": "How to restore into a separate drill cluster and prove the data matches a saved reference",
+      "items": []
+     },
+     {
+      "content": "How to find corruption in a restored copy with pg_amcheck and pg_checksums",
+      "items": []
+     },
+     {
+      "content": "How to measure recovery time (RTO) and possible data loss (RPO), and automate the drill",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 17 to 21 of this series: <a href=\"/posts/postgresql/postgresql-dba-part-17-pg-dump-pg-restore/\">pg_dump and pg_restore</a>, pg_basebackup, WAL archiving, point-in-time recovery and pgBackRest. This part reuses the same layout: base backups in <code class=\"inline-code\">/var/lib/postgresql/backups</code> and archived WAL in <code class=\"inline-code\">/mnt/wal_archive</code>.",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server (db1) with PostgreSQL 18 from the PGDG repository, cluster <code class=\"inline-code\">18 main</code> on port 5432, WAL archiving turned on as in Part 19.",
+      "items": []
+     },
+     {
+      "content": "Free disk space for one more full copy of the cluster, because the drill restores a complete copy on port 5433.",
+      "items": []
+     },
+     {
+      "content": "A user with sudo. Commands that touch PostgreSQL files run as the <code class=\"inline-code\">postgres</code> operating system user.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A backup is a promise that you can get your data back. A <b>restore drill</b> is how you check the promise before you need it, the same way a fire drill checks that people can actually leave the building. The first real restore should never be the one you do during an outage."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Backups fail quietly. A WAL segment goes missing from the archive, a backup file is cut short when the disk fills, a disk flips a few bits, or a restore step only exists in the head of someone who has left the company. None of these shows up until you try to restore. So a DBA checks backups at four levels, from cheapest to most complete:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Level",
+      "Question it answers",
+      "Tools in this part"
+     ],
+     [
+      "1. Job status",
+      "Did the backup and archiving finish without errors?",
+      "exit codes, pg_stat_archiver"
+     ],
+     [
+      "2. Files",
+      "Are all backup files present and unchanged? Is the WAL chain complete?",
+      "pg_verifybackup, pg_waldump, pg_restore --list, pgbackrest verify"
+     ],
+     [
+      "3. Restore",
+      "Does the backup restore and replay WAL up to the target?",
+      "a drill cluster on port 5433"
+     ],
+     [
+      "4. Data",
+      "Is the restored data correct and free of corruption?",
+      "a fingerprint query, pg_amcheck, pg_checksums"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only levels 3 and 4 really prove the backup. The PostgreSQL documentation says this directly about <code class=\"inline-code\">pg_verifybackup</code>: even if you use it, you should still perform test restores and verify that the resulting databases work as expected and contain the correct data."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two numbers come out of every drill. <b>RTO</b> (recovery time objective) is how long a restore takes, from the decision to restore until users can work again. <b>RPO</b> (recovery point objective) is how much recent data you could lose, which for WAL archiving is roughly the age of the newest archived WAL segment. A drill measures your real RTO, and the archiver view shows your real RPO."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "db1 (10.0.0.11)\n\n  cluster \"18 main\"  port 5432   production\n        |  pg_basebackup              |  archive_command\n        v                             v\n  /var/lib/postgresql/backups/   /mnt/wal_archive/\n        base_2026_11_20              000000010000000000000003 ...\n        |                             |\n        +--------- restore -----------+  restore_command\n                       v\n  cluster \"18 drill\" port 5433   throwaway copy: check, measure, drop",
+    "caption": "The drill layout used in this part"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Drill on a separate machine when you can",
+    "text": "This part runs the drill on db1 to keep the lab small. A restore reads the whole backup and writes a full copy, which competes with production for disk and CPU. In production, run drills on a separate drill host that can read the backup storage. It also proves that you can restore when db1 is gone, which is the case backups exist for."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prepare the lab",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Check archiving and data checksums",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> A drill is only useful if the basics are on. Check that WAL archiving is working and that the cluster has data checksums. A <b>data checksum</b> is a small number stored in every 8 kB data page; PostgreSQL recalculates it when it reads the page, so a page changed by a faulty disk is detected instead of silently returning wrong data."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SELECT name, setting FROM pg_settings WHERE name IN ('data_checksums','archive_mode','archive_command','archive_timeout') ORDER BY name;\"\nsudo -u postgres psql -x -c \"SELECT archived_count, last_archived_wal, last_archived_time, failed_count, last_failed_wal FROM pg_stat_archiver;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "      name       |                          setting\n-----------------+------------------------------------------------------------\n archive_command | test ! -f /mnt/wal_archive/%f && cp %p /mnt/wal_archive/%f\n archive_mode    | on\n archive_timeout | 60\n data_checksums  | on\n(4 rows)\n\n-[ RECORD 1 ]------+-----------------------------\narchived_count     | 1\nlast_archived_wal  | 000000010000000000000001\nlast_archived_time | 2026-11-20 12:48:22.18006+00\nfailed_count       | 0\nlast_failed_wal    |",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">data_checksums</code> is read-only and shows whether the cluster was created with checksums. <b>New in PostgreSQL 18:</b> <code class=\"inline-code\">initdb</code> enables data checksums by default, and Ubuntu's <code class=\"inline-code\">pg_createcluster</code> uses that default, so a fresh 18 cluster shows <code class=\"inline-code\">on</code>. Clusters created on PostgreSQL 17 or earlier without <code class=\"inline-code\">--data-checksums</code>, and clusters upgraded from them, show <code class=\"inline-code\">off</code>; <code class=\"inline-code\">pg_checksums --enable</code> can turn checksums on later, but only while the server is stopped. <code class=\"inline-code\">failed_count</code> must be 0 here. If it grows, fix archiving first (Part 19), because no drill can succeed with a broken archive."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Create sample data",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres, in psql.</b> We use a small shop database with two related tables and an index, so that the corruption checks later have tables and indexes to look at."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE shop;\n\\c shop\nCREATE TABLE customers (\n  customer_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  full_name   text NOT NULL,\n  city        text NOT NULL\n);\nCREATE TABLE orders (\n  order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  customer_id bigint NOT NULL REFERENCES customers,\n  amount      numeric(10,2) NOT NULL,\n  created_at  timestamptz NOT NULL DEFAULT now()\n);\nCREATE INDEX orders_customer_idx ON orders (customer_id);\nINSERT INTO customers (full_name, city)\nSELECT 'customer_' || g, (ARRAY['Chennai','Pune','Delhi','Kochi'])[1 + g % 4]\nFROM generate_series(1, 2000) AS g;\nINSERT INTO orders (customer_id, amount)\nSELECT 1 + g % 2000, (g % 500) + 0.99\nFROM generate_series(1, 50000) AS g;",
+    "caption": "Run in psql as postgres"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify:</b> <code class=\"inline-code\">SELECT count(*) FROM orders;</code> in the shop database returns 50000."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Take a base backup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> This is the same command as in Part 18. In real life you test the backups your scheduled job already made; we take one here so the lab is complete."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres mkdir -p /var/lib/postgresql/backups\nsudo -u postgres pg_basebackup -D /var/lib/postgresql/backups/base_2026_11_20 \\\n  --checkpoint=fast --label=base_2026_11_20 --progress",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "waiting for checkpoint\n35483/35483 kB (100%), 0/1 tablespace\n35483/35483 kB (100%), 1/1 tablespace",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify:</b> the <code class=\"inline-code\">backup_label</code> file inside the backup shows the first WAL segment this backup needs. Write it down; you use it in Step 6."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres head -2 /var/lib/postgresql/backups/base_2026_11_20/backup_label",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "START WAL LOCATION: 0/3000028 (file 000000010000000000000003)\nCHECKPOINT LOCATION: 0/3000060",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Save a reference fingerprint and a restore point",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> To prove that restored data is <i>correct</i>, you need something to compare it with. A <b>fingerprint</b> is a short summary of table contents: the row count and an MD5 hash of all rows in key order. If even one value differs, the hash differs. Save the query in a file so you run exactly the same query on production and on the restored copy."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres mkdir -p /var/lib/postgresql/drill\nsudo -u postgres tee /var/lib/postgresql/drill/fingerprint.sql >/dev/null <<'EOF'\nSELECT 'customers' AS table_name, count(*) AS row_count,\n       md5(string_agg(c::text, ',' ORDER BY customer_id)) AS content_md5\n  FROM customers AS c\nUNION ALL\nSELECT 'orders', count(*),\n       md5(string_agg(o::text, ',' ORDER BY order_id))\n  FROM orders AS o;\nEOF",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now add some rows after the backup, so the drill must replay WAL to get them back. Then save the fingerprint and create a <b>named restore point</b> at the same moment. A restore point (Part 20) is a label in the WAL stream; recovery can stop exactly there, which makes the comparison exact."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d shop -c \"INSERT INTO orders (customer_id, amount) SELECT 1 + g % 2000, 250.00 FROM generate_series(1, 5000) AS g;\"\nsudo -u postgres psql -d shop -f /var/lib/postgresql/drill/fingerprint.sql -o /var/lib/postgresql/drill/expected.txt\nsudo -u postgres psql -Atc \"SELECT pg_create_restore_point('drill_2026_11_20');\"\nsudo -u postgres cat /var/lib/postgresql/drill/expected.txt",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INSERT 0 5000\n0/41BC420\n table_name | row_count |           content_md5\n------------+-----------+----------------------------------\n customers  |      2000 | 72fc6c26b552b6a5e8ba0f757619d7aa\n orders     |     55000 | b92a1b43b2d4582aa13294fbd9e3b45a\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">0/41BC420</code> is the WAL position of the restore point. Finally, keep working after the restore point and close the current WAL segment, so the archive holds everything:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d shop -c \"UPDATE orders SET amount = amount * 2 WHERE order_id <= 1000;\"\nsudo -u postgres psql -Atc \"SELECT pg_switch_wal();\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "UPDATE 1000\n0/4221F40",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Fingerprints on a busy server",
+    "text": "Here nothing else writes to shop, so the fingerprint and the restore point describe the same data. On a busy production server rows can change between the two commands. There, fingerprint only data that no longer changes, for example orders WHERE created_at &lt; current_date, and keep the query in the same file so both sides always run the same thing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Check the backup files before restoring",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Verify the base backup with pg_verifybackup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> You met <code class=\"inline-code\">pg_verifybackup</code> in Part 18. It reads the <code class=\"inline-code\">backup_manifest</code> that the server wrote during the backup, checks that every file is present with the right size, recomputes each file's checksum, and parses the WAL the backup needs. It is in <code class=\"inline-code\">/usr/lib/postgresql/18/bin/</code>, not in your PATH, so give the full path."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres /usr/lib/postgresql/18/bin/pg_verifybackup /var/lib/postgresql/backups/base_2026_11_20; echo \"exit=$?\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "backup successfully verified\nexit=0",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Exit status 0 means no problems were found. Useful options from the reference page:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-q, --quiet",
+      "Print nothing when a backup is successfully verified (good for scripts)"
+     ],
+     [
+      "-e, --exit-on-error",
+      "Exit as soon as a problem is detected, instead of reporting all problems"
+     ],
+     [
+      "-n, --no-parse-wal",
+      "Do not parse WAL. Needed for tar-format backups"
+     ],
+     [
+      "-w, --wal-directory=path",
+      "Parse WAL from another directory, for example the WAL archive"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation is clear about the limits: <code class=\"inline-code\">pg_verifybackup</code> finds missing files and changed contents, but it cannot run every check the server will run when it actually uses the backup. That is why the restore in Step 7 is still needed."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Check that the archived WAL chain has no gaps",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> A base backup alone only restores to the moment the backup ended. To reach any later point, recovery needs <i>every</i> WAL segment from the backup's start segment onwards, with no gap. <code class=\"inline-code\">pg_waldump</code> (seen in Part 20) can read a range of segments from the archive; with <code class=\"inline-code\">--quiet</code> it prints nothing unless it hits an error, such as a missing file."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres ls /mnt/wal_archive\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_waldump --path=/mnt/wal_archive --quiet \\\n  000000010000000000000003 000000010000000000000004; echo \"exit=$?\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "000000010000000000000001\n000000010000000000000002\n000000010000000000000003\n000000010000000000000003.00000028.backup\n000000010000000000000004\nexit=0",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "--path=/mnt/wal_archive",
+      "Directory in which to find WAL segment files"
+     ],
+     [
+      "--quiet",
+      "Do not print any output, except for errors"
+     ],
+     [
+      "first segment",
+      "The segment from backup_label (Step 3), where replay starts"
+     ],
+     [
+      "last segment",
+      "The newest archived segment, shown as last_archived_wal in pg_stat_archiver"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The file ending in <code class=\"inline-code\">.backup</code> is the backup history file that PostgreSQL archives when a base backup finishes; it records the backup's start and stop WAL positions. For comparison, this is what a gap looks like. We copied segments 03 and 05 into a test directory but not 04:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_waldump: error: could not find file \"000000010000000000000004\": No such file or directory\nexit=1",
+    "caption": "Output when a segment is missing"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A gap means recovery can never get past that segment. Every point in time after it is lost until you take a new base backup."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Restore into a drill cluster",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Create an empty drill cluster and restore the backup",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> The procedure follows the recovery steps from Part 20 and the documentation: empty data directory, copy the base backup, remove old files from <code class=\"inline-code\">pg_wal</code>, set <code class=\"inline-code\">restore_command</code> and the target, create <code class=\"inline-code\">recovery.signal</code>."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Check the path twice",
+    "text": "The find ... -delete command permanently deletes everything in the directory you give it. Run it only on the new 18/drill directory, never on /var/lib/postgresql/18/main."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "date -u '+%F %T'\nsudo pg_createcluster 18 drill --port 5433\nsudo -u postgres find /var/lib/postgresql/18/drill -mindepth 1 -delete\nsudo -u postgres cp -a /var/lib/postgresql/backups/base_2026_11_20/. /var/lib/postgresql/18/drill/\nsudo -u postgres find /var/lib/postgresql/18/drill/pg_wal -mindepth 1 -type f -delete\nsudo -u postgres tee /etc/postgresql/18/drill/conf.d/drill.conf <<'EOF'\narchive_mode = off\nrestore_command = 'cp /mnt/wal_archive/%f %p'\nrecovery_target_name = 'drill_2026_11_20'\nrecovery_target_action = 'promote'\nEOF\nsudo -u postgres touch /var/lib/postgresql/18/drill/recovery.signal",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-20 12:49:08",
+    "caption": "Output (first line: the drill start time, for the RTO)"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "Why the drill needs it"
+     ],
+     [
+      "archive_mode = off",
+      "The copy must never write its WAL into the production archive (/mnt/wal_archive). Can only be set at server start"
+     ],
+     [
+      "restore_command",
+      "How the drill fetches archived WAL segments; %f is the file name, %p the destination path"
+     ],
+     [
+      "recovery_target_name",
+      "Stop at the restore point from Step 4. Recovery targets can only be set at server start"
+     ],
+     [
+      "recovery_target_action = 'promote'",
+      "When the target is reached, finish recovery and accept connections. The default is pause"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify:</b> <code class=\"inline-code\">pg_lsclusters</code> lists <code class=\"inline-code\">18 drill 5433 down</code>, and <code class=\"inline-code\">sudo -u postgres ls /var/lib/postgresql/18/drill</code> shows <code class=\"inline-code\">backup_label</code>, <code class=\"inline-code\">backup_manifest</code> and <code class=\"inline-code\">recovery.signal</code>."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Tablespaces",
+    "text": "If the cluster uses tablespaces (<a href=\"/posts/postgresql/postgresql-dba-part-9-tablespaces/\">Part 9</a>), the backup's pg_tblspc folder holds symbolic links to other directories. Run ls -l /var/lib/postgresql/18/drill/pg_tblspc before starting, and point every link at a separate copy. A link that points at production or at the backup itself lets the drill write there."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Start the drill cluster and read the log",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl start postgresql@18-drill\nsudo tail -n 25 /var/log/postgresql/postgresql-18-drill.log",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  database system was interrupted; last known up at 2026-11-20 12:48:36 UTC\ncp: cannot stat '/mnt/wal_archive/00000002.history': No such file or directory\nLOG:  starting point-in-time recovery to \"drill_2026_11_20\"\nLOG:  starting backup recovery with redo LSN 0/3000028, checkpoint LSN 0/3000060, on timeline ID 1\nLOG:  restored log file \"000000010000000000000003\" from archive\nLOG:  redo starts at 0/3000028\nLOG:  restored log file \"000000010000000000000004\" from archive\nLOG:  completed backup recovery with redo LSN 0/3000028 and end LSN 0/3000100\nLOG:  consistent recovery state reached at 0/3000100\nLOG:  database system is ready to accept read-only connections\nLOG:  recovery stopping at restore point \"drill_2026_11_20\", time 2026-11-20 12:48:41.785246+00\nLOG:  redo done at 0/41BC3B8 system usage: CPU: user: 0.01 s, system: 0.00 s, elapsed: 0.06 s\nLOG:  last completed transaction was at log time 2026-11-20 12:48:41.664731+00\nLOG:  selected new timeline ID: 2\nLOG:  archive recovery complete\nLOG:  database system is ready to accept connections",
+    "caption": "Output (tested on PostgreSQL 16; timestamps, process IDs, checkpoint and repeated history-file lines removed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it from top to bottom: replay starts at the backup's start segment, the copy becomes <b>consistent</b> (the earliest moment it could be opened), recovery stops <b>at the restore point</b>, a new timeline 2 starts and the server accepts connections. The <code class=\"inline-code\">cp: cannot stat ... .history</code> lines are normal: recovery asks the archive whether newer timelines exist, and none do."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify:</b> the server must be out of recovery."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -p 5433 -Atc \"SELECT pg_is_in_recovery();\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "f",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Note the time now. The difference from the start time in Step 7 is the restore part of your RTO. In this lab it was a few seconds; with hundreds of gigabytes it is mostly copy time plus WAL replay, and only a drill tells you the real number."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prove the data is correct",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Compare the restored data with the reference",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> Run the same fingerprint file on the drill cluster and compare it with the file saved in Step 4. <code class=\"inline-code\">diff</code> prints nothing and returns 0 when the files are identical."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -p 5433 -d shop -f /var/lib/postgresql/drill/fingerprint.sql -o /var/lib/postgresql/drill/actual.txt\nsudo -u postgres diff /var/lib/postgresql/drill/expected.txt /var/lib/postgresql/drill/actual.txt && echo \"MATCH: restored data equals the reference\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "MATCH: restored data equals the reference",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For contrast, the same query on production now gives a different hash for orders, because of the UPDATE we ran after the restore point:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d shop -f /var/lib/postgresql/drill/fingerprint.sql",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " table_name | row_count |           content_md5\n------------+-----------+----------------------------------\n customers  |      2000 | 72fc6c26b552b6a5e8ba0f757619d7aa\n orders     |     55000 | 91f87a77b00854dee560da0e7f3d2b04\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This proves two things at once: the restore brought back all 55,000 orders, and it stopped exactly at the restore point, not before or after."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Scan the copy for corruption with pg_amcheck",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> <code class=\"inline-code\">pg_amcheck</code> runs the checks of the <code class=\"inline-code\">amcheck</code> extension on every table and B-tree index: it reads table pages looking for damaged rows, and walks each index checking that it is internally consistent. Run it on the drill copy, not on production, so the extra reading costs production nothing."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres /usr/lib/postgresql/18/bin/pg_amcheck -p 5433 --all \\\n  --install-missing --heapallindexed --jobs=2; echo \"exit=$?\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "exit=0",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-p 5433",
+      "Connect to the drill cluster"
+     ],
+     [
+      "--all",
+      "Check all databases"
+     ],
+     [
+      "--install-missing",
+      "Install any missing extensions required to check the databases (only amcheck); goes into pg_catalog by default"
+     ],
+     [
+      "--heapallindexed",
+      "Also verify that every table row is present in each index. Takes several times longer"
+     ],
+     [
+      "--jobs=2",
+      "Use 2 connections to check objects in parallel"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No output and exit status 0 means nothing was found. Two notes from the documentation: amcheck can only prove the presence of corruption, never its absence; and pg_amcheck checks tables, sequences, materialized views and B-tree indexes, silently skipping other index types. If you forget <code class=\"inline-code\">--install-missing</code>, you get:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_amcheck: warning: skipping database \"postgres\": amcheck is not installed\npg_amcheck: warning: skipping database \"shop\": amcheck is not installed\npg_amcheck: warning: skipping database \"template1\": amcheck is not installed\npg_amcheck: error: no relations to check",
+    "caption": "Output without --install-missing"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Verify every data page checksum with pg_checksums",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> <code class=\"inline-code\">pg_checksums --check</code> reads every data file and recomputes every page checksum. It is the most complete page-level check, but the documentation requires the server to be shut down cleanly first."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl stop postgresql@18-drill\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_checksums --check -D /var/lib/postgresql/18/drill; echo \"exit=$?\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Checksum operation completed\nFiles scanned:   1255\nBlocks scanned:  4406\nBad checksums:  0\nData checksum version: 1\nexit=0",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see what a failure looks like, we overwrote 16 bytes in one page of the orders table file <i>in the drill copy only</i> and ran the checks again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_checksums: error: checksum verification failed in file \"/var/lib/postgresql/18/drill/base/16384/16394\", block 10: calculated checksum 47CF but block contains 4F21\nChecksum operation completed\nFiles scanned:   1255\nBlocks scanned:  4406\nBad checksums:  1\nData checksum version: 1\nexit=1",
+    "caption": "Output with one damaged page (expected output: tested on PostgreSQL 16, path shown for 18)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "After starting the drill cluster, <code class=\"inline-code\">SELECT count(*) FROM orders;</code> failed with the same problem, and <code class=\"inline-code\">pg_amcheck -p 5433 -d shop -t orders</code> exited with status 2:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "WARNING:  page verification failed, calculated checksum 18383 but expected 20257\nERROR:  invalid page in block 10 of relation base/16384/16394",
+    "caption": "Output (message wording can vary between versions)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If a drill finds this, do not delete the backup. Restore the previous backup to see whether the damage is older, run pg_amcheck on production at a quiet time, and check the disks. The <code class=\"inline-code\">checksum_failures</code> column of <code class=\"inline-code\">pg_stat_database</code> (Part 24) counts these errors per database, so monitor it on production too."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Test a logical dump the same way",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as postgres.</b> <code class=\"inline-code\">pg_dump</code> backups (Part 17) need their own drill. <code class=\"inline-code\">pg_restore --list</code> only reads the table of contents at the start of the file, so it does not prove the file is complete. Restore it into a scratch database instead."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pg_dump -Fc -d shop -f /var/lib/postgresql/backups/shop_2026_11_20.dump\nsudo -u postgres createdb shop_drill\nsudo -u postgres pg_restore -d shop_drill --exit-on-error /var/lib/postgresql/backups/shop_2026_11_20.dump; echo \"exit=$?\"\nsudo -u postgres psql -d shop -f /var/lib/postgresql/drill/fingerprint.sql -o /tmp/prod.txt\nsudo -u postgres psql -d shop_drill -f /var/lib/postgresql/drill/fingerprint.sql -o /tmp/drill.txt\ndiff /tmp/prod.txt /tmp/drill.txt && echo \"MATCH: dump restore equals production\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "exit=0\nMATCH: dump restore equals production",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">--exit-on-error</code> makes <code class=\"inline-code\">pg_restore</code> stop at the first SQL error; without it, errors are reported but the restore carries on, and you can miss them. We also cut a copy of the dump file in half to show why <code class=\"inline-code\">--list</code> is not enough: <code class=\"inline-code\">pg_restore --list</code> still returned 0, but the real restore failed:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "pg_restore: error: could not read from input file: end of file",
+    "caption": "Output when the dump file is truncated"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Cleanup:</b> <code class=\"inline-code\">sudo -u postgres dropdb shop_drill</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "If you use pgBackRest",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With pgBackRest from Part 21 the levels are the same, only the commands change. For level 2, the <code class=\"inline-code\">verify</code> command checks that the backups and WAL archive in the repository are valid. By default it reports only errors; <code class=\"inline-code\">--verbose</code> with <code class=\"inline-code\">--output=text</code> also lists what was verified, and <code class=\"inline-code\">--set</code> limits it to one backup set."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest --stanza=app --output=text --verbose verify",
+    "caption": "On db1, as postgres"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For level 3, restore into the drill cluster's empty data directory with <code class=\"inline-code\">--type=immediate</code>, which recovers only until the database becomes consistent, or with the default type, which replays to the end of the archive. Levels 3 and 4 then continue with Steps 8 to 11 exactly as above."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbackrest --stanza=app --pg1-path=/var/lib/postgresql/18/drill \\\n  --type=immediate --target-action=promote --archive-mode=off restore",
+    "caption": "On db1, as postgres, after Step 7's pg_createcluster and find commands"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Make the drill a routine",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Put the whole drill in one script",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> A drill that depends on someone remembering twelve steps will stop happening. The script below runs Step 5 and Steps 7 to 11 in order (add the Step 6 pg_waldump check with your own segment range if you like), stops at the first failure (<code class=\"inline-code\">set -euo pipefail</code>), prints timings, and drops the drill cluster at the end. Save it as <code class=\"inline-code\">/usr/local/bin/restore-drill.sh</code> and make it executable with <code class=\"inline-code\">sudo chmod 755 /usr/local/bin/restore-drill.sh</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "#!/bin/bash\n# restore-drill.sh: restore a base backup into a throwaway\n# cluster \"18 drill\", verify it, report timings, then remove it.\n# Run as root: sudo /usr/local/bin/restore-drill.sh <backup_dir> <restore_point>\nset -euo pipefail\nVER=18\nBIN=/usr/lib/postgresql/$VER/bin\nBACKUP=$1\nTARGET=$2\nDRILL=/var/lib/postgresql/$VER/drill\nWORK=/var/lib/postgresql/drill\nas_pg() { sudo -u postgres \"$@\"; }\nlog() { echo \"$(date -u '+%F %T') $*\"; }\n\nlog \"drill start: backup=$BACKUP target=$TARGET\"\nT0=$(date +%s)\n\nlog \"1/6 verify backup files\"\nas_pg $BIN/pg_verifybackup -q \"$BACKUP\"\n\nlog \"2/6 create empty drill cluster on port 5433\"\npg_dropcluster $VER drill --stop 2>/dev/null || true\npg_createcluster $VER drill --port 5433 >/dev/null\nas_pg find \"$DRILL\" -mindepth 1 -delete\n\nlog \"3/6 copy backup and configure recovery\"\nas_pg cp -a \"$BACKUP/.\" \"$DRILL/\"\nas_pg find \"$DRILL/pg_wal\" -mindepth 1 -type f -delete\nas_pg tee /etc/postgresql/$VER/drill/conf.d/drill.conf >/dev/null <<CONF\narchive_mode = off\nrestore_command = 'cp /mnt/wal_archive/%f %p'\nrecovery_target_name = '$TARGET'\nrecovery_target_action = 'promote'\nCONF\nas_pg touch \"$DRILL/recovery.signal\"\n\nlog \"4/6 start and wait for recovery to finish\"\npg_ctlcluster $VER drill start\nfor i in $(seq 1 600); do\n  [ \"$(as_pg psql -p 5433 -Atc 'SELECT pg_is_in_recovery()' 2>/dev/null)\" = \"f\" ] && break\n  pg_lsclusters -h $VER drill | grep -q online || break\n  sleep 1\ndone\n[ \"$(as_pg psql -p 5433 -Atc 'SELECT pg_is_in_recovery()')\" = \"f\" ]\nT1=$(date +%s)\nlog \"database open for writes after $((T1 - T0)) seconds\"\n\nlog \"5/6 compare data with the reference and run pg_amcheck\"\nas_pg psql -p 5433 -d shop -f $WORK/fingerprint.sql -o $WORK/actual.txt\nas_pg diff $WORK/expected.txt $WORK/actual.txt\nas_pg $BIN/pg_amcheck -p 5433 --all --install-missing --heapallindexed --jobs=2\n\nlog \"6/6 stop and check data checksums\"\npg_ctlcluster $VER drill stop\nas_pg $BIN/pg_checksums --check -D \"$DRILL\" | grep 'Bad checksums'\npg_dropcluster $VER drill\n\nlog \"DRILL PASSED in $(( $(date +%s) - T0 )) seconds\"",
+    "caption": "/usr/local/bin/restore-drill.sh"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo /usr/local/bin/restore-drill.sh /var/lib/postgresql/backups/base_2026_11_20 drill_2026_11_20; echo \"exit=$?\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-20 12:50:36 drill start: backup=/var/lib/postgresql/backups/base_2026_11_20 target=drill_2026_11_20\n2026-11-20 12:50:36 1/6 verify backup files\n2026-11-20 12:50:36 2/6 create empty drill cluster on port 5433\n2026-11-20 12:50:37 3/6 copy backup and configure recovery\n2026-11-20 12:50:38 4/6 start and wait for recovery to finish\n2026-11-20 12:50:40 database open for writes after 4 seconds\n2026-11-20 12:50:40 5/6 compare data with the reference and run pg_amcheck\n2026-11-20 12:50:40 6/6 stop and check data checksums\nBad checksums:  0\n2026-11-20 12:50:41 DRILL PASSED in 5 seconds\nexit=0",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The script uses <code class=\"inline-code\">pg_ctlcluster</code>, which works the same as the systemctl commands in Steps 8 and 11. If the target is wrong or WAL is missing, the server stops during recovery, the wait loop sees the cluster go down, and the script exits with status 1 before printing PASSED. The cluster is left in place so you can read its log."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: Schedule it and keep a drill record",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> A monthly drill needs a fresh reference and restore point after the newest base backup. This small script saves both:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "#!/bin/bash\n# drill-reference.sh: save the reference fingerprint and mark the\n# matching point in the WAL stream for the next restore drill.\nset -euo pipefail\nsudo -u postgres psql -q -d shop -f /var/lib/postgresql/drill/fingerprint.sql \\\n  -o /var/lib/postgresql/drill/expected.txt\nsudo -u postgres psql -Atc \"SELECT pg_create_restore_point('drill_monthly');\"",
+    "caption": "/usr/local/bin/drill-reference.sh"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Then add two lines to root's crontab with <code class=\"inline-code\">sudo crontab -e</code>: the reference at 02:00 and the drill at 03:00 on the first day of each month, after your nightly base backup has finished."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "#m h dom mon dow  command\n0 2 1 * *  /usr/local/bin/drill-reference.sh\n0 3 1 * *  /usr/local/bin/restore-drill.sh \"$(ls -d /var/lib/postgresql/backups/base_* | tail -1)\" drill_monthly >> /var/log/restore-drill.log 2>&1",
+    "caption": "root crontab"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "We ran the same pair by hand: <code class=\"inline-code\">drill-reference.sh</code> printed the restore point position <code class=\"inline-code\">0/80319D8</code>, and the drill against <code class=\"inline-code\">drill_monthly</code> ended with <code class=\"inline-code\">DRILL PASSED</code>. Recovery stops at the first restore point with that name after the backup started, which is why the reference must run after the nightly backup. <b>Verify:</b> <code class=\"inline-code\">sudo crontab -l</code> shows both lines, and on the second of the month <code class=\"inline-code\">tail /var/log/restore-drill.log</code> ends with <code class=\"inline-code\">DRILL PASSED</code>. Hook the log or the exit status into your alerting so a failure reaches a person."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For RPO, check the archiver on production. <code class=\"inline-code\">archive_age</code> is roughly how much work you would lose if the server died now:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SELECT last_archived_wal, last_archived_time, now() - last_archived_time AS archive_age, failed_count FROM pg_stat_archiver;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "    last_archived_wal     |      last_archived_time      |   archive_age   | failed_count\n--------------------------+------------------------------+-----------------+--------------\n 000000010000000000000007 | 2026-11-20 12:50:51.98234+00 | 00:00:01.495604 |            0\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With <code class=\"inline-code\">archive_timeout = 60</code> the age stays near or under a minute even when the server is quiet. Keep a short record of every drill: the date, the backup and target tested, the checks that passed, the measured RTO, and any problem found. Auditors ask for it, and the RTO trend tells you when backups are outgrowing your restore window."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: Clean up",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> The script already drops its cluster. If you followed Steps 7 to 11 by hand, remove the drill cluster; this deletes its data directory and its configuration in <code class=\"inline-code\">/etc/postgresql/18/drill</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_dropcluster 18 drill --stop\npg_lsclusters",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Output (expected output: tested on PostgreSQL 16, paths shown for 18)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "FATAL: recovery ended before configured recovery target was reached",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Recovery replayed all the WAL it could find but never met the target. We got this by giving the drill a restore point name that does not exist:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  restored log file \"000000010000000000000006\" from archive\ncp: cannot stat '/mnt/wal_archive/000000010000000000000007': No such file or directory\nLOG:  redo done at 0/62F4628 system usage: CPU: user: 0.01 s, system: 0.01 s, elapsed: 0.13 s\nLOG:  last completed transaction was at log time 2026-11-20 12:49:37.287163+00\nFATAL:  recovery ended before configured recovery target was reached",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> check the spelling of the restore point, that the target time is after the backup ended, and that the archive holds WAL up to the target (Step 6). If a segment is genuinely missing, the target cannot be reached from this backup; take a new base backup today."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_checksums: error: cluster must be shut down",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You ran <code class=\"inline-code\">pg_checksums --check</code> while the drill cluster was running. <b>Fix:</b> <code class=\"inline-code\">sudo systemctl stop postgresql@18-drill</code> first. Never run it against a running production data directory."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The drill wrote WAL into the production archive",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You left <code class=\"inline-code\">archive_mode</code> on in the drill cluster, so after promotion it archived its own timeline 2 files into <code class=\"inline-code\">/mnt/wal_archive</code>. <b>Fix:</b> always set <code class=\"inline-code\">archive_mode = off</code> in the drill configuration (Step 7, or <code class=\"inline-code\">--archive-mode=off</code> with pgBackRest), and if it already happened, remove only the files the drill created, such as <code class=\"inline-code\">00000002.history</code> and segments starting with <code class=\"inline-code\">00000002</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Trusting the backup job's exit code alone",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A job can finish with status 0 while archiving has been failing for days, or while a dump was written to a disk that later filled. <b>Fix:</b> alert on <code class=\"inline-code\">pg_stat_archiver.failed_count</code> and <code class=\"inline-code\">archive_age</code>, run <code class=\"inline-code\">pg_verifybackup</code> after every backup, and run the full drill at least monthly and after every change to backup tooling, storage or PostgreSQL version."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Copy your WAL archive into a test directory, delete one segment from the middle of the copy, and run the Step 6 pg_waldump command against the copy. Which message do you get, and what is the newest point you could still recover to?",
+      "items": []
+     },
+     {
+      "content": "Change the drill to use recovery_target = 'immediate' instead of the restore point. Does the fingerprint still match the one from Step 4? Why or why not?",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answers",
+    "text": "1. pg_waldump prints could not find file followed by the missing segment name and exits with 1. You can recover only up to the end of the last segment before the gap. 2. It does not match: 'immediate' stops as soon as the copy is consistent, which is the end of the base backup, so the 5,000 orders inserted after the backup are missing (row_count 50000 instead of 55000). Use immediate to test the backup alone, and a restore point or time to test the backup plus WAL."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Level 1: archiving healthy, checksums on (production)\nsudo -u postgres psql -c \"SHOW data_checksums;\"\nsudo -u postgres psql -c \"SELECT last_archived_wal, now() - last_archived_time AS archive_age, failed_count FROM pg_stat_archiver;\"\n\n# Reference fingerprint and restore point (production)\nsudo -u postgres psql -d shop -f /var/lib/postgresql/drill/fingerprint.sql -o /var/lib/postgresql/drill/expected.txt\nsudo -u postgres psql -Atc \"SELECT pg_create_restore_point('drill_2026_11_20');\"\n\n# Level 2: backup files and WAL chain\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_verifybackup /var/lib/postgresql/backups/base_2026_11_20\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_waldump --path=/mnt/wal_archive --quiet <first_segment> <last_segment>\n\n# Level 3: restore into the drill cluster\nsudo pg_createcluster 18 drill --port 5433\nsudo -u postgres find /var/lib/postgresql/18/drill -mindepth 1 -delete\nsudo -u postgres cp -a /var/lib/postgresql/backups/base_2026_11_20/. /var/lib/postgresql/18/drill/\nsudo -u postgres find /var/lib/postgresql/18/drill/pg_wal -mindepth 1 -type f -delete\n# write /etc/postgresql/18/drill/conf.d/drill.conf (archive_mode, restore_command, target, action)\nsudo -u postgres touch /var/lib/postgresql/18/drill/recovery.signal\nsudo systemctl start postgresql@18-drill\nsudo -u postgres psql -p 5433 -Atc \"SELECT pg_is_in_recovery();\"\n\n# Level 4: data correct and uncorrupted\nsudo -u postgres psql -p 5433 -d shop -f /var/lib/postgresql/drill/fingerprint.sql -o /var/lib/postgresql/drill/actual.txt\nsudo -u postgres diff /var/lib/postgresql/drill/expected.txt /var/lib/postgresql/drill/actual.txt\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_amcheck -p 5433 --all --install-missing --heapallindexed --jobs=2\nsudo systemctl stop postgresql@18-drill\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_checksums --check -D /var/lib/postgresql/18/drill\n\n# Logical dump drill\nsudo -u postgres createdb shop_drill\nsudo -u postgres pg_restore -d shop_drill --exit-on-error /var/lib/postgresql/backups/shop_2026_11_20.dump\n\n# pgBackRest repository check\nsudo -u postgres pgbackrest --stanza=app --output=text --verbose verify\n\n# Whole drill in one go, and cleanup\nsudo /usr/local/bin/restore-drill.sh /var/lib/postgresql/backups/base_2026_11_20 drill_2026_11_20\nsudo pg_dropcluster 18 drill --stop",
+    "caption": ""
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "A backup is only proven when it has been restored and its data checked",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Level 2: pg_verifybackup for base backups, pg_waldump --quiet for the WAL chain, pgbackrest verify for a pgBackRest repository",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Level 3: restore into a separate drill cluster with archive_mode = off and a precise recovery target",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Level 4: compare a saved fingerprint, then run pg_amcheck and pg_checksums on the copy, never load production with them",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Restore pg_dump files into a scratch database with --exit-on-error; pg_restore --list is not a test",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Script the drill, schedule it monthly, alert on failure, and record the measured RTO every time",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 23 we move from backups to monitoring and set up logging that helps: log_min_duration_statement, log_line_prefix and auto_explain."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your backup job says \"completed\". That proves less than you think.\n\nA backup is only proven when you have restored it and checked the data inside. In Part 22 of my PostgreSQL DBA series I built a restore drill you can run every month:\n\n1. pg_verifybackup checks every file in a base backup against its manifest and checksums.\n2. pg_waldump --quiet over the archive finds a missing WAL segment before a real recovery does.\n3. Restore into a throwaway cluster on another port, with archive_mode = off and a named restore point as the target.\n4. Compare a saved fingerprint (row count plus md5 of all rows) with the restored copy, then run pg_amcheck and pg_checksums on the copy, not on production.\n5. Script it, schedule it, and record how long the restore took. That number is your real RTO.\n\nOne surprise from testing: pg_restore --list happily read a dump file cut in half. Only a real restore failed with \"end of file\".\n\nWhen did you last restore one of your production backups, and how long did it take?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #Backup",
+  "slides": [
+   {
+    "title": "Test your PostgreSQL backups",
+    "body": "A restore drill in four levels, with the commands to run on PostgreSQL 18"
+   },
+   {
+    "title": "Four levels of verification",
+    "points": [
+     "1. Job status: archiver healthy, no failures",
+     "2. Files: backup and WAL chain complete",
+     "3. Restore: the backup replays to the target",
+     "4. Data: correct and free of corruption"
+    ]
+   },
+   {
+    "title": "Levels 1 and 2: archive and files",
+    "points": [
+     "failed_count must stay 0, archive_age small",
+     "pg_verifybackup checks files against the manifest",
+     "pg_waldump --quiet over the archive finds WAL gaps"
+    ],
+    "code": "SELECT last_archived_wal,\n  now() - last_archived_time\n    AS archive_age,\n  failed_count\nFROM pg_stat_archiver;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Level 3: restore into a drill",
+    "points": [
+     "New cluster on port 5433, copy the base backup",
+     "archive_mode = off so it never touches the archive",
+     "Stop at a named restore point, then promote"
+    ]
+   },
+   {
+    "title": "Level 4: prove the data",
+    "body": "Save a fingerprint before the restore point, run the same query on the copy and diff the two files. Then run pg_amcheck and pg_checksums on the copy.",
+    "code": "SELECT count(*) AS row_count,\n  md5(string_agg(o::text, ','\n      ORDER BY order_id))\nFROM orders AS o;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Make it routine",
+    "points": [
+     "Script every step and stop at the first failure",
+     "Schedule it monthly and alert when it fails",
+     "Record the restore time: that is your real RTO",
+     "pg_restore --list is not a test of a dump file"
+    ]
+   }
+  ]
+ }
+}
