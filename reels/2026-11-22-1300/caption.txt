@@ -1,0 +1,13 @@
+A read-only PostgreSQL user needs more than one GRANT. Here are the four layers and the traps.
+
+Every PostgreSQL DBA gets asked for a read-only user. It takes four layers: GRANT CONNECT on the database, GRANT USAGE on the schema, GRANT SELECT ON ALL TABLES IN SCHEMA (views and foreign tables too), and GRANT SELECT ON ALL SEQUENCES. SELECT on a sequence allows reading it and currval, not nextval.
+
+The classic trap: ON ALL TABLES only covers tables that exist now. Use ALTER DEFAULT PRIVILEGES for tables created later, and remember it only applies to objects created by the FOR ROLE role. In our test, a table created by a different role gave "permission denied for table refunds".
+
+Two more traps: PUBLIC has TEMPORARY on databases by default, so a read-only user can still create temp tables. And default_transaction_read_only is not a security control: the user can SET it back to off. Tested on PostgreSQL 16.
+
+Episode 19 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql

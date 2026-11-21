@@ -1,0 +1,814 @@
+{
+ "ep": 19,
+ "total": 140,
+ "title": "Create Read-Only Users Correctly",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "A read-only PostgreSQL user needs more than one GRANT.",
+   "cap": "Read-only needs *more than one GRANT.*"
+  },
+  {
+   "say": "This is episode nineteen of the PostgreSQL DBA series. Today: a read-only user, built correctly.",
+   "cap": "Episode 19: a *read-only user,* done right.",
+   "cue": "read-only"
+  },
+  {
+   "say": "Read-only means the user can connect and read your data, but cannot change it.",
+   "cap": "Connect and *read.* Never *change.*",
+   "cue": "read"
+  },
+  {
+   "say": "That takes four layers of privileges: the database, the schema, the tables, and the sequences.",
+   "cap": "Four layers: *database, schema, tables, sequences.*",
+   "cue": "database"
+  },
+  {
+   "say": "Start with the role: CREATE ROLE ro_user with LOGIN, and set its password with psql's backslash password command.",
+   "cap": "*CREATE ROLE ro_user LOGIN,* password via *\\password*",
+   "cue": "password"
+  },
+  {
+   "say": "Layer one: grant connect on the database. Public has it by default, but an explicit grant survives a revoke from public.",
+   "cap": "Layer 1: *CONNECT* on the database.",
+   "cue": "explicit"
+  },
+  {
+   "say": "Layer two: grant usage on the schema. Without it, the user cannot even look up the tables inside.",
+   "cap": "Layer 2: *USAGE* on the schema.",
+   "cue": "Without"
+  },
+  {
+   "say": "Layer three: grant SELECT on all tables in schema app. This also covers views and foreign tables.",
+   "cap": "Layer 3: *SELECT* on all tables, views too.",
+   "cue": "views"
+  },
+  {
+   "say": "Layer four: grant SELECT on all sequences. That allows reading them and currval, but not nextval.",
+   "cap": "Layer 4: *SELECT* on sequences, no *nextval.*",
+   "cue": "currval"
+  },
+  {
+   "say": "Now we test, connected as ro_user. SELECT from orders returns both rows.",
+   "cap": "Test as ro_user: *SELECT works.*",
+   "cue": "SELECT"
+  },
+  {
+   "say": "INSERT fails with permission denied for table orders.",
+   "cap": "INSERT: *permission denied.*",
+   "cue": "INSERT"
+  },
+  {
+   "say": "CREATE TABLE fails too, with permission denied for schema app.",
+   "cap": "CREATE TABLE: *denied* on schema app.",
+   "cue": "CREATE"
+  },
+  {
+   "say": "nextval is refused on the sequence, but reading its last value works.",
+   "cap": "*nextval* refused, *last_value* readable.",
+   "cue": "reading"
+  },
+  {
+   "say": "The classic trap: on all tables covers only tables that exist now. Tomorrow's tables are not included.",
+   "cap": "Trap: *ALL TABLES* means *existing* tables only.",
+   "cue": "Tomorrow"
+  },
+  {
+   "say": "The fix is alter default privileges. It sets privileges for objects created in the future.",
+   "cap": "Fix: *ALTER DEFAULT PRIVILEGES* for future objects.",
+   "cue": "future"
+  },
+  {
+   "say": "But it only applies to objects created by the role named in for role, or by the current role if you leave it out.",
+   "cap": "Only for objects made by the *FOR ROLE* role.",
+   "cue": "current"
+  },
+  {
+   "say": "Our test: app_owner created payments, and ro_user can read it. postgres created refunds: permission denied.",
+   "cap": "payments *readable,* refunds *denied.*",
+   "cue": "refunds"
+  },
+  {
+   "say": "A common practice: set default privileges for every role that creates tables.",
+   "cap": "Set defaults for *every role that creates tables.*",
+   "cue": "every"
+  },
+  {
+   "say": "Next trap: by default, public has the temporary privilege on databases, so ro_user can still create temporary tables.",
+   "cap": "Trap 2: *TEMPORARY* is granted to PUBLIC.",
+   "cue": "temporary"
+  },
+  {
+   "say": "To block that, revoke temporary on the database from public. It affects every role, so grant it back where needed.",
+   "cap": "*REVOKE TEMPORARY* affects *every role.*",
+   "cue": "affects"
+  },
+  {
+   "say": "Also, default_transaction_read_only is not a security control. The user can simply SET it back to off.",
+   "cap": "*default_transaction_read_only* is *not security.*",
+   "cue": "SET"
+  },
+  {
+   "say": "The predefined role pg_read_all_data reads all tables, views and sequences. Grant it with care.",
+   "cap": "*pg_read_all_data* reads *everything.* Use with care.",
+   "cue": "care"
+  },
+  {
+   "say": "Recap: connect on the database, usage on the schema, SELECT on tables and sequences.",
+   "cap": "Recap: *CONNECT, USAGE, SELECT.*",
+   "cue": "usage"
+  },
+  {
+   "say": "Then default privileges for every role that creates tables, and always test as the user itself.",
+   "cap": "Plus *default privileges,* then *test.*",
+   "cue": "test"
+  },
+  {
+   "say": "Next up: GRANT, REVOKE and default privileges in depth. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *GRANT and REVOKE.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "A read-only user needs *more than one GRANT.*",
+   "sub": "Episode 19 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 19 \u00b7 INSTALLATION & ADMINISTRATION",
+   "title": "Read-Only Users, Done Right",
+   "sub": "CONNECT, USAGE, SELECT, defaults"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 4,
+   "heading": "Four layers of privileges",
+   "nodes": [
+    {
+     "id": "u",
+     "label": "ro_user",
+     "sub": "LOGIN role",
+     "x": 540,
+     "y": 500,
+     "w": 340,
+     "h": 120,
+     "icon": "key",
+     "color": "blue",
+     "shape": "pill",
+     "at": 2
+    },
+    {
+     "id": "db",
+     "label": "appdb",
+     "sub": "CONNECT",
+     "x": 540,
+     "y": 700,
+     "w": 380,
+     "h": 130,
+     "icon": "database",
+     "color": "orange",
+     "shape": "db",
+     "at": 3
+    },
+    {
+     "id": "sc",
+     "label": "schema app",
+     "sub": "USAGE",
+     "x": 540,
+     "y": 930,
+     "w": 380,
+     "h": 130,
+     "icon": "folder",
+     "color": "purple",
+     "at": 3
+    },
+    {
+     "id": "tb",
+     "label": "tables, views",
+     "sub": "SELECT",
+     "x": 290,
+     "y": 1190,
+     "w": 340,
+     "h": 140,
+     "icon": "table",
+     "color": "cyan",
+     "at": 3
+    },
+    {
+     "id": "sq",
+     "label": "sequences",
+     "sub": "SELECT",
+     "x": 790,
+     "y": 1190,
+     "w": 340,
+     "h": 140,
+     "icon": "layers",
+     "color": "green",
+     "at": 3
+    }
+   ],
+   "edges": [
+    {
+     "from": "u",
+     "to": "db",
+     "at": 3,
+     "color": "blue",
+     "flow": true
+    },
+    {
+     "from": "db",
+     "to": "sc",
+     "at": 3,
+     "color": "orange",
+     "flow": true
+    },
+    {
+     "from": "sc",
+     "to": "tb",
+     "at": 3,
+     "color": "cyan",
+     "flow": true
+    },
+    {
+     "from": "sc",
+     "to": "sq",
+     "at": 3,
+     "color": "green",
+     "flow": true
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "u"
+    },
+    {
+     "at": 3,
+     "id": "db"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 4,
+   "to": 7,
+   "heading": "Role, CONNECT, USAGE",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "CREATE ROLE ro_user LOGIN;",
+     "at": 4,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "CREATE ROLE",
+     "at": 4
+    },
+    {
+     "kind": "comment",
+     "text": "-- password: \\password ro_user",
+     "at": 4
+    },
+    {
+     "kind": "cmd",
+     "text": "GRANT CONNECT ON DATABASE appdb",
+     "at": 5,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "TO ro_user;",
+     "at": 5,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "GRANT",
+     "at": 5
+    },
+    {
+     "kind": "cmd",
+     "text": "GRANT USAGE ON SCHEMA app",
+     "at": 6,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "TO ro_user;",
+     "at": 6,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "GRANT",
+     "at": 6
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 7,
+   "to": 9,
+   "heading": "SELECT on tables and sequences",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "GRANT SELECT ON ALL TABLES",
+     "at": 7,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "IN SCHEMA app TO ro_user;",
+     "at": 7,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "GRANT",
+     "at": 7
+    },
+    {
+     "kind": "comment",
+     "text": "-- also views and foreign tables",
+     "at": 7
+    },
+    {
+     "kind": "cmd",
+     "text": "GRANT SELECT ON ALL SEQUENCES",
+     "at": 8,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "IN SCHEMA app TO ro_user;",
+     "at": 8,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "GRANT",
+     "at": 8
+    },
+    {
+     "kind": "comment",
+     "text": "-- SELECT: read + currval",
+     "at": 8
+    },
+    {
+     "kind": "comment",
+     "text": "-- nextval needs USAGE or UPDATE",
+     "at": 8
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 9,
+   "to": 12,
+   "heading": "Test as ro_user",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT * FROM app.orders;",
+     "at": 9,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": "  1 |     10",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": "  2 |     20",
+     "at": 9
+    },
+    {
+     "kind": "cmd",
+     "text": "INSERT INTO app.orders",
+     "at": 10,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "VALUES (3, 30);",
+     "at": 10,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "for table orders",
+     "at": 10
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE TABLE app.t1 (x int);",
+     "at": 11,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "for schema app",
+     "at": 11
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 12,
+   "to": 13,
+   "heading": "Sequences: read, not write",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT nextval(",
+     "at": 12,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "'app.orders_id_seq');",
+     "at": 12,
+     "prompt": "appdb(> "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "for sequence orders_id_seq",
+     "at": 12
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT last_value",
+     "at": 12,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "FROM app.orders_id_seq;",
+     "at": 12,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "out",
+     "text": " last_value",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "          2",
+     "at": 12
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 13,
+   "to": 14,
+   "kind": "warning",
+   "title": "ALL TABLES = existing tables",
+   "text": "GRANT ... ON ALL TABLES does not cover tables created later."
+  },
+  {
+   "type": "terminal",
+   "from": 14,
+   "to": 15,
+   "heading": "The fix: default privileges",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "ALTER DEFAULT PRIVILEGES",
+     "at": 14,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "FOR ROLE app_owner",
+     "at": 14,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "IN SCHEMA app",
+     "at": 14,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "GRANT SELECT ON TABLES",
+     "at": 14,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "TO ro_user;",
+     "at": 14,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "ALTER DEFAULT PRIVILEGES",
+     "at": 14
+    },
+    {
+     "kind": "comment",
+     "text": "-- future objects only",
+     "at": 14
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 15,
+   "to": 17,
+   "heading": "Who created the table matters",
+   "nodes": [
+    {
+     "id": "rule",
+     "label": "Default rule",
+     "sub": "FOR ROLE app_owner",
+     "x": 540,
+     "y": 500,
+     "w": 380,
+     "h": 130,
+     "icon": "shield",
+     "color": "orange",
+     "at": 15
+    },
+    {
+     "id": "ao",
+     "label": "app_owner",
+     "sub": "creates payments",
+     "x": 270,
+     "y": 760,
+     "w": 340,
+     "h": 130,
+     "icon": "users",
+     "color": "blue",
+     "at": 15
+    },
+    {
+     "id": "pg",
+     "label": "postgres",
+     "sub": "creates refunds",
+     "x": 810,
+     "y": 760,
+     "w": 340,
+     "h": 130,
+     "icon": "users",
+     "color": "amber",
+     "at": 15
+    },
+    {
+     "id": "pay",
+     "label": "payments",
+     "sub": "ro_user can read",
+     "x": 270,
+     "y": 1060,
+     "w": 340,
+     "h": 130,
+     "icon": "check",
+     "color": "green",
+     "at": 16
+    },
+    {
+     "id": "ref",
+     "label": "refunds",
+     "sub": "permission denied",
+     "x": 810,
+     "y": 1060,
+     "w": 340,
+     "h": 130,
+     "icon": "alert",
+     "color": "red",
+     "at": 16
+    }
+   ],
+   "edges": [
+    {
+     "from": "rule",
+     "to": "ao",
+     "label": "applies",
+     "at": 15,
+     "color": "orange",
+     "flow": true
+    },
+    {
+     "from": "rule",
+     "to": "pg",
+     "label": "not covered",
+     "at": 15,
+     "color": "red",
+     "dashed": true
+    },
+    {
+     "from": "ao",
+     "to": "pay",
+     "at": 16,
+     "color": "green",
+     "flow": true
+    },
+    {
+     "from": "pg",
+     "to": "ref",
+     "at": 16,
+     "color": "red"
+    }
+   ],
+   "focus": [
+    {
+     "at": 15,
+     "id": "rule"
+    },
+    {
+     "at": 16,
+     "id": "ref"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 17,
+   "to": 18,
+   "kind": "tip",
+   "title": "Cover every creator",
+   "text": "A common practice: ALTER DEFAULT PRIVILEGES for each role that creates tables."
+  },
+  {
+   "type": "terminal",
+   "from": 18,
+   "to": 19,
+   "heading": "PUBLIC has TEMPORARY",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- as ro_user:",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE TEMP TABLE scratch",
+     "at": 18,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "(x int);",
+     "at": 18,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "out",
+     "text": "CREATE TABLE",
+     "at": 18
+    },
+    {
+     "kind": "comment",
+     "text": "-- PUBLIC gets TEMPORARY by default",
+     "at": 18
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 19,
+   "to": 20,
+   "heading": "Revoke it from PUBLIC",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- as postgres:",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "text": "REVOKE TEMPORARY",
+     "at": 19,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "ON DATABASE appdb FROM PUBLIC;",
+     "at": 19,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "REVOKE",
+     "at": 19
+    },
+    {
+     "kind": "comment",
+     "text": "-- as ro_user again:",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE TEMP TABLE scratch2",
+     "at": 19,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "(x int);",
+     "at": 19,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied to",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "create temporary tables in",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "database \"appdb\"",
+     "at": 19
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "myth",
+   "title": "Read-only setting = security",
+   "text": "default_transaction_read_only is a default. Any user can SET it to off."
+  },
+  {
+   "type": "callout",
+   "from": 21,
+   "to": 22,
+   "kind": "fact",
+   "title": "pg_read_all_data",
+   "text": "Predefined role: SELECT on all tables, views, sequences. Grant with care."
+  },
+  {
+   "type": "checklist",
+   "from": 22,
+   "to": 24,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 22,
+     "title": "CONNECT on the database"
+    },
+    {
+     "at": 22,
+     "title": "USAGE on the schema"
+    },
+    {
+     "at": 22,
+     "title": "SELECT on tables, sequences"
+    },
+    {
+     "at": 23,
+     "title": "Defaults per creating role"
+    },
+    {
+     "at": 23,
+     "title": "Test as the user itself"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 24,
+   "to": 25,
+   "next": "Ep 20 \u00b7 GRANT, REVOKE, defaults"
+  }
+ ]
+}
