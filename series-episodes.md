@@ -83,7 +83,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain roles, LOGIN, INHERIT, role membership and least privilege; user is a role with LOGIN.
   - Format: Role hierarchy animation · Level: Beginner
   - Hook: PostgreSQL users and roles are not two separate systems.
-- [ ] Ep 019 | 2026-11-22 | Create Read-Only Users Correctly
+- [x] Ep 019 | 2026-11-22 | Create Read-Only Users Correctly (posted 2026-11-22 13:00, Buffer 6b0130325e993799d8554048)
   - Objective: Demonstrate CONNECT, USAGE, SELECT, default privileges and sequence access; scope grants carefully.
   - Format: Practical SQL demo · Level: Beginner
   - Hook: How to create a genuinely read-only PostgreSQL user.
