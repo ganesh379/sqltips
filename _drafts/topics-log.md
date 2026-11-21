@@ -66,3 +66,4 @@
 - 2026-11-18 [Oracle] lag and lead function in oracle -> _drafts/2026-11-18-oracle-oracle-lag-lead-function-example.json
 - 2026-11-18 [PostgreSQL] pgbackrest configuration -> _drafts/2026-11-18-postgresql-postgresql-dba-part-21-pgbackrest.json
 - 2026-11-20 [PostgreSQL] postgresql verify backup -> _drafts/2026-11-20-postgresql-postgresql-dba-part-22-testing-backups-restore-drills.json
+- 2026-11-21 [PostgreSQL] postgresql isolation levels -> _drafts/2026-11-21-postgresql-postgresql-isolation-levels-explained.json

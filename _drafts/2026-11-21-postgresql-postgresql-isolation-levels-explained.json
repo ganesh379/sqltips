@@ -1,0 +1,1190 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL Isolation Levels Explained With Examples",
+ "slug": "postgresql-isolation-levels-explained",
+ "category": "postgresql",
+ "description": "PostgreSQL isolation levels explained: Read Committed, Repeatable Read and Serializable, with two-session demos, real errors and retry rules.",
+ "focusKeyword": "postgresql isolation levels",
+ "tags": [
+  "postgresql",
+  "transactions",
+  "isolation-levels",
+  "concurrency",
+  "mvcc"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/",
+  "/posts/postgresql/postgresql-deadlock-detected/",
+  "/posts/postgresql/postgresql-for-update-skip-locked-job-queue/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 13.2 Transaction Isolation",
+   "url": "https://www.postgresql.org/docs/18/transaction-iso.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: SET TRANSACTION",
+   "url": "https://www.postgresql.org/docs/18/sql-set-transaction.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: BEGIN",
+   "url": "https://www.postgresql.org/docs/18/sql-begin.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 13.5 Serialization Failure Handling",
+   "url": "https://www.postgresql.org/docs/18/mvcc-serialization-failure-handling.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 13.4 Data Consistency Checks at the Application Level",
+   "url": "https://www.postgresql.org/docs/18/applevel-consistency.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.11 Client Connection Defaults (default_transaction_isolation)",
+   "url": "https://www.postgresql.org/docs/18/runtime-config-client.html"
+  }
+ ],
+ "reviewNotes": "Regular Saturday article (not a series part). Topic from Google autocomplete: 'postgresql isolation levels', '... explained', '... default', '... serializable', 'postgresql repeatable read vs serializable', and 'postgresql could not serialize access due to concurrent update'. Not covered by any live article or earlier draft; Part 11 (MVCC) shows one Repeatable Read example and is linked rather than repeated. TEST ENVIRONMENT: Ubuntu 24.04.5 LTS with PostgreSQL 18.7 (18.7-1.pgdg24.04+5, official PGDG binaries). As in earlier runs, apt could not install postgresql-18 because its dependency liburing2 comes from archive.ubuntu.com, which the sandbox network blocks; I extracted the PGDG postgresql-18 / postgresql-client-18 .debs and ran initdb/pg_ctl/psql with a stub liburing (io_method=worker, the default). SQL behaviour and messages are those of the real 18.7 binaries. Every two-session demo was run with two concurrent psql sessions in the order printed, from the reset data; outputs are real (psql '(n rows)' footers kept, some echo lines trimmed, and the comments '-- Terminal 1, first SELECT' etc. in output blocks are labels I added). The pid 1407 in the pg_locks output is from the sandbox. Docs followed: PostgreSQL 18 documentation at /docs/18/ (postgresql.org/docs/current now shows version 19). EDITOR CHECKS: (1) The pg_hba default on Ubuntu is peer auth, so the article does not show logging in as report_user; it shows pg_db_role_setting instead and states the SHOW result (tested with trust auth in the sandbox). The 'role setting wins over database setting' claim was tested. (2) The retry loop is pseudocode, not a specific driver. (3) The PL/pgSQL remark (catching 40001 inside a function does not replace a client retry) is reasoning from the docs' 'retry the complete transaction' rule, not a doc quote.",
+ "generatedAt": "2026-11-21T13:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL has three working transaction isolation levels: <b>Read Committed</b> (the default), <b>Repeatable Read</b> and <b>Serializable</b>. You can also ask for Read Uncommitted, but PostgreSQL quietly runs it as Read Committed, so dirty reads never happen. The level decides which committed changes from other sessions your transaction can see, and which conflicts PostgreSQL stops with an error."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In this tutorial you will run every level yourself with two psql sessions, watch a non-repeatable read, a lost update and a write skew happen, and see the exact errors PostgreSQL 18 raises: <code class=\"inline-code\">could not serialize access due to concurrent update</code> and <code class=\"inline-code\">could not serialize access due to read/write dependencies among transactions</code>. You will also learn how to set the level per transaction, per session, per user and per database, and why your application must retry on SQLSTATE 40001."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How PostgreSQL isolation levels work",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every transaction in PostgreSQL reads from a <b>snapshot</b>: a list of which transactions had committed when the snapshot was taken. Rows written by transactions outside the snapshot are invisible to you, even if they commit while you are reading. If you want the full picture of row versions, xmin and xmax, read <a href=\"/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/\">PostgreSQL DBA Part 11: MVCC, xmin/xmax and Row Visibility</a>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The isolation level mainly decides <i>when</i> the snapshot is taken and what happens when two transactions touch the same data:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Read Committed</b> takes a new snapshot at the start of every statement. Two SELECTs in one transaction can return different results.",
+      "items": []
+     },
+     {
+      "content": "<b>Repeatable Read</b> takes one snapshot at the first query or data-changing statement of the transaction (not at BEGIN) and keeps it until the end. If you try to update a row someone else changed and committed after your snapshot, PostgreSQL rolls you back.",
+      "items": []
+     },
+     {
+      "content": "<b>Serializable</b> works like Repeatable Read and also watches for read/write patterns that could not happen if the transactions ran one at a time. When it finds one, it cancels one transaction.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The SQL standard defines the levels by which <b>phenomena</b> (anomalies) they must prevent. A dirty read is reading another transaction's uncommitted data. A non-repeatable read is re-reading a row and finding it changed by a committed transaction. A phantom read is re-running a query with a WHERE condition and getting a different set of rows. A serialization anomaly is a result that no one-at-a-time order of the transactions could produce. This is how PostgreSQL behaves at each level, according to the PostgreSQL 18 documentation:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Isolation level",
+      "Dirty read",
+      "Non-repeatable read",
+      "Phantom read",
+      "Serialization anomaly"
+     ],
+     [
+      "Read Uncommitted",
+      "Not in PostgreSQL",
+      "Possible",
+      "Possible",
+      "Possible"
+     ],
+     [
+      "Read Committed (default)",
+      "Not possible",
+      "Possible",
+      "Possible",
+      "Possible"
+     ],
+     [
+      "Repeatable Read",
+      "Not possible",
+      "Not possible",
+      "Not in PostgreSQL",
+      "Possible"
+     ],
+     [
+      "Serializable",
+      "Not possible",
+      "Not possible",
+      "Not possible",
+      "Not possible"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two cells are stricter than the standard requires. Read Uncommitted never shows uncommitted data, because PostgreSQL maps it to Read Committed. Repeatable Read does not allow phantom reads, because the whole transaction uses one snapshot. The standard only sets minimum protections, so this is allowed."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a scratch database with two small tables: <code class=\"inline-code\">accounts</code> for money transfers and <code class=\"inline-code\">doctors</code> for an on-call rota. Run this as the postgres user (<code class=\"inline-code\">sudo -u postgres psql</code>)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE isodemo;\n\\c isodemo\n\nCREATE TABLE accounts (\n    account_id  int PRIMARY KEY,\n    owner_name  text NOT NULL,\n    balance     numeric(12,2) NOT NULL\n);\n\nINSERT INTO accounts VALUES\n    (1, 'Asha',  5000.00),\n    (2, 'Ravi',  3000.00),\n    (3, 'Meera', 7500.00);\n\nCREATE TABLE doctors (\n    doctor_name text PRIMARY KEY,\n    on_call     boolean NOT NULL\n);\n\nINSERT INTO doctors VALUES\n    ('Dr. Rao',   true),\n    ('Dr. Iyer',  true),\n    ('Dr. Khan',  false);",
+    "caption": "Create the sample tables"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The demos change data, so run this reset before each one to start from the same values:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE accounts\n   SET balance = CASE account_id WHEN 1 THEN 5000 WHEN 2 THEN 3000 ELSE 7500 END;\nUPDATE doctors SET on_call = (doctor_name <> 'Dr. Khan');",
+    "caption": "Reset the sample data between demos"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Open <b>two terminals</b> and connect both with <code class=\"inline-code\">sudo -u postgres psql -d isodemo</code>. In the code below, <code class=\"inline-code\">-- Terminal 1</code> and <code class=\"inline-code\">-- Terminal 2</code> tell you where to type each statement, in the order shown. Terminal 2 statements outside a BEGIN run in autocommit mode, so they commit straight away."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Check and set the isolation level",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The current transaction's level is in the setting <code class=\"inline-code\">transaction_isolation</code>. The default for new transactions is <code class=\"inline-code\">default_transaction_isolation</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SHOW transaction_isolation;\nSHOW default_transaction_isolation;",
+    "caption": "Check the isolation level"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " transaction_isolation\n-----------------------\n read committed\n(1 row)\n\n default_transaction_isolation\n-------------------------------\n read committed\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To change the level for one transaction, put it in BEGIN, or run SET TRANSACTION as the first statement after BEGIN. Both forms do the same thing:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN ISOLATION LEVEL REPEATABLE READ;\n-- ... your statements ...\nCOMMIT;\n\nBEGIN;\nSET TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSHOW transaction_isolation;\nCOMMIT;",
+    "caption": "Two ways to set the level for one transaction"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " transaction_isolation\n-----------------------\n repeatable read\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The level cannot change once the transaction has run its first query or data-changing statement (SELECT, INSERT, UPDATE, DELETE, MERGE, FETCH or COPY). We will see the error for that in the common mistakes section. Ways to set a default for more than one transaction are covered near the end."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Read Committed: each statement sees fresh data",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Non-repeatable read in action",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Terminal 1 reads Asha's balance twice in one transaction. Between the two reads, Terminal 2 withdraws 1,000 and commits."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 1\nBEGIN;\nSELECT balance FROM accounts WHERE account_id = 1;\n\n-- Terminal 2\nUPDATE accounts SET balance = balance - 1000 WHERE account_id = 1;\n\n-- Terminal 1\nSELECT balance FROM accounts WHERE account_id = 1;\nCOMMIT;",
+    "caption": "Read Committed sees commits made between statements"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-- Terminal 1, first SELECT\n balance\n---------\n 5000.00\n(1 row)\n\n-- Terminal 2\nUPDATE 1\n\n-- Terminal 1, second SELECT\n balance\n---------\n 4000.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same query in the same transaction returned two different values. That is a non-repeatable read. It is normal in Read Committed because the second SELECT took a new snapshot that includes Terminal 2's commit. Each single statement still sees a consistent picture; only the transaction as a whole does not."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Read Uncommitted does not show dirty data",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Reset the data. Now Terminal 1 sets Asha's balance to 0 but does not commit, and Terminal 2 reads it at Read Uncommitted."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 1\nBEGIN;\nUPDATE accounts SET balance = 0 WHERE account_id = 1;\n\n-- Terminal 2\nBEGIN ISOLATION LEVEL READ UNCOMMITTED;\nSELECT balance FROM accounts WHERE account_id = 1;\nCOMMIT;\n\n-- Terminal 1\nROLLBACK;",
+    "caption": "Read Uncommitted behaves like Read Committed"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-- Terminal 2\n balance\n---------\n 5000.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Terminal 2 still sees 5000.00. <code class=\"inline-code\">SHOW transaction_isolation</code> would print <code class=\"inline-code\">read uncommitted</code>, but the behaviour is Read Committed. You cannot get dirty reads in PostgreSQL at any level."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The lost update problem and three ways to fix it",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A lost update happens when two transactions read the same value, each computes a new value in the application, and the second write silently overwrites the first. It is the most common concurrency bug in Read Committed code."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The bug: read, compute in the app, write",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Reset the data. Ravi has 3000. Two payments run at the same time: one withdraws 500, the other 800. Each reads the balance, subtracts in the application and writes the result back as a fixed number."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 1\nBEGIN;\nSELECT balance FROM accounts WHERE account_id = 2;   -- app sees 3000\n\n-- Terminal 2\nBEGIN;\nSELECT balance FROM accounts WHERE account_id = 2;   -- app sees 3000\n\n-- Terminal 1 (3000 - 500)\nUPDATE accounts SET balance = 2500.00 WHERE account_id = 2;\n\n-- Terminal 2 (3000 - 800): this waits for Terminal 1\nUPDATE accounts SET balance = 2200.00 WHERE account_id = 2;\n\n-- Terminal 1\nCOMMIT;\n\n-- Terminal 2 (its UPDATE has now finished)\nCOMMIT;\nSELECT balance FROM accounts WHERE account_id = 2;",
+    "caption": "Lost update in Read Committed"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " balance\n---------\n 2200.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The correct balance is 1700 (3000 - 500 - 800). The 500 withdrawal was lost. Terminal 2's UPDATE waited for Terminal 1's row lock, then wrote its precomputed value on top of the committed one. PostgreSQL did nothing wrong: the value 2200 came from the application, based on an old read."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 1: let the UPDATE do the arithmetic",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Reset the data and run the same two payments, but write the change relative to the current value:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 1\nBEGIN;\nUPDATE accounts SET balance = balance - 500 WHERE account_id = 2;\n\n-- Terminal 2 (waits for Terminal 1)\nBEGIN;\nUPDATE accounts SET balance = balance - 800 WHERE account_id = 2;\n\n-- Terminal 1\nCOMMIT;\n\n-- Terminal 2\nCOMMIT;\nSELECT balance FROM accounts WHERE account_id = 2;",
+    "caption": "Atomic update in Read Committed"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " balance\n---------\n 1700.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This works because in Read Committed a waiting UPDATE does not use its old copy of the row. When the first transaction commits, PostgreSQL re-checks the WHERE clause against the newest version of the row and applies the change to that version. This is the simplest fix whenever the new value can be written as an expression."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 2: lock the row first with SELECT ... FOR UPDATE",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When the application really must read the value first (for example to check the balance is enough), lock the row while reading it. Reset the data and run:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 1\nBEGIN;\nSELECT balance FROM accounts WHERE account_id = 2 FOR UPDATE;   -- 3000\n\n-- Terminal 2 (blocks here until Terminal 1 ends)\nBEGIN;\nSELECT balance FROM accounts WHERE account_id = 2 FOR UPDATE;\n\n-- Terminal 1\nUPDATE accounts SET balance = 2500.00 WHERE account_id = 2;\nCOMMIT;\n\n-- Terminal 2 now returns 2500, so the app writes 2500 - 800\nUPDATE accounts SET balance = 1700.00 WHERE account_id = 2;\nCOMMIT;",
+    "caption": "Pessimistic locking with FOR UPDATE"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-- Terminal 2, SELECT ... FOR UPDATE after Terminal 1 committed\n balance\n---------\n 2500.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Terminal 2 waited and then saw the committed 2500, so its calculation was correct. The cost is waiting, and if two transactions lock rows in a different order you can hit a deadlock; see <a href=\"/posts/postgresql/postgresql-deadlock-detected/\">PostgreSQL Deadlock Detected: Causes, Examples and Fixes</a>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix 3: use Repeatable Read and retry",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The third fix is to raise the isolation level, so PostgreSQL detects the conflict for you. That is the next section."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Repeatable Read: one snapshot for the whole transaction",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Reset the data. Repeat the first demo, but start Terminal 1 at Repeatable Read, and then let Terminal 1 try to update the row that Terminal 2 changed."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 1\nBEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT balance FROM accounts WHERE account_id = 1;\n\n-- Terminal 2\nUPDATE accounts SET balance = balance - 1000 WHERE account_id = 1;\n\n-- Terminal 1\nSELECT balance FROM accounts WHERE account_id = 1;\nUPDATE accounts SET balance = balance + 200 WHERE account_id = 1;\nSELECT balance FROM accounts WHERE account_id = 1;\nROLLBACK;\nSELECT balance FROM accounts WHERE account_id = 1;",
+    "caption": "Repeatable Read keeps the first snapshot"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-- first SELECT\n balance\n---------\n 5000.00\n(1 row)\n\n-- second SELECT, after Terminal 2 committed\n balance\n---------\n 5000.00\n(1 row)\n\nUPDATE accounts SET balance = balance + 200 WHERE account_id = 1;\nERROR:  could not serialize access due to concurrent update\nSELECT balance FROM accounts WHERE account_id = 1;\nERROR:  current transaction is aborted, commands ignored until end of transaction block\nROLLBACK;\nROLLBACK\nSELECT balance FROM accounts WHERE account_id = 1;\n balance\n---------\n 4000.00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Three things happened:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "The second SELECT still showed 5000.00. The whole transaction reads from the snapshot taken at its first SELECT, so reports and multi-step calculations see stable data.",
+      "items": []
+     },
+     {
+      "content": "The UPDATE failed with <code class=\"inline-code\">could not serialize access due to concurrent update</code>. A Repeatable Read transaction cannot modify or lock a row that another transaction changed and committed after its snapshot. Updating 5000 + 200 would have thrown away Terminal 2's withdrawal, so PostgreSQL refused.",
+      "items": []
+     },
+     {
+      "content": "After the error the transaction is aborted. Every further statement fails until you run ROLLBACK. After the rollback, a new snapshot shows the real value, 4000.00.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This error is how Repeatable Read prevents the lost update from the previous section. The right reaction is to roll back and run the <b>whole</b> transaction again; the second time it starts with a snapshot that already includes the other change. The error always has SQLSTATE <b>40001</b> (<code class=\"inline-code\">serialization_failure</code>). In psql you can print it right after the error:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\echo :LAST_ERROR_SQLSTATE",
+    "caption": "Show the SQLSTATE of the last error in psql"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "40001",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "Only transactions that change or lock rows can get this error. A read-only transaction at Repeatable Read never has serialization conflicts, which makes it a good, cheap choice for reports that run several queries and need them to agree."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Write skew: why Repeatable Read is not always enough",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Repeatable Read stops two transactions from changing the <i>same</i> row. It does not stop two transactions that each read the same data and then change <i>different</i> rows. This anomaly is called <b>write skew</b>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The rule in our hospital is: at least one doctor must stay on call. Dr. Rao and Dr. Iyer are on call. Both want to go off call at the same moment, and each checks the rule first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Repeatable Read lets the rule break",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Reset the data and run:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 1\nBEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT count(*) FROM doctors WHERE on_call;          -- 2, so Rao may leave\n\n-- Terminal 2\nBEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT count(*) FROM doctors WHERE on_call;          -- 2, so Iyer may leave\n\n-- Terminal 1\nUPDATE doctors SET on_call = false WHERE doctor_name = 'Dr. Rao';\n\n-- Terminal 2\nUPDATE doctors SET on_call = false WHERE doctor_name = 'Dr. Iyer';\n\n-- Terminal 1\nCOMMIT;\n\n-- Terminal 2\nCOMMIT;\nSELECT * FROM doctors ORDER BY doctor_name;",
+    "caption": "Write skew under Repeatable Read"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " doctor_name | on_call\n-------------+---------\n Dr. Iyer    | f\n Dr. Khan    | f\n Dr. Rao     | f\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both commits succeeded and nobody is on call. Each transaction was correct on its own, and they never touched the same row, so Repeatable Read saw no conflict. Run one after the other, the second would have seen a count of 1 and stopped."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Serializable catches it",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Reset the data and run exactly the same steps with <code class=\"inline-code\">SERIALIZABLE</code>. This time Terminal 2 also retries after the error:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 1\nBEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT count(*) FROM doctors WHERE on_call;          -- 2\n\n-- Terminal 2\nBEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT count(*) FROM doctors WHERE on_call;          -- 2\n\n-- Terminal 1\nUPDATE doctors SET on_call = false WHERE doctor_name = 'Dr. Rao';\n\n-- Terminal 2\nUPDATE doctors SET on_call = false WHERE doctor_name = 'Dr. Iyer';\n\n-- Terminal 1\nCOMMIT;\n\n-- Terminal 2\nCOMMIT;\n\n-- Terminal 2: retry the whole transaction\nBEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT count(*) FROM doctors WHERE on_call;          -- now 1, so Iyer must stay\nROLLBACK;\nSELECT * FROM doctors ORDER BY doctor_name;",
+    "caption": "Serializable prevents write skew"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "-- Terminal 1\nCOMMIT;\nCOMMIT\n\n-- Terminal 2\nCOMMIT;\nERROR:  could not serialize access due to read/write dependencies among transactions\nDETAIL:  Reason code: Canceled on identification as a pivot, during commit attempt.\nHINT:  The transaction might succeed if retried.\n\n-- Terminal 2, retry\n count\n-------\n     1\n(1 row)\n\n doctor_name | on_call\n-------------+---------\n Dr. Iyer    | t\n Dr. Khan    | f\n Dr. Rao     | f\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Terminal 1 committed. Terminal 2's COMMIT failed, and its UPDATE was rolled back. Notice that the error came at COMMIT, not at the UPDATE: with Serializable a failure can appear on any statement, including COMMIT, so the application must check the result of COMMIT too. On retry, Terminal 2 saw only one doctor on call, and the application logic kept Dr. Iyer on call. The rule holds."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How Serializable tracks reads: SIReadLock",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To detect these patterns, PostgreSQL records what each serializable transaction has read using <b>predicate locks</b>. They appear in <code class=\"inline-code\">pg_locks</code> with mode <code class=\"inline-code\">SIReadLock</code>. Reset the data and run:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- Terminal 1\nBEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT count(*) FROM doctors WHERE on_call;\n\n-- Terminal 2\nSELECT pid, locktype, relation::regclass AS relation, page, mode\n  FROM pg_locks\n WHERE mode = 'SIReadLock';\n\n-- Terminal 1\nROLLBACK;",
+    "caption": "See predicate locks in pg_locks"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pid  | locktype | relation | page |    mode\n------+----------+----------+------+------------\n 1407 | relation | doctors  |      | SIReadLock\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The count scanned the whole table with a sequential scan, so the predicate lock covers the whole <code class=\"inline-code\">doctors</code> relation. With an index scan you would see smaller page or tuple locks instead. Your pid will differ."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "These locks <b>never block</b> anyone and cannot cause deadlocks. They are only bookkeeping used to decide whether a transaction must be cancelled. Unlike row locks, they can stay in pg_locks for a while after the transaction commits, until overlapping read/write transactions finish."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Long reports: SERIALIZABLE READ ONLY DEFERRABLE",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A long report running at Serializable has the usual tracking overhead and can, in rare cases, be cancelled. If you declare it <code class=\"inline-code\">SERIALIZABLE READ ONLY DEFERRABLE</code>, PostgreSQL may wait at the start until it can take a snapshot that is guaranteed safe. After that the report runs without the serializable overhead and cannot be cancelled by a serialization failure. The documentation recommends this mode for long-running reports and backups."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ ONLY, DEFERRABLE;\nSELECT sum(balance) AS total_balance FROM accounts;\nSHOW transaction_read_only;\nUPDATE accounts SET balance = 0 WHERE account_id = 1;\nROLLBACK;",
+    "caption": "A safe read-only report transaction"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " total_balance\n---------------\n      15500.00\n(1 row)\n\n transaction_read_only\n-----------------------\n on\n(1 row)\n\nERROR:  cannot execute UPDATE in a read-only transaction",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "READ ONLY also protects you: any INSERT, UPDATE, DELETE or MERGE on a normal table fails with SQLSTATE 25006. The DEFERRABLE option has no effect unless the transaction is both SERIALIZABLE and READ ONLY."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Set a default level for a session, user or database",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">default_transaction_isolation</code> can be set at every level PostgreSQL supports for settings. Its default is <code class=\"inline-code\">read committed</code> and its context in <code class=\"inline-code\">pg_settings</code> is <code class=\"inline-code\">user</code>, so any user can change it for their own session without a reload."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Scope",
+      "Command"
+     ],
+     [
+      "Current session",
+      "SET default_transaction_isolation = 'repeatable read';"
+     ],
+     [
+      "Current session (SQL standard form)",
+      "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;"
+     ],
+     [
+      "One role, new sessions",
+      "ALTER ROLE report_user SET default_transaction_isolation = 'repeatable read';"
+     ],
+     [
+      "One database, new sessions",
+      "ALTER DATABASE isodemo SET default_transaction_isolation = 'repeatable read';"
+     ],
+     [
+      "Whole cluster",
+      "default_transaction_isolation = 'repeatable read' in /etc/postgresql/18/main/postgresql.conf, then SELECT pg_reload_conf();"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here is the role-level setting tested end to end. As postgres, create a role, give it a default, and check what is stored:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE ROLE report_user LOGIN;\nALTER ROLE report_user SET default_transaction_isolation = 'repeatable read';\n\nSELECT r.rolname, s.setconfig\n  FROM pg_db_role_setting s\n  JOIN pg_roles r ON r.oid = s.setrole\n WHERE r.rolname = 'report_user';",
+    "caption": "Per-role default (as postgres)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "   rolname   |                     setconfig                     \n-------------+---------------------------------------------------\n report_user | {\"default_transaction_isolation=repeatable read\"}\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When report_user logs in, <code class=\"inline-code\">SHOW default_transaction_isolation</code> returns <code class=\"inline-code\">repeatable read</code>. A role setting wins over a database setting when both exist."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Role and database settings apply to new sessions only. To undo the change and drop the test role:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER ROLE report_user RESET default_transaction_isolation;\nDROP ROLE report_user;",
+    "caption": "Undo the per-role default"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "Think twice before changing the cluster-wide default. Code written for Read Committed often has no retry logic, and at Repeatable Read or Serializable it will start failing with SQLSTATE 40001 under load. Raise the level per transaction or per role, for code that is ready to retry."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Retrying serialization failures correctly",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL does not retry failed transactions for you, because only the application knows which decisions it made from the data it read. Your code must catch the error and run the whole transaction again from BEGIN. The usual pattern looks like this:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "for attempt in 1..5:\n    BEGIN ISOLATION LEVEL SERIALIZABLE\n    run every SELECT and every decision and write again\n    COMMIT\n    if success: stop\n    if SQLSTATE = 40001 (serialization_failure) or 40P01 (deadlock_detected):\n        ROLLBACK, wait a short random time, try again\n    else:\n        ROLLBACK and report the error",
+    "caption": "Retry loop (pseudocode for your application)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Points the documentation stresses:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Retry the complete transaction, including the reads and the logic that chooses values. Re-sending only the failed statement is wrong, because the values it uses came from an old snapshot.",
+      "items": []
+     },
+     {
+      "content": "Retry on SQLSTATE 40001 unconditionally. Deadlocks (40P01) are often worth retrying too. Be more careful with unique violations (23505), which can be a real, permanent error.",
+      "items": []
+     },
+     {
+      "content": "Under heavy contention a transaction may need several attempts, so cap the number of retries.",
+      "items": []
+     },
+     {
+      "content": "Do not trust data read inside a Serializable transaction until it has committed. A transaction that later fails may have read values that are not consistent.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Catching the error inside a PL/pgSQL function does not replace this: the error means the transaction must start again with a new snapshot, and with Serializable the failure can come at COMMIT, after your function has already returned."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "WARNING:  SET TRANSACTION can only be used in transaction blocks",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You ran SET TRANSACTION without BEGIN. It has no effect; the next statement still runs in its own Read Committed transaction."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;\nWARNING:  SET TRANSACTION can only be used in transaction blocks\nSET",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> use <code class=\"inline-code\">BEGIN ISOLATION LEVEL SERIALIZABLE;</code> or run SET TRANSACTION right after BEGIN."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR:  SET TRANSACTION ISOLATION LEVEL must be called before any query",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN;\nSELECT count(*) FROM accounts;\nSET TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nERROR:  SET TRANSACTION ISOLATION LEVEL must be called before any query",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The snapshot rules are fixed by the first query. <b>Fix:</b> roll back and set the level before the first SELECT. Watch out for drivers and ORMs that run a query of their own right after BEGIN."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR:  current transaction is aborted, commands ignored until end of transaction block",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Any error, including a serialization failure, aborts the transaction. <b>Fix:</b> run ROLLBACK (or ROLLBACK TO a savepoint) before sending more statements. In application code, make sure the error path always ends the transaction."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Expecting Read Uncommitted to be faster or to show dirty reads",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "It is the same as Read Committed in PostgreSQL. There is no speed gain and no dirty read."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Expecting sequences to roll back",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Changes to sequences (and so to serial and identity columns) are visible to all transactions immediately and are not undone by ROLLBACK at any isolation level. Gaps in IDs after failed or retried transactions are normal."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Leaving transactions idle",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A Repeatable Read or Serializable transaction left open holds its snapshot, keeps predicate locks and prevents VACUUM from removing dead rows. Keep transactions short and set <code class=\"inline-code\">idle_in_transaction_session_timeout</code> as a safety net; see <a href=\"/posts/postgresql/postgresql-dba-part-10-connections-sessions/\">PostgreSQL DBA Part 10</a> for finding these sessions."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips and best practices",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Keep Read Committed as the default. Write updates as expressions (balance = balance - 500) and use SELECT ... FOR UPDATE where you must read before writing.",
+      "items": []
+     },
+     {
+      "content": "Use Repeatable Read for reports and exports that run several queries and need one consistent view. Read-only Repeatable Read transactions never get serialization errors.",
+      "items": []
+     },
+     {
+      "content": "Use Serializable for business rules that span several rows or tables (like the on-call rule), where you would otherwise need table locks. Then you can drop the explicit locks and FOR UPDATE that Serializable makes unnecessary.",
+      "items": []
+     },
+     {
+      "content": "Declare transactions READ ONLY when they do not write. It lowers Serializable overhead and stops accidental writes.",
+      "items": []
+     },
+     {
+      "content": "Keep Serializable transactions small and the number of active connections under control, with a connection pool if needed.",
+      "items": []
+     },
+     {
+      "content": "A sequential scan always takes a relation-level predicate lock, which raises the failure rate. Good indexes for the WHERE clauses in serializable transactions help. If many page locks are combined into relation locks for lack of memory, the documentation suggests raising <code class=\"inline-code\">max_pred_locks_per_transaction</code>, <code class=\"inline-code\">max_pred_locks_per_relation</code> or <code class=\"inline-code\">max_pred_locks_per_page</code>.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the default isolation level in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read Committed. It is controlled by <code class=\"inline-code\">default_transaction_isolation</code>, whose default is <code class=\"inline-code\">read committed</code>. The SQL standard's default is Serializable, but PostgreSQL ordinarily uses Read Committed."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does PostgreSQL support Read Uncommitted?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You can request it and SHOW will report it, but it behaves exactly like Read Committed. PostgreSQL never returns uncommitted data."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What is the difference between Repeatable Read and Serializable in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both read from one snapshot for the whole transaction and both raise SQLSTATE 40001 when they cannot continue safely. Serializable additionally tracks read/write dependencies between transactions and cancels one when the combined result could not come from any one-at-a-time order, which prevents write skew. That tracking adds some overhead but no extra blocking."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does Serializable isolation lock tables in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. Its SIReadLock predicate locks do not block other sessions and cannot cause deadlocks. The only case where a serializable transaction waits where Repeatable Read would not is SERIALIZABLE READ ONLY DEFERRABLE, which can wait at the start for a safe snapshot."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I fix \"could not serialize access due to concurrent update\"?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Roll back and run the whole transaction again. It is expected at Repeatable Read and Serializable whenever another transaction committed a change to a row you are trying to update or lock. If retries are not possible in your code, switch that transaction to Read Committed and use atomic updates or SELECT ... FOR UPDATE instead."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "PostgreSQL has three real levels: Read Committed (default), Repeatable Read and Serializable. Read Uncommitted runs as Read Committed.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Read Committed takes a new snapshot per statement; Repeatable Read and Serializable take one at the first statement of the transaction.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Avoid lost updates in Read Committed with UPDATE ... SET col = col - x or SELECT ... FOR UPDATE.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Repeatable Read raises \"could not serialize access due to concurrent update\" instead of losing an update.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Only Serializable prevents write skew; it reports \"could not serialize access due to read/write dependencies among transactions\", sometimes at COMMIT.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Set the level with BEGIN ISOLATION LEVEL ... or SET TRANSACTION before the first query; set defaults per role or database with ALTER ROLE / ALTER DATABASE.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Always retry the whole transaction on SQLSTATE 40001, and keep transactions short and READ ONLY where possible.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Two sessions both pass your \"one doctor must stay on call\" check. Both commit. Now nobody is on call.\n\nWhich PostgreSQL isolation level stops that? Here is what each one guarantees:\n\n→ Read Committed (default): every statement takes a fresh snapshot, so two SELECTs in one transaction can disagree.\n→ Read Uncommitted is accepted but runs as Read Committed. No dirty reads, ever.\n→ Lost update: two sessions read 3000, the app writes 2500 and 2200, one payment vanishes. Fix it with SET balance = balance - 500 or SELECT ... FOR UPDATE.\n→ Repeatable Read keeps one snapshot and fails with \"could not serialize access due to concurrent update\" instead of losing a change.\n→ Only Serializable stops write skew. The second COMMIT fails with SQLSTATE 40001, and the retry sees the new data.\n\nThe rule: at Repeatable Read or Serializable, your application must retry the whole transaction on 40001, not just the failed statement.\n\nWhich isolation level does your application run on, and does it have retry logic?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #Database #DBA",
+  "slides": [
+   {
+    "title": "PostgreSQL Isolation Levels Explained",
+    "body": "Read Committed, Repeatable Read and Serializable, tested on PostgreSQL 18"
+   },
+   {
+    "title": "Three real levels, not four",
+    "points": [
+     "Read Committed is the default",
+     "Read Uncommitted runs as Read Committed",
+     "No dirty reads at any level",
+     "Repeatable Read also blocks phantom reads"
+    ]
+   },
+   {
+    "title": "Set the level per transaction",
+    "code": "BEGIN ISOLATION LEVEL REPEATABLE READ;\nSHOW transaction_isolation;\n-- your statements\nCOMMIT;",
+    "lang": "postgresql",
+    "points": [
+     "Set it before the first query, or you get an error"
+    ]
+   },
+   {
+    "title": "Avoid the lost update",
+    "code": "-- wrong: value computed in the app\nUPDATE accounts SET balance = 2200\n WHERE account_id = 2;\n-- right: let PostgreSQL compute it\nUPDATE accounts\n   SET balance = balance - 800\n WHERE account_id = 2;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Repeatable Read: one snapshot",
+    "body": "All queries see the same data. If another session commits a change to a row you then update, you get: could not serialize access due to concurrent update (SQLSTATE 40001)."
+   },
+   {
+    "title": "Serializable stops write skew",
+    "points": [
+     "Two doctors check the count, both go off call",
+     "Repeatable Read lets both commit",
+     "Serializable fails one, often at COMMIT",
+     "Retry the whole transaction on 40001"
+    ]
+   }
+  ]
+ }
+}
