@@ -1,0 +1,13 @@
+Why can't my PostgreSQL user read tomorrow's tables? GRANT vs default privileges, tested.
+
+GRANT SELECT ON ALL TABLES IN SCHEMA only changes the tables that exist when you run it. In our test, a table created later gave "permission denied for table invoices". For future tables, a PostgreSQL DBA uses ALTER DEFAULT PRIVILEGES, and checks it with \ddp. Default privileges never change existing objects, so grant on those by hand.
+
+Read \dp like this: report_user=r/app_owner means SELECT (r), granted by app_owner. A * after a letter means WITH GRANT OPTION, and an empty grantee means PUBLIC.
+
+REVOKE traps: access is the sum of a role's own grants, its memberships and PUBLIC, so revoking from one user may not stop it. Revoking a privilege that was re-granted fails with "dependent privileges exist" unless you add CASCADE. And DROP OWNED revokes privileges but also drops every object the role owns. Tested on PostgreSQL 16.
+
+Episode 20 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql

@@ -1,0 +1,922 @@
+{
+ "ep": 20,
+ "total": 140,
+ "title": "GRANT, REVOKE and Default Privileges",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "Why can't my user read tomorrow's tables?",
+   "cap": "Why can't my user read *tomorrow's tables?*"
+  },
+  {
+   "say": "This is episode twenty of the PostgreSQL DBA series. Today: GRANT, REVOKE, and default privileges.",
+   "cap": "Episode 20: *GRANT, REVOKE,* and *default privileges.*",
+   "cue": "default"
+  },
+  {
+   "say": "Every new table has one owner. At first, only the owner or a superuser can use it.",
+   "cap": "New table: only the *owner* can use it.",
+   "cue": "owner"
+  },
+  {
+   "say": "GRANT gives a role privileges such as SELECT, INSERT, UPDATE or DELETE. REVOKE takes them away.",
+   "cap": "*GRANT* gives privileges. *REVOKE* removes them.",
+   "cue": "REVOKE"
+  },
+  {
+   "say": "PUBLIC means every role, even future ones. By default, PUBLIC gets nothing on tables, schemas or sequences.",
+   "cap": "*PUBLIC* gets *nothing* on tables by default.",
+   "cue": "nothing"
+  },
+  {
+   "say": "But PUBLIC does get connect and temporary on databases, and execute on functions and procedures.",
+   "cap": "Except *CONNECT, TEMPORARY* and *EXECUTE.*",
+   "cue": "execute"
+  },
+  {
+   "say": "Let's test. As app_owner, we grant usage on schema app, and SELECT on all tables in schema app, to report_user.",
+   "cap": "Grant *USAGE* and *SELECT ON ALL TABLES.*",
+   "cue": "SELECT"
+  },
+  {
+   "say": "psql's backslash dp shows it. Output trimmed: report_user equals r, slash app_owner.",
+   "cap": "*\\dp* shows report_user=*r*/app_owner",
+   "cue": "report_user"
+  },
+  {
+   "say": "r is SELECT, and after the slash comes the grantor. The owner holds all seven table privileges.",
+   "cap": "Letters = *privileges.* After the slash: *grantor.*",
+   "cue": "seven"
+  },
+  {
+   "say": "Then app_owner creates a new table, invoices. report_user gets permission denied for table invoices.",
+   "cap": "New table invoices: *permission denied.*",
+   "cue": "permission"
+  },
+  {
+   "say": "That's the trap. GRANT on all tables changes only the tables that exist when you run it. Nothing created later.",
+   "cap": "*ALL TABLES* = tables that exist *right now.*",
+   "cue": "later"
+  },
+  {
+   "say": "For future tables, use alter default privileges. In schema app, grant SELECT on tables to report_user.",
+   "cap": "*ALTER DEFAULT PRIVILEGES* for future tables.",
+   "cue": "grant"
+  },
+  {
+   "say": "Backslash ddp lists the new default for report_user. Output trimmed.",
+   "cap": "*\\ddp* lists default privileges.",
+   "cue": "default"
+  },
+  {
+   "say": "app_owner creates refunds, and report_user can read it at once.",
+   "cap": "New table refunds: *readable.*",
+   "cue": "read"
+  },
+  {
+   "say": "But invoices is still denied: defaults never change existing objects. Grant on it once, by hand.",
+   "cap": "Defaults never fix *existing* tables.",
+   "cue": "hand"
+  },
+  {
+   "say": "Now REVOKE. A role's access is the sum of its own grants, its memberships, and PUBLIC.",
+   "cap": "Access = *own grants + memberships + PUBLIC.*",
+   "cue": "PUBLIC"
+  },
+  {
+   "say": "We granted SELECT on orders to PUBLIC, then revoked it from report_user. report_user could still read orders.",
+   "cap": "Revoked from user, *still readable* via PUBLIC.",
+   "cue": "still"
+  },
+  {
+   "say": "Only after we revoked it from PUBLIC too did report_user get permission denied.",
+   "cap": "Revoke from *PUBLIC* too: *denied.*",
+   "cue": "denied"
+  },
+  {
+   "say": "Grant option chains: analyst got SELECT with grant option, and granted it to report_user.",
+   "cap": "*WITH GRANT OPTION* lets analyst re-grant.",
+   "cue": "report_user"
+  },
+  {
+   "say": "A plain revoke from analyst fails: dependent privileges exist. With CASCADE, the dependent grant goes too.",
+   "cap": "*dependent privileges exist:* use *CASCADE.*",
+   "cue": "CASCADE"
+  },
+  {
+   "say": "And you can only revoke privileges that you granted directly.",
+   "cap": "You revoke only *what you granted.*",
+   "cue": "directly"
+  },
+  {
+   "say": "A role that still holds grants cannot be dropped. drop role report_user failed: some objects depend on it.",
+   "cap": "*DROP ROLE* fails while grants remain.",
+   "cue": "failed"
+  },
+  {
+   "say": "Revoke them first. drop owned by revokes them too, but it also drops every object the role owns.",
+   "cap": "*DROP OWNED* also *drops owned objects.*",
+   "cue": "drops"
+  },
+  {
+   "say": "Recap: GRANT and REVOKE change existing objects. Default privileges shape future ones. Access adds up, PUBLIC included.",
+   "cap": "Recap: *existing* vs *future* objects.",
+   "cue": "Default"
+  },
+  {
+   "say": "Next up: pg_hba.conf, who may connect. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *pg_hba.conf.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "Why can't my user read *tomorrow's tables?*",
+   "sub": "Episode 20 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 20 · INSTALLATION & ADMINISTRATION",
+   "title": "GRANT, REVOKE and Default Privileges",
+   "sub": "Existing objects vs future objects"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 4,
+   "heading": "Who can use a new table?",
+   "nodes": [
+    {
+     "id": "own",
+     "label": "app_owner",
+     "sub": "owner: all privileges",
+     "x": 540,
+     "y": 520,
+     "w": 380,
+     "h": 130,
+     "icon": "key",
+     "color": "orange",
+     "shape": "pill",
+     "at": 2
+    },
+    {
+     "id": "tb",
+     "label": "app.orders",
+     "sub": "new table",
+     "x": 540,
+     "y": 790,
+     "w": 360,
+     "h": 130,
+     "icon": "table",
+     "color": "cyan",
+     "at": 2
+    },
+    {
+     "id": "g",
+     "label": "GRANT",
+     "sub": "SELECT, INSERT",
+     "x": 280,
+     "y": 1110,
+     "w": 340,
+     "h": 140,
+     "icon": "check",
+     "color": "green",
+     "at": 3
+    },
+    {
+     "id": "r",
+     "label": "REVOKE",
+     "sub": "takes them away",
+     "x": 800,
+     "y": 1110,
+     "w": 340,
+     "h": 140,
+     "icon": "lock",
+     "color": "red",
+     "at": 3
+    }
+   ],
+   "edges": [
+    {
+     "from": "own",
+     "to": "tb",
+     "label": "owns",
+     "at": 2,
+     "color": "orange",
+     "flow": true
+    },
+    {
+     "from": "tb",
+     "to": "g",
+     "at": 3,
+     "color": "green",
+     "flow": true
+    },
+    {
+     "from": "tb",
+     "to": "r",
+     "at": 3,
+     "color": "red",
+     "dashed": true
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "own"
+    },
+    {
+     "at": 3,
+     "id": "g"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 4,
+   "to": 6,
+   "heading": "What PUBLIC gets by default",
+   "columns": 2,
+   "items": [
+    {
+     "at": 4,
+     "icon": "table",
+     "title": "Tables",
+     "text": "Nothing",
+     "color": "red"
+    },
+    {
+     "at": 4,
+     "icon": "folder",
+     "title": "Schemas",
+     "text": "Nothing",
+     "color": "red"
+    },
+    {
+     "at": 4,
+     "icon": "layers",
+     "title": "Sequences",
+     "text": "Nothing",
+     "color": "red"
+    },
+    {
+     "at": 5,
+     "icon": "database",
+     "title": "Databases",
+     "text": "CONNECT, TEMPORARY",
+     "color": "green"
+    },
+    {
+     "at": 5,
+     "icon": "bolt",
+     "title": "Functions, procedures",
+     "text": "EXECUTE",
+     "color": "green"
+    },
+    {
+     "at": 5,
+     "icon": "book",
+     "title": "Languages, types",
+     "text": "USAGE",
+     "color": "green"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 6,
+   "to": 8,
+   "heading": "Grant, then check with \\dp",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "GRANT USAGE ON SCHEMA app",
+     "at": 6,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "TO report_user;",
+     "at": 6,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "out",
+     "text": "GRANT",
+     "at": 6
+    },
+    {
+     "kind": "cmd",
+     "text": "GRANT SELECT ON ALL TABLES",
+     "at": 6,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "IN SCHEMA app TO report_user;",
+     "at": 6,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "out",
+     "text": "GRANT",
+     "at": 6
+    },
+    {
+     "kind": "cmd",
+     "text": "\\dp app.orders",
+     "at": 7,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "comment",
+     "text": "-- Access privileges (trimmed)",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "app_owner=arwdDxt/app_owner",
+     "at": 7
+    },
+    {
+     "kind": "out",
+     "text": "report_user=r/app_owner",
+     "at": 7
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 8,
+   "to": 9,
+   "heading": "Reading a privilege entry",
+   "columns": 2,
+   "items": [
+    {
+     "at": 8,
+     "title": "r = SELECT",
+     "text": "report_user=r/app_owner",
+     "color": "green"
+    },
+    {
+     "at": 8,
+     "title": "/app_owner",
+     "text": "the grantor",
+     "color": "orange"
+    },
+    {
+     "at": 8,
+     "title": "a w d",
+     "text": "INSERT, UPDATE, DELETE",
+     "color": "cyan"
+    },
+    {
+     "at": 8,
+     "title": "D x t",
+     "text": "TRUNCATE, REFERENCES, TRIGGER",
+     "color": "purple"
+    },
+    {
+     "at": 8,
+     "title": "r*",
+     "text": "* = granted WITH GRANT OPTION",
+     "color": "amber"
+    },
+    {
+     "at": 8,
+     "title": "=r/app_owner",
+     "text": "empty grantee = PUBLIC",
+     "color": "blue"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 9,
+   "to": 10,
+   "heading": "A table created later",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- as app_owner:",
+     "at": 9
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE TABLE app.invoices",
+     "at": 9,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "(id int);",
+     "at": 9,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "out",
+     "text": "CREATE TABLE",
+     "at": 9
+    },
+    {
+     "kind": "comment",
+     "text": "-- as report_user:",
+     "at": 9
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT count(*)",
+     "at": 9,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "FROM app.invoices;",
+     "at": 9,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": "for table invoices",
+     "at": 9
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 10,
+   "to": 11,
+   "kind": "warning",
+   "title": "ALL TABLES = tables that exist now",
+   "text": "GRANT ... ON ALL TABLES IN SCHEMA does nothing for tables created later."
+  },
+  {
+   "type": "terminal",
+   "from": 11,
+   "to": 13,
+   "heading": "Default privileges",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- as app_owner:",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "text": "ALTER DEFAULT PRIVILEGES",
+     "at": 11,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "IN SCHEMA app",
+     "at": 11,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "cmd",
+     "text": "GRANT SELECT ON TABLES",
+     "at": 11,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "cmd",
+     "text": "TO report_user;",
+     "at": 11,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "out",
+     "text": "ALTER DEFAULT PRIVILEGES",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "text": "\\ddp",
+     "at": 12,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": "Owner     | Schema | Type",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "app_owner | app    | table",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "  report_user=r/app_owner",
+     "at": 12
+    },
+    {
+     "kind": "comment",
+     "text": "-- output trimmed",
+     "at": 12
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 13,
+   "to": 15,
+   "heading": "Future yes, existing no",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- app_owner created app.refunds",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT count(*) FROM app.refunds;",
+     "at": 13,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": " count",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "     0",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT count(*) FROM app.invoices;",
+     "at": 14,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "for table invoices",
+     "at": 14
+    },
+    {
+     "kind": "comment",
+     "text": "-- fix once, as app_owner:",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "text": "GRANT SELECT ON app.invoices",
+     "at": 14,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "TO report_user;",
+     "at": 14,
+     "prompt": "appdb-> "
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 15,
+   "to": 16,
+   "heading": "Where access comes from",
+   "nodes": [
+    {
+     "id": "d",
+     "label": "Own grants",
+     "sub": "granted to the role",
+     "x": 220,
+     "y": 560,
+     "w": 300,
+     "h": 140,
+     "icon": "key",
+     "color": "blue",
+     "at": 15
+    },
+    {
+     "id": "m",
+     "label": "Memberships",
+     "sub": "roles it belongs to",
+     "x": 540,
+     "y": 800,
+     "w": 300,
+     "h": 140,
+     "icon": "users",
+     "color": "purple",
+     "at": 15
+    },
+    {
+     "id": "p",
+     "label": "PUBLIC",
+     "sub": "every role",
+     "x": 860,
+     "y": 560,
+     "w": 300,
+     "h": 140,
+     "icon": "network",
+     "color": "amber",
+     "at": 15
+    },
+    {
+     "id": "e",
+     "label": "Effective access",
+     "sub": "the sum of all three",
+     "x": 540,
+     "y": 1130,
+     "w": 380,
+     "h": 150,
+     "icon": "shield",
+     "color": "green",
+     "at": 15
+    }
+   ],
+   "edges": [
+    {
+     "from": "d",
+     "to": "e",
+     "at": 15,
+     "color": "blue",
+     "flow": true
+    },
+    {
+     "from": "m",
+     "to": "e",
+     "at": 15,
+     "color": "purple",
+     "flow": true
+    },
+    {
+     "from": "p",
+     "to": "e",
+     "at": 15,
+     "color": "amber",
+     "flow": true
+    }
+   ],
+   "focus": [
+    {
+     "at": 15,
+     "id": "e"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 16,
+   "to": 18,
+   "heading": "The PUBLIC trap",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- as app_owner:",
+     "at": 16
+    },
+    {
+     "kind": "cmd",
+     "text": "GRANT SELECT ON app.orders",
+     "at": 16,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "TO PUBLIC;",
+     "at": 16,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "cmd",
+     "text": "REVOKE SELECT ON app.orders",
+     "at": 16,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "FROM report_user;",
+     "at": 16,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "comment",
+     "text": "-- report_user: SELECT still works",
+     "at": 16
+    },
+    {
+     "kind": "cmd",
+     "text": "REVOKE SELECT ON app.orders",
+     "at": 17,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "FROM PUBLIC;",
+     "at": 17,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT count(*) FROM app.orders;",
+     "at": 17,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "for table orders",
+     "at": 17
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 18,
+   "to": 20,
+   "heading": "Grant option and CASCADE",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "GRANT SELECT ON app.refunds",
+     "at": 18,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "TO analyst WITH GRANT OPTION;",
+     "at": 18,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "comment",
+     "text": "-- analyst grants it to report_user",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "analyst=r*/app_owner",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "report_user=r/analyst",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "text": "REVOKE SELECT ON app.refunds",
+     "at": 19,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "cmd",
+     "text": "FROM analyst;",
+     "at": 19,
+     "prompt": "appdb-> "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  dependent privileges exist",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "HINT:  Use CASCADE to revoke them too.",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "text": "... FROM analyst CASCADE;",
+     "at": 19,
+     "prompt": "appdb=> "
+    },
+    {
+     "kind": "out",
+     "text": "REVOKE",
+     "at": 19
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "fact",
+   "title": "Revoke what you granted",
+   "text": "A user can only revoke privileges that were granted directly by that user."
+  },
+  {
+   "type": "terminal",
+   "from": 21,
+   "to": 22,
+   "heading": "Grants block DROP ROLE",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "DROP ROLE report_user;",
+     "at": 21,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  role \"report_user\" cannot",
+     "at": 21
+    },
+    {
+     "kind": "out",
+     "text": "be dropped because some objects",
+     "at": 21
+    },
+    {
+     "kind": "out",
+     "text": "depend on it",
+     "at": 21
+    },
+    {
+     "kind": "out",
+     "text": "DETAIL:  privileges for schema app",
+     "at": 21
+    },
+    {
+     "kind": "out",
+     "text": "privileges for table app.invoices",
+     "at": 21
+    },
+    {
+     "kind": "out",
+     "text": "privileges for default privileges",
+     "at": 21
+    },
+    {
+     "kind": "comment",
+     "text": "-- output trimmed",
+     "at": 21
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 22,
+   "to": 23,
+   "kind": "warning",
+   "title": "DROP OWNED drops objects",
+   "text": "It revokes the role's privileges and drops every object it owns in that database."
+  },
+  {
+   "type": "checklist",
+   "from": 23,
+   "to": 24,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 23,
+     "title": "GRANT, REVOKE: existing objects"
+    },
+    {
+     "at": 23,
+     "title": "Default privileges: future ones"
+    },
+    {
+     "at": 23,
+     "title": "Fix existing tables by hand"
+    },
+    {
+     "at": 23,
+     "title": "Access adds up, PUBLIC included"
+    },
+    {
+     "at": 23,
+     "title": "Check with \\dp and \\ddp"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 24,
+   "to": 25,
+   "next": "Ep 21 · pg_hba.conf authentication"
+  }
+ ]
+}
