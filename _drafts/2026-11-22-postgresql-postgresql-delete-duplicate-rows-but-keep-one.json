@@ -1,0 +1,1003 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL Delete Duplicate Rows but Keep One: 4 Methods",
+ "slug": "postgresql-delete-duplicate-rows-but-keep-one",
+ "category": "postgresql",
+ "description": "Delete duplicate rows in PostgreSQL but keep one: DELETE USING, row_number(), ctid for tables without an id, the NULL trap and a unique constraint.",
+ "focusKeyword": "postgresql delete duplicate rows but keep one",
+ "tags": [
+  "postgresql",
+  "delete",
+  "duplicates",
+  "window-functions",
+  "constraints"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-distinct-on/",
+  "/posts/postgresql/postgresql-upsert-on-conflict/",
+  "/posts/postgresql/postgresql-dba-part-13-table-index-bloat/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: DELETE",
+   "url": "https://www.postgresql.org/docs/18/sql-delete.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: System Columns (ctid)",
+   "url": "https://www.postgresql.org/docs/18/ddl-system-columns.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Window Functions (tutorial)",
+   "url": "https://www.postgresql.org/docs/18/tutorial-window.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Window Functions (function list)",
+   "url": "https://www.postgresql.org/docs/18/functions-window.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Comparison Functions and Operators (IS NOT DISTINCT FROM)",
+   "url": "https://www.postgresql.org/docs/18/functions-comparison.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Constraints (unique, NULLS NOT DISTINCT)",
+   "url": "https://www.postgresql.org/docs/18/ddl-constraints.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: TRUNCATE",
+   "url": "https://www.postgresql.org/docs/18/sql-truncate.html"
+  },
+  {
+   "title": "PostgreSQL wiki: Deleting duplicates (competitor check)",
+   "url": "https://wiki.postgresql.org/wiki/Deleting_duplicates"
+  }
+ ],
+ "reviewNotes": "Regular Sunday article (not a series part). Topic from Google autocomplete: 'postgresql delete duplicate rows but keep one' (top suggestion), plus '... without id', '... multiple columns', '... keep one'. No live article or earlier PostgreSQL draft covers it (an Oracle draft on the same question exists, 2026-10-24). Current top results (wiki, neon tutorial, GeeksforGeeks) show DELETE USING and row_number() but miss the NULL trap with =, ctid for keyless tables, case-insensitive duplicates and NULLS NOT DISTINCT. TEST ENVIRONMENT: Ubuntu 24.04.5 LTS with PostgreSQL 18.7 (18.7-1.pgdg24.04+5, official PGDG binaries). As in earlier runs, apt could not install postgresql-18 (dependency liburing2 not installable in the sandbox), so I extracted the PGDG .debs and ran initdb/pg_ctl/psql from them with a stub liburing (io_method=worker, the default). All outputs are real psql output; each method was run on freshly reloaded sample data, as the captions say. Docs followed: PostgreSQL 18 documentation at /docs/18/ (postgresql.org/docs/current now shows version 19). EDITOR CHECKS: (1) The case-insensitive section runs after the unique-constraint section on the same data, which is why the ids are {1,9} (id 8 consumed by the rejected insert); the article explains this. (2) The statement that GROUP BY/PARTITION BY/DISTINCT group NULLs together is shown by the test output, not quoted from the docs. (3) Batching advice is general guidance with no example.",
+ "generatedAt": "2026-11-22T13:30:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To delete duplicate rows in PostgreSQL but keep one, delete every row that has a twin with a smaller id: <code class=\"inline-code\">DELETE FROM t a USING t b WHERE a.col = b.col AND a.id &gt; b.id</code>. If you need to choose which copy survives (the newest, the most complete), number the copies with <code class=\"inline-code\">row_number()</code> and delete everything numbered above 1. If the table has no id column at all, use the hidden system column <code class=\"inline-code\">ctid</code> instead."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial shows all three methods on small sample tables, with the real output from PostgreSQL 18. It also covers the two traps that catch most people, NULL values and upper/lower case, and how to stop duplicates from coming back with a unique constraint."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What counts as a duplicate, and which row to keep",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Before you write any DELETE, answer two questions. First, which columns define a duplicate? Two customer rows may be \"the same customer\" when the email matches, even if the city differs. Second, which copy should survive? The oldest row, the newest row, or any one of them?"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL has no special \"remove duplicates\" command. You write an ordinary DELETE whose WHERE clause picks every row except the one you want to keep. The methods below differ only in how they pick that survivor."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Method",
+      "Use it when",
+      "Keeps"
+     ],
+     [
+      "DELETE ... USING (self-join)",
+      "The table has a unique id and any copy is fine",
+      "Lowest (or highest) id"
+     ],
+     [
+      "row_number() in a subquery",
+      "You must choose the survivor by a rule, such as newest date",
+      "Row numbered 1 by your ORDER BY"
+     ],
+     [
+      "ctid",
+      "The table has no primary key (raw imports, staging tables)",
+      "The physically first copy"
+     ],
+     [
+      "Copy distinct rows, TRUNCATE, reload",
+      "Most of a large table is duplicated",
+      "One copy of each distinct row"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a scratch database and a customers table where the same email was registered more than once. The primary key is an identity column, so every row has its own customer_id even when the rest of the row is a copy."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE customers (\n    customer_id  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    email        text NOT NULL,\n    full_name    text NOT NULL,\n    city         text,\n    signup_date  date NOT NULL\n);\n\nINSERT INTO customers (email, full_name, city, signup_date) VALUES\n  ('asha@example.com',  'Asha Rao',     'Pune',      '2026-01-05'),\n  ('ravi@example.com',  'Ravi Kumar',   'Chennai',   '2026-01-06'),\n  ('asha@example.com',  'Asha Rao',     'Pune',      '2026-02-10'),\n  ('meera@example.com', 'Meera Iyer',   'Bengaluru', '2026-02-11'),\n  ('ravi@example.com',  'Ravi Kumar',   'Hyderabad', '2026-03-01'),\n  ('asha@example.com',  'Asha R.',      'Mumbai',    '2026-03-20'),\n  ('john@example.com',  'John Mathew',  'Kochi',     '2026-03-22');",
+    "caption": "Sample table with duplicate emails"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLE\nINSERT 0 7",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: find the duplicates first",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Always look before you delete. <code class=\"inline-code\">GROUP BY</code> the columns that define a duplicate and keep only the groups with more than one row. <code class=\"inline-code\">array_agg</code> lists the ids in each group so you can see exactly what is at stake."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT email, count(*) AS copies, min(customer_id) AS keep_id,\n       array_agg(customer_id ORDER BY customer_id) AS all_ids\n  FROM customers\n GROUP BY email\nHAVING count(*) > 1\n ORDER BY email;",
+    "caption": "List duplicate emails and their ids"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "      email       | copies | keep_id | all_ids \n------------------+--------+---------+---------\n asha@example.com |      3 |       1 | {1,3,6}\n ravi@example.com |      2 |       2 | {2,5}\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two emails are duplicated: asha has three rows and ravi has two. If we keep the lowest id in each group, rows 3, 5 and 6 must go, which is 3 rows. Write that number down; the DELETE should report the same count."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Method 1: DELETE USING a self-join (keep the lowest id)",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">DELETE ... USING</code> lets the WHERE clause refer to another table. Here the \"other table\" is the same customers table under a second alias. The documentation for DELETE says that when you repeat the target table in USING for a self-join, it must have an alias, which is why we write <code class=\"inline-code\">customers a</code> and <code class=\"inline-code\">customers b</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The condition reads: delete row a if there is another row b with the same email and a smaller id. The row with the smallest id never has a smaller twin, so it survives."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\n\nDELETE FROM customers a\n USING customers b\n WHERE a.email = b.email\n   AND a.customer_id > b.customer_id\nRETURNING a.customer_id, a.email;",
+    "caption": "Delete duplicates inside a transaction"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\n customer_id |      email       \n-------------+------------------\n           3 | asha@example.com\n           5 | ravi@example.com\n           6 | asha@example.com\n(3 rows)\n\nDELETE 3",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">RETURNING</code> prints every deleted row, and the command tag <code class=\"inline-code\">DELETE 3</code> matches the count we expected from Step 1. Because we started with <code class=\"inline-code\">BEGIN</code>, nothing is final yet. Check the table, then decide."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT customer_id, email, city FROM customers ORDER BY customer_id;",
+    "caption": "Check what is left"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " customer_id |       email       |   city    \n-------------+-------------------+-----------\n           1 | asha@example.com  | Pune\n           2 | ravi@example.com  | Chennai\n           4 | meera@example.com | Bengaluru\n           7 | john@example.com  | Kochi\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "One row per email, and the oldest ids survived. Run <code class=\"inline-code\">COMMIT;</code> to keep the change, or <code class=\"inline-code\">ROLLBACK;</code> if anything looks wrong. To keep the highest id instead, flip the comparison to <code class=\"inline-code\">a.customer_id &lt; b.customer_id</code>."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "Wrap every duplicate cleanup in BEGIN ... COMMIT and compare the DELETE count with your Step 1 query. A ROLLBACK costs nothing; restoring a backup costs a lot."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Method 2: row_number() to choose which copy survives",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The lowest id is not always the right survivor. In our data, Ravi's newer row says Hyderabad and Asha's newest row says Mumbai, which may be their current cities. To keep the newest signup for each email, you need a rule, and that is what a window function gives you."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">row_number()</code> \"returns the number of the current row within its partition, counting from 1\" (PostgreSQL documentation). <code class=\"inline-code\">PARTITION BY email</code> starts a new count for each email, and the <code class=\"inline-code\">ORDER BY</code> inside <code class=\"inline-code\">OVER</code> decides which row gets number 1."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: preview the numbering",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT customer_id, email, signup_date,\n       row_number() OVER (PARTITION BY email\n                          ORDER BY signup_date DESC, customer_id DESC) AS rn\n  FROM customers\n ORDER BY email, rn;",
+    "caption": "Number the copies, newest first (run on fresh sample data)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " customer_id |       email       | signup_date | rn \n-------------+-------------------+-------------+----\n           6 | asha@example.com  | 2026-03-20  |  1\n           3 | asha@example.com  | 2026-02-10  |  2\n           1 | asha@example.com  | 2026-01-05  |  3\n           7 | john@example.com  | 2026-03-22  |  1\n           4 | meera@example.com | 2026-02-11  |  1\n           5 | ravi@example.com  | 2026-03-01  |  1\n           2 | ravi@example.com  | 2026-01-06  |  2\n(7 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The newest row of each email gets rn = 1. Every row with rn greater than 1 is a copy to delete. <code class=\"inline-code\">customer_id DESC</code> is a tie-breaker: if two copies share the same signup_date, the numbering is still predictable instead of random."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: delete the rows numbered above 1",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You cannot put a window function straight into WHERE. PostgreSQL rejects it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT customer_id FROM customers WHERE row_number() OVER (PARTITION BY email ORDER BY customer_id) > 1;",
+    "caption": "This fails"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  window functions are not allowed in WHERE\nLINE 1: SELECT customer_id FROM customers WHERE row_number() OVER (P...\n                                                ^",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation explains why: window functions run after WHERE, GROUP BY and HAVING have been processed. The fix is to compute the number in a subquery and filter it outside:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\n\nDELETE FROM customers\n WHERE customer_id IN (\n       SELECT customer_id\n         FROM (SELECT customer_id,\n                      row_number() OVER (PARTITION BY email\n                                         ORDER BY signup_date DESC, customer_id DESC) AS rn\n                 FROM customers) ranked\n        WHERE rn > 1)\nRETURNING customer_id, email, city, signup_date;",
+    "caption": "Keep the newest row per email"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\n customer_id |      email       |  city   | signup_date \n-------------+------------------+---------+-------------\n           1 | asha@example.com | Pune    | 2026-01-05\n           2 | ravi@example.com | Chennai | 2026-01-06\n           3 | asha@example.com | Pune    | 2026-02-10\n(3 rows)\n\nDELETE 3",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT customer_id, email, city, signup_date FROM customers ORDER BY email;",
+    "caption": "Verify, then COMMIT"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " customer_id |       email       |   city    | signup_date \n-------------+-------------------+-----------+-------------\n           6 | asha@example.com  | Mumbai    | 2026-03-20\n           7 | john@example.com  | Kochi     | 2026-03-22\n           4 | meera@example.com | Bengaluru | 2026-02-11\n           5 | ravi@example.com  | Hyderabad | 2026-03-01\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This time the newest rows survived (ids 6 and 5). To define duplicates by more than one column, list them all in PARTITION BY, for example <code class=\"inline-code\">PARTITION BY email, full_name</code>. If you only want to read one row per group without deleting anything, <code class=\"inline-code\">DISTINCT ON</code> is shorter; see <a href=\"/posts/postgresql/postgresql-distinct-on/\">PostgreSQL DISTINCT ON: one row per group</a>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Method 3: no primary key? Use ctid",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Raw imports and staging tables often have no id at all, and the copies are identical in every column. There is no column that tells them apart, so Methods 1 and 2 have nothing to compare. PostgreSQL still has one: every table has a hidden system column called ctid."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">ctid</code> is the physical location of a row version inside the table: a page number and a position on that page, such as (0,2). You do not see it with <code class=\"inline-code\">SELECT *</code>, but you can ask for it by name."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE payment_import (\n    payment_ref  text,\n    order_no     integer,\n    amount       numeric(10,2),\n    paid_via     text\n);\n\nINSERT INTO payment_import VALUES\n  ('PAY-101', 5001, 1499.00, 'UPI'),\n  ('PAY-101', 5001, 1499.00, 'UPI'),\n  ('PAY-102', 5002,  899.50, 'Card'),\n  ('PAY-103', 5003,  250.00, NULL),\n  ('PAY-103', 5003,  250.00, NULL),\n  ('PAY-103', 5003,  250.00, NULL),\n  ('PAY-104', 5004, 3200.00, 'NetBanking');",
+    "caption": "A payment import table with no primary key"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT ctid, * FROM payment_import;",
+    "caption": "Show the hidden ctid column"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " ctid  | payment_ref | order_no | amount  |  paid_via  \n-------+-------------+----------+---------+------------\n (0,1) | PAY-101     |     5001 | 1499.00 | UPI\n (0,2) | PAY-101     |     5001 | 1499.00 | UPI\n (0,3) | PAY-102     |     5002 |  899.50 | Card\n (0,4) | PAY-103     |     5003 |  250.00 | \n (0,5) | PAY-103     |     5003 |  250.00 | \n (0,6) | PAY-103     |     5003 |  250.00 | \n (0,7) | PAY-104     |     5004 | 3200.00 | NetBanking\n(7 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PAY-101 appears twice and PAY-103 three times, so 3 rows should be deleted. PAY-103 has no paid_via value: it is NULL. That detail matters."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The NULL trap",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Here is the self-join from Method 1 with ctid in place of the id:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\n\nDELETE FROM payment_import a\n USING payment_import b\n WHERE a.payment_ref = b.payment_ref\n   AND a.order_no    = b.order_no\n   AND a.amount      = b.amount\n   AND a.paid_via    = b.paid_via\n   AND a.ctid > b.ctid;\n\nROLLBACK;",
+    "caption": "Looks right, but misses rows"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\nDELETE 1\nROLLBACK",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only 1 row was deleted, not 3. The PAY-103 copies survived because <code class=\"inline-code\">NULL = NULL</code> is not true; it is NULL, meaning \"unknown\", and WHERE only keeps rows where the condition is true. The documentation's fix is <code class=\"inline-code\">IS NOT DISTINCT FROM</code>, which works like = but treats two NULLs as equal."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\n\nDELETE FROM payment_import a\n USING payment_import b\n WHERE a.payment_ref IS NOT DISTINCT FROM b.payment_ref\n   AND a.order_no    IS NOT DISTINCT FROM b.order_no\n   AND a.amount      IS NOT DISTINCT FROM b.amount\n   AND a.paid_via    IS NOT DISTINCT FROM b.paid_via\n   AND a.ctid > b.ctid\nRETURNING a.ctid, a.payment_ref;",
+    "caption": "NULL-safe comparison"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\n ctid  | payment_ref \n-------+-------------\n (0,2) | PAY-101\n (0,5) | PAY-103\n (0,6) | PAY-103\n(3 rows)\n\nDELETE 3",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now all 3 copies are found. Notice that the GROUP BY check from Step 1 would have counted PAY-103 correctly, because GROUP BY and PARTITION BY put NULLs in the same group. That makes the row_number() version NULL-safe without any extra work:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DELETE FROM payment_import\n WHERE ctid IN (\n       SELECT ctid\n         FROM (SELECT ctid,\n                      row_number() OVER (PARTITION BY payment_ref, order_no, amount, paid_via\n                                         ORDER BY ctid) AS rn\n                 FROM payment_import) ranked\n        WHERE rn > 1);",
+    "caption": "row_number() with ctid (NULLs grouped together)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "DELETE 3",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT ctid, * FROM payment_import;",
+    "caption": "Verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " ctid  | payment_ref | order_no | amount  |  paid_via  \n-------+-------------+----------+---------+------------\n (0,1) | PAY-101     |     5001 | 1499.00 | UPI\n (0,3) | PAY-102     |     5002 |  899.50 | Card\n (0,4) | PAY-103     |     5003 |  250.00 | \n (0,7) | PAY-104     |     5004 | 3200.00 | NetBanking\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "The PostgreSQL documentation warns that a row's ctid changes when the row is updated or moved by VACUUM FULL, so ctid should not be used as a row identifier. Using it inside one DELETE statement is fine, because it is read and used in the same statement. Never save ctid values and use them later, and add a real primary key to the table once it is clean."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Method 4: most rows are duplicates? Rebuild the table",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When a large share of a big table is duplicated, deleting row by row leaves many dead rows behind and can take a long time. Copying the distinct rows out, emptying the table and loading them back is often simpler. Using TRUNCATE on the original table (instead of dropping it) keeps its grants, indexes, views and triggers in place."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\n\nCREATE TEMP TABLE payment_dedup AS\nSELECT DISTINCT * FROM payment_import;\n\nTRUNCATE payment_import;\n\nINSERT INTO payment_import SELECT * FROM payment_dedup;\n\nCOMMIT;",
+    "caption": "Rebuild with only distinct rows (run on fresh sample data)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\nSELECT 4\nTRUNCATE TABLE\nINSERT 0 4\nCOMMIT",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">SELECT 4</code> means four distinct rows were saved, and <code class=\"inline-code\">INSERT 0 4</code> means all four went back. <code class=\"inline-code\">SELECT DISTINCT</code> also treats NULLs as equal, so the three PAY-103 copies became one."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "",
+    "text": "TRUNCATE takes an ACCESS EXCLUSIVE lock, which blocks all other reads and writes on the table until COMMIT; the documentation says to use DELETE instead when concurrent access is needed. TRUNCATE also refuses to run on a table that other tables reference with foreign keys, unless you add CASCADE, which empties those tables too. Do not use CASCADE here. Take a backup first and run this in a maintenance window on production systems."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Stop duplicates from coming back",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Cleaning up is half the job. If the application can still insert the same email twice, you will be back here next month. A unique constraint makes PostgreSQL reject the duplicate at insert time. Adding one creates a unique B-tree index on the columns."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you try to add it before cleaning up, it fails and tells you one of the offending values:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLE customers ADD CONSTRAINT customers_email_key UNIQUE (email);",
+    "caption": "Before cleanup (fresh sample data)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  could not create unique index \"customers_email_key\"\nDETAIL:  Key (email)=(ravi@example.com) is duplicated.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "After running Method 1 and committing, the same statement succeeds, and a repeated email is rejected:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLE customers ADD CONSTRAINT customers_email_key UNIQUE (email);\n\nINSERT INTO customers (email, full_name, city, signup_date)\nVALUES ('asha@example.com', 'Asha Rao', 'Pune', '2026-04-01');",
+    "caption": "After cleanup"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER TABLE\nERROR:  duplicate key value violates unique constraint \"customers_email_key\"\nDETAIL:  Key (email)=(asha@example.com) already exists.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the application should update the existing row instead of failing, use <code class=\"inline-code\">INSERT ... ON CONFLICT</code>, explained in <a href=\"/posts/postgresql/postgresql-upsert-on-conflict/\">PostgreSQL upsert with ON CONFLICT</a>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Unique constraints and NULLs",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By default, a unique constraint treats NULLs as different from each other, so the duplicate PAY-103 rows (paid_via is NULL) would still be allowed. Since PostgreSQL 15 you can add <code class=\"inline-code\">NULLS NOT DISTINCT</code> so that NULLs count as equal:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLE payment_import\n  ADD CONSTRAINT payment_import_uq\n  UNIQUE NULLS NOT DISTINCT (payment_ref, order_no, amount, paid_via);\n\nINSERT INTO payment_import VALUES ('PAY-103', 5003, 250.00, NULL);",
+    "caption": "Treat NULLs as equal (PostgreSQL 15 and later)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER TABLE\nERROR:  duplicate key value violates unique constraint \"payment_import_uq\"\nDETAIL:  Key (payment_ref, order_no, amount, paid_via)=(PAY-103, 5003, 250.00, null) already exists.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Without NULLS NOT DISTINCT, the same INSERT succeeded in our test and created a new duplicate."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Deleting every copy, including the one to keep",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">DELETE FROM customers WHERE email IN (SELECT email FROM customers GROUP BY email HAVING count(*) &gt; 1)</code> removes all rows for those emails, not just the extras. The query must leave one row per group untouched, which is what <code class=\"inline-code\">a.customer_id &gt; b.customer_id</code> or <code class=\"inline-code\">rn &gt; 1</code> does."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Using &lt;&gt; instead of &gt; in the self-join",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "With <code class=\"inline-code\">a.customer_id &lt;&gt; b.customer_id</code>, every row in a group has a different twin, so every copy matches and all of them are deleted. Always use &gt; or &lt;, never &lt;&gt;."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Missing duplicates that differ only in case",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To text comparison, Asha@Example.com and asha@example.com are different values, so the unique constraint above lets both in:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "INSERT INTO customers (email, full_name, city, signup_date)\nVALUES ('Asha@Example.com', 'Asha Rao', 'Pune', '2026-04-01');",
+    "caption": "Accepted, although it is the same person"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "INSERT 0 1",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Group by an expression to find such duplicates:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT lower(email) AS email_key, array_agg(customer_id ORDER BY customer_id) AS ids\n  FROM customers\n GROUP BY lower(email)\nHAVING count(*) > 1;",
+    "caption": "Find case-insensitive duplicates"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "    email_key     |  ids  \n------------------+-------\n asha@example.com | {1,9}\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Id 8 is missing because the rejected INSERT earlier still used up an identity value; failed inserts leave gaps. Delete with the same expression, then protect the table with a unique index on the expression:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DELETE FROM customers a\n USING customers b\n WHERE lower(a.email) = lower(b.email)\n   AND a.customer_id > b.customer_id;\n\nCREATE UNIQUE INDEX customers_email_lower_key ON customers (lower(email));\n\nINSERT INTO customers (email, full_name, city, signup_date)\nVALUES ('ASHA@example.com', 'Asha Rao', 'Pune', '2026-04-02');",
+    "caption": "Clean up and prevent case-insensitive duplicates"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "DELETE 1\nCREATE INDEX\nERROR:  duplicate key value violates unique constraint \"customers_email_lower_key\"\nDETAIL:  Key (lower(email))=(asha@example.com) already exists.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Forgetting the child tables",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If orders reference customer_id 3 and you delete customer 3, the foreign key either blocks the DELETE or, with ON DELETE CASCADE, silently deletes those orders. Before removing duplicate parents, point the child rows at the surviving id with an UPDATE, in the same transaction."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Index the columns that define a duplicate (here <code class=\"inline-code\">email</code>) before running the self-join on a large table. Without an index, PostgreSQL may have to compare the table with itself the hard way.",
+      "items": []
+     },
+     {
+      "content": "The row_number() method reads the table once and sorts it, which usually behaves well when there are many duplicates.",
+      "items": []
+     },
+     {
+      "content": "DELETE does not shrink the table. Deleted rows become dead row versions that VACUUM cleans up later; see <a href=\"/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/\">MVCC and row visibility</a>. After a large cleanup, run <code class=\"inline-code\">VACUUM (ANALYZE) customers;</code> and check for bloat as shown in <a href=\"/posts/postgresql/postgresql-dba-part-13-table-index-bloat/\">Part 13: table and index bloat</a>.",
+      "items": []
+     },
+     {
+      "content": "For millions of rows on a busy system, delete in batches (for example, one range of ids per transaction) so each transaction holds row locks for a short time and VACUUM can keep up.",
+      "items": []
+     },
+     {
+      "content": "DELETE lets other sessions keep reading and writing the table; TRUNCATE (Method 4) blocks them all. Pick the method that fits the time window you have.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I delete duplicate rows in PostgreSQL without an id?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use the ctid system column as a temporary tie-breaker: <code class=\"inline-code\">DELETE FROM t a USING t b WHERE a.col IS NOT DISTINCT FROM b.col AND a.ctid &gt; b.ctid</code>, listing every column. Use it only within that one statement, and add a primary key afterwards."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I delete duplicates based on multiple columns?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "List all the columns in the join condition (<code class=\"inline-code\">a.email = b.email AND a.full_name = b.full_name</code>) or in <code class=\"inline-code\">PARTITION BY email, full_name</code>. Columns you leave out are allowed to differ between the copies."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I keep the latest duplicate row instead of the first?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use row_number() with <code class=\"inline-code\">ORDER BY signup_date DESC, customer_id DESC</code> in the OVER clause and delete rows where rn &gt; 1, as in Method 2. With the self-join, <code class=\"inline-code\">a.customer_id &lt; b.customer_id</code> keeps the highest id."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Can I undo a DELETE of duplicates?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only before COMMIT. Inside BEGIN, a ROLLBACK restores everything. After COMMIT, the rows can only come back from a backup, which is why every example here runs in a transaction and is checked first."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Decide which columns define a duplicate and which copy should survive.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Find the duplicates first with GROUP BY ... HAVING count(*) &gt; 1 and note how many rows should go.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use DELETE ... USING with a.id &gt; b.id to keep the lowest id.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use row_number() in a subquery when the survivor depends on a rule, such as the newest date.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use ctid for tables without a key, only inside a single statement.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Compare nullable columns with IS NOT DISTINCT FROM, never with =.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Run the DELETE inside BEGIN, check the count and the remaining rows, then COMMIT.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Add a UNIQUE constraint (NULLS NOT DISTINCT, or a unique index on lower(email), if needed) so duplicates cannot return.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Run VACUUM (ANALYZE) after a large cleanup.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your DELETE removed 1 duplicate row, but there were 3. The reason is a NULL.\n\nCleaning duplicates in PostgreSQL while keeping one copy is a common task. Here is what works:\n\n→ Keep the lowest id with a self-join: DELETE ... USING the same table under a second alias, and delete a row when a twin with the same email and a smaller customer_id exists. Use > there, never <>\n\n→ Need the newest copy instead? Number the copies with row_number() OVER (PARTITION BY email ORDER BY signup_date DESC) in a subquery and delete rn > 1\n\n→ No primary key at all? The hidden ctid column tells identical rows apart. Use it inside one statement only, it changes after UPDATE and VACUUM FULL\n\n→ NULL = NULL is not true, so copies with NULL columns survive a plain = join. Compare with IS NOT DISTINCT FROM\n\n→ Then add a UNIQUE constraint (NULLS NOT DISTINCT since PostgreSQL 15) so duplicates cannot come back\n\nRun it all inside BEGIN and check the DELETE count before COMMIT.\n\nWhich one do you reach for first: the self-join or row_number()?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #Database #DBA",
+  "slides": [
+   {
+    "title": "Delete Duplicates, Keep One Row",
+    "body": "Four PostgreSQL methods, tested on PostgreSQL 18"
+   },
+   {
+    "title": "Step 1: find them first",
+    "points": [
+     "GROUP BY the columns that define a duplicate",
+     "Keep groups with count(*) > 1",
+     "Note how many rows should be deleted"
+    ],
+    "code": "SELECT email, count(*)\n  FROM customers\n GROUP BY email\nHAVING count(*) > 1;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Keep the lowest id",
+    "body": "Join the table to itself. Delete a row when a twin with a smaller id exists. Use > not <>, or every copy is deleted.",
+    "code": "DELETE FROM customers a\n USING customers b\n WHERE a.email = b.email\n   AND a.customer_id > b.customer_id;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Keep the newest copy",
+    "points": [
+     "Number copies per email with row_number()",
+     "ORDER BY signup_date DESC gives the newest rn = 1",
+     "Filter rn > 1 in an outer query, not in WHERE"
+    ],
+    "code": "SELECT customer_id,\n  row_number() OVER (\n    PARTITION BY email\n    ORDER BY signup_date DESC) AS rn\nFROM customers;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "No id? Use ctid, carefully",
+    "points": [
+     "ctid is the hidden physical row location",
+     "It changes after UPDATE or VACUUM FULL",
+     "Use it inside one statement, then add a key"
+    ]
+   },
+   {
+    "title": "The NULL trap",
+    "body": "NULL = NULL is not true, so rows with NULL columns escape a plain = join. Use IS NOT DISTINCT FROM, then add UNIQUE NULLS NOT DISTINCT (PostgreSQL 15+) to block new copies."
+   }
+  ]
+ }
+}
