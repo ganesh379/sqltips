@@ -53,3 +53,4 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-20 | 13:00 | Instagram | Series Ep 017 | Schemas and Search Path | reels/2026-11-20-1300 | 6afe8a3ff6b6aa0cd4a452e1
 - 2026-11-21 | 13:00 | Instagram | Series Ep 018 | Roles vs Users: PostgreSQL Role Model | reels/2026-11-21-1300 | 6affdcebd5f8acdd0d749aa3
 - 2026-11-22 | 13:00 | Instagram | Series Ep 019 | Create Read-Only Users Correctly | reels/2026-11-22-1300 | 6b0130325e993799d8554048
+- 2026-11-23 | 13:00 | Instagram | Series Ep 020 | GRANT, REVOKE and Default Privileges | reels/2026-11-23-1300 | 6b02813a024796909228368e

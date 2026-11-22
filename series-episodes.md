@@ -87,7 +87,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Demonstrate CONNECT, USAGE, SELECT, default privileges and sequence access; scope grants carefully.
   - Format: Practical SQL demo · Level: Beginner
   - Hook: How to create a genuinely read-only PostgreSQL user.
-- [ ] Ep 020 | 2026-11-23 | GRANT, REVOKE and Default Privileges
+- [x] Ep 020 | 2026-11-23 | GRANT, REVOKE and Default Privileges (posted 2026-11-23 13:00, Buffer 6b02813a024796909228368e)
   - Objective: Explain object privileges versus default privileges and why grants do not automatically cover future objects.
   - Format: Privilege matrix · Level: Intermediate
   - Hook: Why can't my user read tomorrow's tables?
