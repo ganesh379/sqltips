@@ -21,3 +21,4 @@
 - Part 20 | postgresql-dba-part-20-point-in-time-recovery | 2026-11-17
 - Part 21 | postgresql-dba-part-21-pgbackrest | 2026-11-18
 - Part 22 | postgresql-dba-part-22-testing-backups-restore-drills | 2026-11-20
+- Part 23 | postgresql-dba-part-23-logging-slow-queries-auto-explain | 2026-11-23

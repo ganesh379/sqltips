@@ -1,0 +1,1407 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 23: Log Slow Queries with auto_explain",
+ "slug": "postgresql-dba-part-23-logging-slow-queries-auto-explain",
+ "category": "postgresql",
+ "description": "Log slow queries in PostgreSQL 18 on Ubuntu: log_min_duration_statement, log_line_prefix, lock waits, temp files and auto_explain, with real log output.",
+ "focusKeyword": "postgresql log slow queries",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "logging",
+  "auto-explain",
+  "performance"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/",
+  "/posts/postgresql/postgresql-dba-part-10-connections-sessions/",
+  "/posts/postgresql/postgresql-dba-part-16-checkpoints-background-writer/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 19.8 Error Reporting and Logging",
+   "url": "https://www.postgresql.org/docs/18/runtime-config-logging.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: F.3 auto_explain",
+   "url": "https://www.postgresql.org/docs/18/auto-explain.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.11 Client Connection Defaults (session_preload_libraries, shared_preload_libraries)",
+   "url": "https://www.postgresql.org/docs/18/runtime-config-client.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.1 Setting Parameters",
+   "url": "https://www.postgresql.org/docs/18/config-setting.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_settings",
+   "url": "https://www.postgresql.org/docs/18/view-pg-settings.html"
+  }
+ ],
+ "reviewNotes": "Series part 23. Publish Part 22 first (Parts 19-22 are also not live yet; Part 22 is named without a link and is not in related). TEST ENVIRONMENT: Ubuntu 24.04.5 LTS with PostgreSQL 18.7 (18.7-1.pgdg24.04+5) from the official PGDG apt repository; all outputs in the article are real from this server. Documentation followed: PostgreSQL 18 docs (/docs/18/; postgresql.org/docs/current now shows version 19, so sources point to /docs/18/). Sandbox workaround: postgresql-18 depends on liburing2 from the Ubuntu archive, which the sandbox network blocks, so a local stub liburing2 package was installed to satisfy the dependency; the server ran with the default io_method = worker, so io_uring was never used and nothing in this article depends on it. Other sandbox differences: the sandbox also had an old, stopped 16 main cluster, so the pg_lsclusters output in Step 2 shows only the 18 line (as on a clean install); the 18 cluster was created on port 5433 and moved to 5432 before testing. No systemd in the sandbox, so reloads were done with SELECT pg_reload_conf() and sudo pg_ctlcluster 18 main reload; the article shows sudo systemctl reload postgresql@18-main as the equivalent. Step 1 was run non-interactively; the 'You are now connected' line was checked by running the same statement types in a throwaway database. Facts to check: log_connections became a list of options in PostgreSQL 18 (verified on the 18 logging page and in the test); log_checkpoints default on since PostgreSQL 15 is from the 15 release notes as remembered, not re-fetched. Plan outputs in Steps 9 and 11 use tabs in the real log; tabs were converted to two spaces for mobile, and the captions say so. The demo password Shop#2026 appears in the log_statement example on purpose, to show the leak.",
+ "generatedAt": "2026-11-23T12:56:26Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is <b>Part 23 of the PostgreSQL DBA series</b>, and the first part of the monitoring and performance section. In Part 22 we tested backups with restore drills. Now we turn to the question every DBA hears sooner or later: <i>\"the application is slow, which query is it?\"</i>"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The quickest way to <b>log slow queries in PostgreSQL</b> is one setting: <code class=\"inline-code\">log_min_duration_statement</code>. Set it to, say, <code class=\"inline-code\">250ms</code>, reload the configuration, and every statement that runs for 250 milliseconds or longer is written to the server log with its duration and its SQL text. Add the <code class=\"inline-code\">auto_explain</code> module and the log also shows the execution plan of the slow statement, so you can see <i>why</i> it was slow."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By the end of this part you will know where PostgreSQL writes its log on Ubuntu, how to make every log line say who ran what from where, how to catch slow queries, lock waits and large temporary files, and how to turn on <code class=\"inline-code\">auto_explain</code> safely. Every command and output was run on PostgreSQL 18 on Ubuntu."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Where the server log lives on Ubuntu, and why <code class=\"inline-code\">pg_current_logfile()</code> returns nothing there",
+      "items": []
+     },
+     {
+      "content": "How to build a useful <code class=\"inline-code\">log_line_prefix</code> that shows user, database, application and client address",
+      "items": []
+     },
+     {
+      "content": "How to log slow queries with <code class=\"inline-code\">log_min_duration_statement</code>, for the whole server or for one role",
+      "items": []
+     },
+     {
+      "content": "Three more settings that catch real problems: <code class=\"inline-code\">log_lock_waits</code>, <code class=\"inline-code\">log_temp_files</code> and the PostgreSQL 18 options of <code class=\"inline-code\">log_connections</code>",
+      "items": []
+     },
+     {
+      "content": "How to log execution plans of slow statements with <code class=\"inline-code\">auto_explain</code>, and what it costs",
+      "items": []
+     },
+     {
+      "content": "How to find the slowest statements in the log with grep and sort",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<a href=\"/posts/postgresql/postgresql-dba-part-2-install-postgresql-18-ubuntu/\">Part 2</a> (PostgreSQL 18 installed from the PGDG repository on Ubuntu) and <a href=\"/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/\">Part 5</a> (editing postgresql.conf, reload versus restart, pg_settings).",
+      "items": []
+     },
+     {
+      "content": "<a href=\"/posts/postgresql/postgresql-dba-part-10-connections-sessions/\">Part 10</a> (sessions and pg_stat_activity) helps for the lock wait example.",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server, called <b>db1</b> in this part, running the cluster <code class=\"inline-code\">18 main</code> on port 5432. You need a user with sudo rights.",
+      "items": []
+     },
+     {
+      "content": "About 200 MB of free disk for a sample table with 2 million rows.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL writes messages about its own work to the <b>server log</b>: startup and shutdown, checkpoints, errors, and anything else you ask it to report. Think of it as the flight recorder of the database. By default it records very little about normal queries, so when something goes wrong at 3 a.m. the recorder was mostly switched off."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Logging settings answer three questions, and the documentation groups them the same way:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Question",
+      "Settings in this part"
+     ],
+     [
+      "Where to log",
+      "log_destination, logging_collector (and on Ubuntu, the pg_ctlcluster log file)"
+     ],
+     [
+      "When to log",
+      "log_min_duration_statement, log_min_error_statement, log_min_messages"
+     ],
+     [
+      "What to log",
+      "log_line_prefix, log_lock_waits, log_temp_files, log_connections, log_disconnections, log_statement"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">auto_explain</code> is different. It is a module that ships with PostgreSQL (in the <code class=\"inline-code\">postgresql-18</code> package, no extra install). When a statement runs longer than its threshold, it writes the same plan you would get from <code class=\"inline-code\">EXPLAIN</code> into the log. A plain slow query log tells you <i>what</i> was slow. <code class=\"inline-code\">auto_explain</code> tells you <i>why</i>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Most logging settings can be changed with a <b>reload</b>, which does not disconnect anyone. Only a few, such as logging_collector and shared_preload_libraries, need a restart. This part uses reload-only settings throughout."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "application (billing_app) --SQL--> PostgreSQL 18 on db1 (127.0.0.1:5432)\n                                       |\n                                       | slow statement, lock wait, temp file\n                                       v\n                        /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Where the messages in this part end up"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "We need queries that are really slow, so the sample <code class=\"inline-code\">orders</code> table gets 2 million rows. We also create a login role <code class=\"inline-code\">shop_app</code> that plays the part of the application."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Create the sample database, table and application role",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as the postgres operating system user</b> (through sudo), open psql and run:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE DATABASE shop;\n\\c shop\n\nCREATE TABLE orders (\n    order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer_id integer NOT NULL,\n    status      text    NOT NULL,\n    amount      numeric(10,2) NOT NULL,\n    created_at  timestamptz NOT NULL\n);\n\nINSERT INTO orders (customer_id, status, amount, created_at)\nSELECT (random() * 50000)::int + 1,\n       (ARRAY['new','paid','shipped','cancelled'])[1 + (g % 4)],\n       round((random() * 5000)::numeric, 2),\n       now() - (g || ' minutes')::interval\n  FROM generate_series(1, 2000000) AS g;\n\nANALYZE orders;\n\nCREATE ROLE shop_app LOGIN PASSWORD 'Shop#2026';\nGRANT SELECT, INSERT, UPDATE, DELETE ON orders TO shop_app;",
+    "caption": "Sample data: 2 million orders and an application role"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE DATABASE\nYou are now connected to database \"shop\" as user \"postgres\".\nCREATE TABLE\nINSERT 0 2000000\nANALYZE\nCREATE ROLE\nGRANT",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The insert takes a few seconds. To verify, run <code class=\"inline-code\">SELECT count(*) FROM orders;</code> and expect <code class=\"inline-code\">2000000</code>. To remove everything after the part, run <code class=\"inline-code\">DROP DATABASE shop;</code> and <code class=\"inline-code\">DROP ROLE shop_app;</code> as postgres."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Where PostgreSQL logs go on Ubuntu",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Find the log file and check the current settings",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> The Ubuntu packages start every cluster through pg_ctlcluster, which sends the server's messages to one file per cluster. pg_lsclusters shows its path in the last column:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "pg_lsclusters",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now look at the logging settings the cluster is using. Run this in psql as postgres:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, unit, context\n  FROM pg_settings\n WHERE name IN ('logging_collector', 'log_destination',\n                'log_line_prefix', 'log_min_duration_statement',\n                'log_lock_waits', 'log_temp_files',\n                'log_autovacuum_min_duration', 'log_checkpoints',\n                'log_statement')\n ORDER BY name;",
+    "caption": "Current logging settings"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "            name             |     setting      | unit |  context\n-----------------------------+------------------+------+------------\n log_autovacuum_min_duration | 600000           | ms   | sighup\n log_checkpoints             | on               |      | sighup\n log_destination             | stderr           |      | sighup\n log_line_prefix             | %m [%p] %q%u@%d  |      | sighup\n log_lock_waits              | off              |      | superuser\n log_min_duration_statement  | -1               | ms   | superuser\n log_statement               | none             |      | superuser\n log_temp_files              | -1               | kB   | superuser\n logging_collector           | off              |      | postmaster\n(9 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "What this shows:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">logging_collector</code> is <code class=\"inline-code\">off</code> and <code class=\"inline-code\">log_destination</code> is <code class=\"inline-code\">stderr</code>. PostgreSQL writes to standard error, and pg_ctlcluster sends that to <code class=\"inline-code\">/var/log/postgresql/postgresql-18-main.log</code>. That is why <code class=\"inline-code\">SELECT pg_current_logfile();</code> returns an empty (NULL) result on Ubuntu: the function only reports files written by the logging collector.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">log_min_duration_statement</code> is <code class=\"inline-code\">-1</code>, the documented default, which means statement durations are not logged at all.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">log_checkpoints</code> is already <code class=\"inline-code\">on</code> (the default since PostgreSQL 15) and autovacuum actions that take 10 minutes or more are logged (<code class=\"inline-code\">600000</code> ms is the default <code class=\"inline-code\">10min</code>).",
+      "items": []
+     },
+     {
+      "content": "The <code class=\"inline-code\">context</code> column tells you how a setting can change. <code class=\"inline-code\">sighup</code> means a reload is enough, <code class=\"inline-code\">superuser</code> means a reload works and a superuser can also change it per session, and <code class=\"inline-code\">postmaster</code> means restart only.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To follow the log live while you work through this part, open a second terminal on db1 and run <code class=\"inline-code\">sudo tail -f /var/log/postgresql/postgresql-18-main.log</code>. Ubuntu rotates this file weekly and keeps 10 compressed copies, set in <code class=\"inline-code\">/etc/logrotate.d/postgresql-common</code>."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Should you turn on logging_collector?",
+    "text": "On Ubuntu you usually do not need to. The packaged setup with logrotate works well and keeps logs under /var/log/postgresql, where your other tools look. If you do set <code class=\"inline-code\">logging_collector = on</code>, it needs a restart, and the files then go to <code class=\"inline-code\">log_directory</code> (default <code class=\"inline-code\">log</code>, inside the data directory) instead of /var/log/postgresql."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Make every log line useful with log_line_prefix",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A log line without context is hard to act on. <code class=\"inline-code\">ERROR: column does not exist</code> is only useful if you know which application, user and database sent it. <code class=\"inline-code\">log_line_prefix</code> is a printf-style string written at the start of every line; each <code class=\"inline-code\">%</code> escape is replaced with a piece of session information."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Add the application name and client address to the prefix",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo</b>, open <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code> in an editor (<code class=\"inline-code\">sudo nano /etc/postgresql/18/main/postgresql.conf</code>) and change the <code class=\"inline-code\">log_line_prefix</code> line:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before (Ubuntu package default)\nlog_line_prefix = '%m [%p] %q%u@%d '\n\n# after\nlog_line_prefix = '%m [%p] %q%u@%d app=%a client=%h '",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "What each escape means, from the documentation's table:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Escape",
+      "What it prints"
+     ],
+     [
+      "%m",
+      "Time stamp with milliseconds"
+     ],
+     [
+      "%p",
+      "Process ID of the server process"
+     ],
+     [
+      "%q",
+      "Nothing; tells background processes (which have no user or database) to stop printing the prefix here"
+     ],
+     [
+      "%u",
+      "User name"
+     ],
+     [
+      "%d",
+      "Database name"
+     ],
+     [
+      "%a",
+      "Application name (set by the client, for example with application_name in the connection string)"
+     ],
+     [
+      "%h",
+      "Remote host name or IP address, or [local] for a Unix socket connection"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documented default of <code class=\"inline-code\">log_line_prefix</code> is <code class=\"inline-code\">'%m [%p] '</code>; the Ubuntu package adds <code class=\"inline-code\">%q%u@%d </code>. Keep a space as the last character so the prefix is separated from the message. Other useful escapes are <code class=\"inline-code\">%c</code> (session ID), <code class=\"inline-code\">%x</code> (transaction ID) and <code class=\"inline-code\">%e</code> (SQLSTATE error code). If you plan to use a log analyzer later, check which prefix format it expects before you change this."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The setting has context sighup, so reload. In psql as postgres:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_reload_conf();",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_reload_conf\n----------------\n t\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">t</code> only means the reload signal was sent. The log confirms that the server read the new value:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-23 12:48:41.162 UTC [2548] LOG:  received SIGHUP, reloading configuration files\n2026-11-23 12:48:41.163 UTC [2548] LOG:  parameter \"log_line_prefix\" changed to \"%m [%p] %q%u@%d app=%a client=%h \"",
+    "caption": "Output (from /var/log/postgresql/postgresql-18-main.log)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify:</b> open a new psql session and run <code class=\"inline-code\">SHOW log_line_prefix;</code>. Then connect as the application and run a query with a mistake in it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SHOW log_line_prefix;\"\n\npsql \"host=127.0.0.1 dbname=shop user=shop_app application_name=billing_app\" \\\n     -c \"SELECT count(*) FROM orders WHERE undefined_col = 1;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "          log_line_prefix\n-----------------------------------\n %m [%p] %q%u@%d app=%a client=%h\n(1 row)\n\n2026-11-23 12:55:22.473 UTC [2969] shop_app@shop app=billing_app client=127.0.0.1 ERROR:  column \"undefined_col\" does not exist at character 35\n2026-11-23 12:55:22.473 UTC [2969] shop_app@shop app=billing_app client=127.0.0.1 STATEMENT:  SELECT count(*) FROM orders WHERE undefined_col = 1;",
+    "caption": "Output (SHOW result, then the new lines in the log; psql also prints the ERROR on screen)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now the error line tells you the user, database, application and client address. The <code class=\"inline-code\">STATEMENT:</code> line appears because <code class=\"inline-code\">log_min_error_statement</code> defaults to <code class=\"inline-code\">ERROR</code>: every statement that fails with an error is logged with its text."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> put back <code class=\"inline-code\">log_line_prefix = '%m [%p] %q%u@%d '</code> and reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Log slow queries with log_min_duration_statement",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">log_min_duration_statement</code> logs the duration and the text of every completed statement that ran for at least the given time. A value without units is milliseconds, <code class=\"inline-code\">0</code> logs every statement and <code class=\"inline-code\">-1</code> (the default) turns it off."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Choosing the threshold is a trade-off. Too low and the log fills with thousands of fast statements, costing disk space and some I/O. Too high and you miss the queries users complain about. A common starting point for an OLTP application is somewhere between 250 ms and 1 s; lower it later if the log stays quiet."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Turn on slow query logging, lock wait logging and temp file logging",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo</b>, edit <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code>. The three lines are commented out by default; remove the <code class=\"inline-code\">#</code> and set the values:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before (defaults, commented out)\n#log_min_duration_statement = -1       # -1 is disabled, 0 logs all statements\n#log_lock_waits = off                  # log lock waits >= deadlock_timeout\n#log_temp_files = -1                   # log temporary files equal or larger\n\n# after\nlog_min_duration_statement = 250ms\nlog_lock_waits = on\nlog_temp_files = 10MB",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "What it does (documented default)"
+     ],
+     [
+      "log_min_duration_statement = 250ms",
+      "Logs every statement that runs 250 ms or longer, with its duration and text (default -1, off)"
+     ],
+     [
+      "log_lock_waits = on",
+      "Logs a message when a session waits longer than deadlock_timeout (default 1s) for a lock (default off)"
+     ],
+     [
+      "log_temp_files = 10MB",
+      "Logs each temporary file of 10 MB or more, with its size, when it is deleted. Sorts and hashes that do not fit in work_mem create these files (default -1, off)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All three can be changed with a reload. In psql as postgres:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_reload_conf();\n\n-- in a NEW session, a moment later:\nSELECT name, setting, unit\n  FROM pg_settings\n WHERE name IN ('log_min_duration_statement', 'log_lock_waits', 'log_temp_files')\n ORDER BY name;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "            name            | setting | unit\n----------------------------+---------+------\n log_lock_waits             | on      |\n log_min_duration_statement | 250     | ms\n log_temp_files             | 10240   | kB\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "pg_settings shows the value in its base unit: 250 ms, and 10 MB as 10240 kB. The log also records each changed parameter, as in Step 3."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Run a slow query and read the log entry",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as any OS user</b>, connect as the application and run one slow report and one fast lookup:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql \"host=127.0.0.1 dbname=shop user=shop_app application_name=billing_app\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\timing on\nSELECT status, count(DISTINCT customer_id) AS customers\n  FROM orders\n GROUP BY status;\n\nSELECT * FROM orders WHERE order_id = 42;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Timing is on.\n  status   | customers\n-----------+-----------\n cancelled |     50000\n new       |     49998\n paid      |     49996\n shipped   |     49999\n(4 rows)\n\nTime: 2883.295 ms (00:02.883)\n order_id | customer_id | status  | amount  |          created_at\n----------+-------------+---------+---------+-------------------------------\n       42 |       40750 | shipped | 2497.70 | 2026-11-23 12:06:25.482661+00\n(1 row)\n\nTime: 0.790 ms",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The report took almost 3 seconds; the primary key lookup took under 1 ms. Now look at the log (<code class=\"inline-code\">sudo tail -3 /var/log/postgresql/postgresql-18-main.log</code>):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-23 12:51:10.225 UTC [2698] shop_app@shop app=billing_app client=127.0.0.1 LOG:  temporary file: path \"base/pgsql_tmp/pgsql_tmp2698.0\", size 44097536\n2026-11-23 12:51:10.225 UTC [2698] shop_app@shop app=billing_app client=127.0.0.1 STATEMENT:  SELECT status, count(DISTINCT customer_id) AS customers FROM orders GROUP BY status;\n2026-11-23 12:51:10.226 UTC [2698] shop_app@shop app=billing_app client=127.0.0.1 LOG:  duration: 2882.900 ms  statement: SELECT status, count(DISTINCT customer_id) AS customers FROM orders GROUP BY status;",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two settings fired for one statement:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "The <code class=\"inline-code\">duration:</code> line comes from <code class=\"inline-code\">log_min_duration_statement</code>. It gives the exact time and the full SQL text. The fast lookup is not in the log, which is what you want.",
+      "items": []
+     },
+     {
+      "content": "The <code class=\"inline-code\">temporary file:</code> line comes from <code class=\"inline-code\">log_temp_files</code>. The sort for <code class=\"inline-code\">count(DISTINCT ...)</code> needed about 42 MB on disk (<code class=\"inline-code\">44097536</code> bytes), because it did not fit in <code class=\"inline-code\">work_mem</code> (default 4 MB). Temp files are a strong hint that a query needs a better plan, an index or more memory, which Part 26 and Part 28 cover.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Statements sent with bind parameters",
+    "text": "Most application drivers use the extended query protocol. For those, the documentation notes that the durations of the Parse, Bind and Execute steps are logged separately, and the log shows the bind parameter values. <code class=\"inline-code\">log_parameter_max_length</code> (default -1, full values) controls how much of each value is written; set it to a small number, or 0, if parameters can contain personal data."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: See a lock wait in the log",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Slow is not always a bad plan. Often a statement is simply waiting for another transaction to release a row lock. With <code class=\"inline-code\">log_lock_waits = on</code> PostgreSQL tells you. <b>On db1, open two terminals.</b> In terminal A, update a row and keep the transaction open:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- terminal A: psql \"host=127.0.0.1 dbname=shop user=shop_app application_name=admin_console\"\nBEGIN;\nUPDATE orders SET status = 'paid' WHERE order_id = 42;\nSELECT pg_sleep(4);\nCOMMIT;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "-- terminal B (start while A is sleeping): psql \"host=127.0.0.1 dbname=shop user=shop_app application_name=billing_app\"\nUPDATE orders SET amount = amount + 10 WHERE order_id = 42;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-23 12:51:16.256 UTC [2711] shop_app@shop app=billing_app client=127.0.0.1 LOG:  process 2711 still waiting for ShareLock on transaction 771 after 1000.244 ms\n2026-11-23 12:51:16.256 UTC [2711] shop_app@shop app=billing_app client=127.0.0.1 DETAIL:  Process holding the lock: 2709. Wait queue: 2711.\n2026-11-23 12:51:16.256 UTC [2711] shop_app@shop app=billing_app client=127.0.0.1 CONTEXT:  while updating tuple (0,42) in relation \"orders\"\n2026-11-23 12:51:16.256 UTC [2711] shop_app@shop app=billing_app client=127.0.0.1 STATEMENT:  UPDATE orders SET amount = amount + 10 WHERE order_id = 42;\n2026-11-23 12:51:18.255 UTC [2709] shop_app@shop app=admin_console client=127.0.0.1 LOG:  duration: 4004.469 ms  statement: SELECT pg_sleep(4);\n2026-11-23 12:51:18.256 UTC [2711] shop_app@shop app=billing_app client=127.0.0.1 LOG:  process 2711 acquired ShareLock on transaction 771 after 3001.873 ms\n2026-11-23 12:51:18.256 UTC [2711] shop_app@shop app=billing_app client=127.0.0.1 CONTEXT:  while updating tuple (0,42) in relation \"orders\"\n2026-11-23 12:51:18.256 UTC [2711] shop_app@shop app=billing_app client=127.0.0.1 STATEMENT:  UPDATE orders SET amount = amount + 10 WHERE order_id = 42;\n2026-11-23 12:51:18.257 UTC [2711] shop_app@shop app=billing_app client=127.0.0.1 LOG:  duration: 3003.857 ms  statement: UPDATE orders SET amount = amount + 10 WHERE order_id = 42;",
+    "caption": "Output (from /var/log/postgresql/postgresql-18-main.log)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it from the top. After 1 second (the default <code class=\"inline-code\">deadlock_timeout</code>) process 2711 reported that it was waiting, and the <code class=\"inline-code\">DETAIL</code> line names the blocker, process 2709. The prefix shows that 2709 is the <code class=\"inline-code\">admin_console</code> application. When the blocker committed, 2711 logged how long it waited in total. The 3-second <code class=\"inline-code\">UPDATE</code> of a single row was not slow because of its plan; it was blocked. Part 29 covers locks in depth."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Use a different threshold for one role or database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only superusers (and roles granted SET on the parameter) can change <code class=\"inline-code\">log_min_duration_statement</code>, so an application cannot switch it off for itself. A DBA can set it per role or per database with <code class=\"inline-code\">ALTER ROLE ... SET</code> or <code class=\"inline-code\">ALTER DATABASE ... SET</code>. <b>On db1, in psql as postgres:</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER ROLE shop_app SET log_min_duration_statement = '100ms';\n\\drds shop_app",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ALTER ROLE\n                    List of settings\n   Role   | Database |             Settings\n----------+----------+----------------------------------\n shop_app |          | log_min_duration_statement=100ms\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify:</b> the value applies to new sessions of <code class=\"inline-code\">shop_app</code>. Connect as shop_app and run <code class=\"inline-code\">SHOW log_min_duration_statement;</code>; it returns <code class=\"inline-code\">100ms</code>. If shop_app itself tries <code class=\"inline-code\">SET log_min_duration_statement = 0;</code> it gets <code class=\"inline-code\">ERROR:  permission denied to set parameter \"log_min_duration_statement\"</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">ALTER ROLE shop_app RESET log_min_duration_statement;</code>"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Log connections and disconnections (new options in PostgreSQL 18)",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In PostgreSQL 18, <code class=\"inline-code\">log_connections</code> changed from on/off to a list of options: <code class=\"inline-code\">receipt</code>, <code class=\"inline-code\">authentication</code>, <code class=\"inline-code\">authorization</code>, <code class=\"inline-code\">setup_durations</code> and <code class=\"inline-code\">all</code>. The old values still work: <code class=\"inline-code\">on</code> means receipt, authentication and authorization. <code class=\"inline-code\">setup_durations</code> is new and logs how long each connection took to set up, which helps when users say \"connecting is slow\"."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Log authorized connections, their setup time and disconnections",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo</b>, edit <code class=\"inline-code\">/etc/postgresql/18/main/postgresql.conf</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before\n#log_connections = ''                  # log aspects of connection setup\n#log_disconnections = off\n\n# after\nlog_connections = 'authorization,setup_durations'\nlog_disconnections = on",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Apply with <code class=\"inline-code\">sudo systemctl reload postgresql@18-main</code> (or <code class=\"inline-code\">SELECT pg_reload_conf();</code>). Both settings take effect for <b>new</b> sessions only; the documentation says they cannot be changed within a session. Then connect once as the application:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main\npsql \"host=127.0.0.1 dbname=shop user=shop_app application_name=billing_app\" -c \"SELECT 1;\" > /dev/null\nsudo tail -3 /var/log/postgresql/postgresql-18-main.log",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-23 12:52:23.273 UTC [2898] shop_app@shop app=[unknown] client=127.0.0.1 LOG:  connection authorized: user=shop_app database=shop application_name=billing_app SSL enabled (protocol=TLSv1.3, cipher=TLS_AES_256_GCM_SHA384, bits=256)\n2026-11-23 12:52:23.283 UTC [2898] shop_app@shop app=billing_app client=127.0.0.1 LOG:  connection ready: setup total=21.753 ms, fork=0.717 ms, authentication=5.048 ms\n2026-11-23 12:52:23.284 UTC [2898] shop_app@shop app=billing_app client=127.0.0.1 LOG:  disconnection: session time: 0:00:00.022 user=shop_app database=shop host=127.0.0.1 port=37466",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">connection ready</code> line splits the setup time into fork and authentication. Notice <code class=\"inline-code\">app=[unknown]</code> on the first line: at that moment the application name has not been applied yet, but the message itself includes it. On a busy server with many short connections these lines add up quickly, which is one reason to use a connection pooler (Part 30)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> comment both lines out again and reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Log execution plans of slow queries with auto_explain",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The slow query log told us the report took 2.9 seconds. To fix it you need the plan, and by the time you run <code class=\"inline-code\">EXPLAIN</code> by hand the data, the parameters or the cached statistics may have changed. <code class=\"inline-code\">auto_explain</code> captures the plan of the slow execution itself, at the moment it happened."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Try auto_explain in your own session first",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, in psql as postgres, connected to shop.</b> <code class=\"inline-code\">LOAD</code> loads the module into this session only (superuser required). Nothing is logged until <code class=\"inline-code\">auto_explain.log_min_duration</code> is set, because its default is <code class=\"inline-code\">-1</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "LOAD 'auto_explain';\nSET auto_explain.log_min_duration = 0;\nSET auto_explain.log_analyze = true;\nSELECT count(*) FROM orders WHERE customer_id = 4711;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOAD\nSET\nSET\n count\n-------\n    42\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-23 12:51:25.554 UTC [2723] postgres@shop app=psql client=[local] LOG:  duration: 43.550 ms  plan:\n  Query Text: SELECT count(*) FROM orders WHERE customer_id = 4711;\n  Finalize Aggregate  (cost=27165.93..27165.94 rows=1 width=8) (actual time=40.074..43.532 rows=1.00 loops=1)\n    ->  Gather  (cost=27165.71..27165.92 rows=2 width=8) (actual time=39.933..43.521 rows=3.00 loops=1)\n          Workers Planned: 2\n          Workers Launched: 2\n          ->  Partial Aggregate  (cost=26165.71..26165.72 rows=1 width=8) (actual time=37.116..37.117 rows=1.00 loops=3)\n                ->  Parallel Seq Scan on orders  (cost=0.00..26165.67 rows=18 width=0) (actual time=8.407..37.095 rows=14.00 loops=3)\n                      Filter: (customer_id = 4711)\n                      Rows Removed by Filter: 666653",
+    "caption": "Output (from /var/log/postgresql/postgresql-18-main.log; tabs shown as spaces)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The client sees only the result. The plan goes to the log. It shows a parallel sequential scan that read all 2 million rows to find 42, because there is no index on <code class=\"inline-code\">customer_id</code>. The plan alone answers \"why was it slow?\". When you close this session, auto_explain is gone again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Turn on auto_explain for all new sessions",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There are two ways to load the module for everyone, both documented:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "Takes effect",
+      "If the library name is wrong"
+     ],
+     [
+      "session_preload_libraries = 'auto_explain'",
+      "Reload; each NEW session loads it",
+      "Every new connection fails, including yours"
+     ],
+     [
+      "shared_preload_libraries = 'auto_explain'",
+      "Restart only",
+      "The server does not start"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">session_preload_libraries</code> avoids a restart, so we use it. Ubuntu's postgresql.conf ends with <code class=\"inline-code\">include_dir = 'conf.d'</code>, so instead of editing the main file you can put the settings in their own file and remove them later by deleting it. <b>On db1, as a user with sudo</b>, create <code class=\"inline-code\">/etc/postgresql/18/main/conf.d/auto_explain.conf</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres nano /etc/postgresql/18/main/conf.d/auto_explain.conf",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# auto_explain: log the plan of any statement that runs 1 second or longer\nsession_preload_libraries = 'auto_explain'\nauto_explain.log_min_duration = '1s'\nauto_explain.log_analyze = on\nauto_explain.log_buffers = on\nauto_explain.log_timing = off",
+    "caption": "/etc/postgresql/18/main/conf.d/auto_explain.conf (new file)"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "What it does (documented default)"
+     ],
+     [
+      "auto_explain.log_min_duration",
+      "Minimum run time that causes the plan to be logged; 0 logs all plans (default -1, off)"
+     ],
+     [
+      "auto_explain.log_analyze",
+      "Logs EXPLAIN ANALYZE output (actual rows and loops) instead of plain EXPLAIN (default off)"
+     ],
+     [
+      "auto_explain.log_buffers",
+      "Adds buffer usage, like EXPLAIN (BUFFERS); works only with log_analyze (default off)"
+     ],
+     [
+      "auto_explain.log_timing",
+      "Per-node timing; works only with log_analyze. Off keeps actual row counts but skips the costly clock reads (default on)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "log_analyze has a cost on every statement",
+    "text": "The documentation warns that with <code class=\"inline-code\">auto_explain.log_analyze</code> on, per-plan-node timing happens for <b>all</b> statements, whether or not they run long enough to be logged, and that this can have an extremely negative impact on performance. Turning off <code class=\"inline-code\">auto_explain.log_timing</code> reduces that cost. On a busy production server, test the overhead first, start with log_analyze off, or use <code class=\"inline-code\">auto_explain.sample_rate</code> to explain only a fraction of statements."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Apply with a reload, then check the values from a new psql session as postgres:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, unit\n  FROM pg_settings\n WHERE name LIKE 'auto_explain%' OR name = 'session_preload_libraries'\n ORDER BY name;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                 name                  |   setting    | unit\n---------------------------------------+--------------+------\n auto_explain.log_analyze              | on           |\n auto_explain.log_buffers              | on           |\n auto_explain.log_format               | text         |\n auto_explain.log_level                | log          |\n auto_explain.log_min_duration         | 1000         | ms\n auto_explain.log_nested_statements    | off          |\n auto_explain.log_parameter_max_length | -1           | B\n auto_explain.log_settings             | off          |\n auto_explain.log_timing               | off          |\n auto_explain.log_triggers             | off          |\n auto_explain.log_verbose              | off          |\n auto_explain.log_wal                  | off          |\n auto_explain.sample_rate              | 1            |\n session_preload_libraries             | auto_explain |\n(14 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All <code class=\"inline-code\">auto_explain.*</code> rows appear because this new session loaded the module at connection start. Sessions that were already connected before the reload do not have it; they pick it up when they reconnect. <code class=\"inline-code\">log_nested_statements</code> is off, so statements run inside functions are not explained; turn it on if your application logic lives in PL/pgSQL."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Read the plan of a real slow query",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1</b>, run the slow report from Step 5 again as shop_app, then look at the log:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql \"host=127.0.0.1 dbname=shop user=shop_app application_name=billing_app\" \\\n     -c \"SELECT status, count(DISTINCT customer_id) AS customers FROM orders GROUP BY status;\" > /dev/null\nsudo tail -14 /var/log/postgresql/postgresql-18-main.log",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-23 12:51:45.825 UTC [2768] shop_app@shop app=billing_app client=127.0.0.1 LOG:  duration: 2836.017 ms  plan:\n  Query Text: SELECT status, count(DISTINCT customer_id) AS customers FROM orders GROUP BY status;\n  GroupAggregate  (cost=313426.69..328426.73 rows=4 width=14) (actual rows=4.00 loops=1)\n    Group Key: status\n    Buffers: shared hit=13492 read=2263, temp read=10765 written=10792\n    ->  Sort  (cost=313426.69..318426.69 rows=2000000 width=10) (actual rows=2000000.00 loops=1)\n          Sort Key: status, customer_id\n          Sort Method: external merge  Disk: 43064kB\n          Buffers: shared hit=13492 read=2263, temp read=10765 written=10792\n          ->  Seq Scan on orders  (cost=0.00..35749.00 rows=2000000 width=10) (actual rows=2000000.00 loops=1)\n                Buffers: shared hit=13486 read=2263\n2026-11-23 12:51:45.828 UTC [2768] shop_app@shop app=billing_app client=127.0.0.1 LOG:  temporary file: path \"base/pgsql_tmp/pgsql_tmp2768.0\", size 44097536\n2026-11-23 12:51:45.828 UTC [2768] shop_app@shop app=billing_app client=127.0.0.1 STATEMENT:  SELECT status, count(DISTINCT customer_id) AS customers FROM orders GROUP BY status;\n2026-11-23 12:51:45.829 UTC [2768] shop_app@shop app=billing_app client=127.0.0.1 LOG:  duration: 2841.516 ms  statement: SELECT status, count(DISTINCT customer_id) AS customers FROM orders GROUP BY status;",
+    "caption": "Output (from /var/log/postgresql/postgresql-18-main.log; tabs shown as spaces)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now the three log entries tell one story. The plan shows a full scan of 2 million rows feeding a sort, and <code class=\"inline-code\">Sort Method: external merge  Disk: 43064kB</code> says the sort spilled to disk, which matches the temporary file line. Because <code class=\"inline-code\">log_timing</code> is off, nodes show <code class=\"inline-code\">actual rows</code> without times, which is enough to see where the rows go. <code class=\"inline-code\">temp read/written</code> in the Buffers lines counts 8 kB blocks of temporary files."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">sudo rm /etc/postgresql/18/main/conf.d/auto_explain.conf</code>, then <code class=\"inline-code\">sudo systemctl reload postgresql@18-main</code>. New sessions no longer load the module."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find the slowest statements in the log",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: List the top statements by duration",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>On db1, as a user with sudo.</b> Every slow statement line contains <code class=\"inline-code\">duration: N ms  statement:</code>, so grep and sort are enough for a quick look:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo grep -oE \"duration: [0-9.]+ ms  statement: .*\" /var/log/postgresql/postgresql-18-main.log \\\n  | sort -t' ' -k2 -rn | head -5",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Part",
+      "What it does"
+     ],
+     [
+      "grep -oE",
+      "Prints only the matching part of each line (-o), using an extended regular expression (-E)"
+     ],
+     [
+      "sort -t' ' -k2 -rn",
+      "Splits on spaces, sorts on the second field (the number of milliseconds), numeric (-n), largest first (-r)"
+     ],
+     [
+      "head -5",
+      "Keeps the top five"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "duration: 4004.469 ms  statement: SELECT pg_sleep(4);\nduration: 3003.857 ms  statement: UPDATE orders SET amount = amount + 10 WHERE order_id = 42;\nduration: 2952.313 ms  statement: SELECT status, count(DISTINCT customer_id) AS customers FROM orders GROUP BY status;\nduration: 2882.900 ms  statement: SELECT status, count(DISTINCT customer_id) AS customers FROM orders GROUP BY status;\nduration: 2841.516 ms  statement: SELECT status, count(DISTINCT customer_id) AS customers FROM orders GROUP BY status;",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This works for a quick check, but it lists single executions. A query that takes 50 ms and runs a million times a day never shows up here, and it may cost far more in total. That is exactly the gap <code class=\"inline-code\">pg_stat_statements</code> fills in Part 25. The log and pg_stat_statements work best together."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "A typo in session_preload_libraries locks everyone out",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the library name is wrong, every new connection fails, including the postgres superuser on the local socket. We tested it with <code class=\"inline-code\">'auto_explan'</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: FATAL:  could not access file \"auto_explan\": No such file or directory",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> you cannot use <code class=\"inline-code\">SELECT pg_reload_conf();</code> because you cannot connect. Correct the file, then reload from the shell: <code class=\"inline-code\">sudo systemctl reload postgresql@18-main</code> (or <code class=\"inline-code\">sudo pg_ctlcluster 18 main reload</code>). Existing sessions keep working the whole time. To avoid this, test with <code class=\"inline-code\">LOAD 'auto_explain';</code> in a session first, as in Step 9."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "A typo in shared_preload_libraries stops the server from starting",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Error: /usr/lib/postgresql/18/bin/pg_ctl /usr/lib/postgresql/18/bin/pg_ctl start -D /var/lib/postgresql/18/main -l /var/log/postgresql/postgresql-18-main.log -s -o  -c config_file=\"/etc/postgresql/18/main/postgresql.conf\"  exited with status 1:\n2026-11-23 12:52:08.637 UTC [2833] FATAL:  could not access file \"auto_explan\": No such file or directory\n2026-11-23 12:52:08.637 UTC [2833] LOG:  database system is shut down\npg_ctl: could not start server\nExamine the log output.",
+    "caption": "Output of sudo pg_ctlcluster 18 main restart"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> correct the name and run <code class=\"inline-code\">sudo pg_ctlcluster 18 main start</code>. Before any restart in production, check with <code class=\"inline-code\">SELECT name, setting, error FROM pg_file_settings WHERE error IS NOT NULL;</code> (which only catches syntax errors) and test the library with LOAD."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "SHOW still returns the old value after pg_reload_conf()",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_reload_conf()</code> only sends a signal. In our test, <code class=\"inline-code\">SELECT pg_reload_conf();</code> followed by <code class=\"inline-code\">SHOW log_line_prefix;</code> in the same psql call still returned the old prefix. <b>Fix:</b> check a moment later from a new session, or look for the <code class=\"inline-code\">parameter \"...\" changed to</code> line in the log."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "log_statement = 'all' or 'ddl' writes passwords into the log",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">log_statement</code> logs statement text by type, and the documentation warns that logged statements might contain plaintext passwords. With <code class=\"inline-code\">log_statement = 'ddl'</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-23 12:52:16.487 UTC [2875] postgres@postgres app=psql client=[local] LOG:  statement: ALTER ROLE shop_app PASSWORD 'Shop#2026';",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> set passwords with psql's <code class=\"inline-code\">\\password shop_app</code>, which sends an already encrypted password. Keep the log file private (Ubuntu creates it with mode 0640, owner postgres, group adm). For real auditing use pgaudit, covered in Part 42."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "log_min_duration_statement = 0 on a busy server",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Setting it to <code class=\"inline-code\">0</code> logs every statement. On a server running thousands of statements a second this can fill the disk and slow the server down. <b>Fix:</b> use it only for a short, planned period, or use <code class=\"inline-code\">log_min_duration_sample</code> with <code class=\"inline-code\">log_statement_sample_rate</code> to log a random fraction of statements above a lower threshold."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Make PostgreSQL log every statement of the role <code class=\"inline-code\">shop_app</code> that takes 50 ms or longer, without changing the server-wide 250 ms. Verify it from a shop_app session, then undo it.",
+      "items": []
+     },
+     {
+      "content": "In your own session, use auto_explain to log the plan of <code class=\"inline-code\">SELECT * FROM orders WHERE order_id = 42;</code>, and find the plan node in the log.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "1. As postgres: <code class=\"inline-code\">ALTER ROLE shop_app SET log_min_duration_statement = '50ms';</code>. Connect as shop_app and <code class=\"inline-code\">SHOW log_min_duration_statement;</code> returns <code class=\"inline-code\">50ms</code>. Undo with <code class=\"inline-code\">ALTER ROLE shop_app RESET log_min_duration_statement;</code>. 2. As postgres in database shop: <code class=\"inline-code\">LOAD 'auto_explain';</code> then <code class=\"inline-code\">SET auto_explain.log_min_duration = 0;</code> and run the query. The log shows an <code class=\"inline-code\">Index Scan using orders_pkey on orders</code> node with <code class=\"inline-code\">Index Cond: (order_id = 42)</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Where is the log file of each cluster?\npg_lsclusters\n\n# Follow the log live\nsudo tail -f /var/log/postgresql/postgresql-18-main.log\n\n# Edit logging settings\nsudo nano /etc/postgresql/18/main/postgresql.conf\n#   log_line_prefix = '%m [%p] %q%u@%d app=%a client=%h '\n#   log_min_duration_statement = 250ms\n#   log_lock_waits = on\n#   log_temp_files = 10MB\n#   log_connections = 'authorization,setup_durations'\n#   log_disconnections = on\n\n# Apply reloadable settings (no disconnects)\nsudo systemctl reload postgresql@18-main\n\n# Check the values from a new session\nsudo -u postgres psql -c \"SELECT name, setting, unit FROM pg_settings WHERE name LIKE 'log%' ORDER BY name;\"\n\n# Different threshold for one role (and undo)\nsudo -u postgres psql -c \"ALTER ROLE shop_app SET log_min_duration_statement = '100ms';\"\nsudo -u postgres psql -c \"ALTER ROLE shop_app RESET log_min_duration_statement;\"\n\n# Try auto_explain in one session (inside psql as postgres)\n#   LOAD 'auto_explain';\n#   SET auto_explain.log_min_duration = 0;\n\n# Turn on auto_explain for new sessions\nsudo -u postgres nano /etc/postgresql/18/main/conf.d/auto_explain.conf\n#   session_preload_libraries = 'auto_explain'\n#   auto_explain.log_min_duration = '1s'\n#   auto_explain.log_analyze = on\n#   auto_explain.log_buffers = on\n#   auto_explain.log_timing = off\nsudo systemctl reload postgresql@18-main\n\n# Turn auto_explain off again\nsudo rm /etc/postgresql/18/main/conf.d/auto_explain.conf\nsudo systemctl reload postgresql@18-main\n\n# Top 5 slowest logged statements\nsudo grep -oE \"duration: [0-9.]+ ms  statement: .*\" /var/log/postgresql/postgresql-18-main.log | sort -t' ' -k2 -rn | head -5",
+    "caption": "Every command from this part, in order"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "On Ubuntu the server log is <code class=\"inline-code\">/var/log/postgresql/postgresql-18-main.log</code> (see pg_lsclusters), rotated weekly by logrotate",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">log_line_prefix</code> with %u, %d, %a and %h makes every line say who, where and from which application",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">log_min_duration_statement</code> logs slow statements with their text; start around 250 ms to 1 s and set it per role or database when needed",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">log_lock_waits</code> shows statements that were blocked rather than slow, and <code class=\"inline-code\">log_temp_files</code> shows sorts and hashes that spilled to disk",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "PostgreSQL 18's <code class=\"inline-code\">log_connections</code> options such as setup_durations show where connection time goes",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">auto_explain</code> logs the plan of slow statements; load it with session_preload_libraries, keep log_timing off, and test the overhead of log_analyze",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Test new library names with LOAD before putting them in a preload setting",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 24 we look at the statistics views every DBA uses: pg_stat_database, pg_stat_user_tables and the pg_statio views."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your app is slow, and PostgreSQL's log shows nothing about it. By default, it isn't recording any of your queries.\n\nPart 23 of my PostgreSQL DBA series is about logging that actually helps. What I set on PostgreSQL 18:\n\n→ log_min_duration_statement = 250ms logs every statement that runs that long, with its full SQL text. Default is -1, off.\n→ log_line_prefix = '%m [%p] %q%u@%d app=%a client=%h ' so every line says who, which database, which application and from where.\n→ log_lock_waits = on. My 3-second single-row UPDATE was not slow, it was blocked. The log named the blocking process.\n→ log_temp_files = 10MB shows sorts that spill to disk.\n→ auto_explain logs the execution plan of the slow query itself. Load it with session_preload_libraries and keep auto_explain.log_timing off to cut the overhead.\n\nOne trap from testing: a typo in session_preload_libraries makes every new connection fail, even postgres. Fix the file and reload from the shell.\n\nWhat threshold do you use for log_min_duration_statement in production?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "Log slow queries in PostgreSQL",
+    "body": "Part 23 of the PostgreSQL DBA series: logging and auto_explain on PostgreSQL 18"
+   },
+   {
+    "title": "Where the log is on Ubuntu",
+    "points": [
+     "pg_lsclusters shows the log file per cluster",
+     "/var/log/postgresql/postgresql-18-main.log",
+     "logging_collector is off, so pg_current_logfile() is NULL",
+     "Rotated weekly by logrotate"
+    ]
+   },
+   {
+    "title": "Step 1: a useful prefix",
+    "points": [
+     "%u user, %d database",
+     "%a application, %h client address",
+     "Reload is enough, no restart"
+    ],
+    "code": "log_line_prefix =\n  '%m [%p] %q%u@%d app=%a client=%h '",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 2: catch slow statements",
+    "body": "Statements over the threshold are logged with duration and full SQL text. Lock waits and big temp files tell you why.",
+    "code": "log_min_duration_statement = 250ms\nlog_lock_waits = on\nlog_temp_files = 10MB\n\nSELECT pg_reload_conf();",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 3: one role, own threshold",
+    "code": "ALTER ROLE shop_app\n  SET log_min_duration_statement = '100ms';\n\nALTER ROLE shop_app\n  RESET log_min_duration_statement;",
+    "lang": "postgresql",
+    "points": [
+     "Applies to new sessions of that role",
+     "The app itself cannot switch it off"
+    ]
+   },
+   {
+    "title": "Step 4: plans with auto_explain",
+    "points": [
+     "Test first: LOAD 'auto_explain' in one session",
+     "Then session_preload_libraries, reload only",
+     "log_timing off lowers the overhead",
+     "A typo in the name blocks every new login"
+    ],
+    "code": "session_preload_libraries = 'auto_explain'\nauto_explain.log_min_duration = '1s'\nauto_explain.log_analyze = on\nauto_explain.log_timing = off",
+    "lang": "postgresql"
+   }
+  ]
+ }
+}
