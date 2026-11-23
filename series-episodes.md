@@ -91,7 +91,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain object privileges versus default privileges and why grants do not automatically cover future objects.
   - Format: Privilege matrix · Level: Intermediate
   - Hook: Why can't my user read tomorrow's tables?
-- [ ] Ep 021 | 2026-11-24 | pg_hba.conf: Client Authentication
+- [x] Ep 021 | 2026-11-24 | pg_hba.conf: Client Authentication (posted 2026-11-24 13:00, Buffer 6b03cff3cc364169c1b2cd1d)
   - Objective: Explain record order, connection types, address, auth method and safe reload/testing.
   - Format: Config animation · Level: Intermediate
   - Hook: One pg_hba.conf line can block your application.
