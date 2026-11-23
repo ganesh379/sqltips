@@ -1,0 +1,13 @@
+One pg_hba.conf line can block your application. Here is how PostgreSQL picks the rule.
+
+pg_hba.conf controls client authentication. Each line has a connection type (local, host, hostssl), database, user, client address and method (scram-sha-256, peer, reject, trust). PostgreSQL reads the lines top to bottom and uses the first match. There is no fall-through: in our test a wrong password failed with "password authentication failed for user" even though a trust line came next.
+
+Two errors every PostgreSQL DBA should know: "pg_hba.conf rejects connection" means a reject line matched first, and "no pg_hba.conf entry for host" means no line matched at all.
+
+Edits apply only after a reload (pg_ctl reload, SELECT pg_reload_conf(), or SIGHUP). Check the view pg_hba_file_rules first: its error column caught our typo. When we reloaded anyway, pg_reload_conf() returned true but the log said the file was not reloaded, so the old rules stayed. Tested on PostgreSQL 16.
+
+Episode 21 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #devops

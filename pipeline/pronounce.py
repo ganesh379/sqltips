@@ -57,7 +57,7 @@ WORDS = {
     "TOAST": "toast", "HOT": "hot", "SSL": "S-S-L", "TLS": "T-L-S", "TCP": "T-C-P",
     "IP": "I-P", "VM": "V-M", "AWS": "A-W-S", "RDS": "R-D-S", "API": "A-P-I",
     "ERP": "E-R-P", "UI": "U-I", "I/O": "I-O", "IO": "I-O", "LRU": "L-R-U",
-    "SCRAM": "scram", "MD5": "M-D-5", "md5": "M-D-5", "RLS": "R-L-S",
+    "SCRAM": "scram", "scram-sha-256": "scram shah two fifty-six", "hostssl": "host S-S-L", "hostnossl": "host no S-S-L", "IPv4": "I-P-v-four", "IPv6": "I-P-v-six", "MD5": "M-D-5", "md5": "M-D-5", "RLS": "R-L-S",
     "hba": "H-B-A", "HBA": "H-B-A", "ctl": "control", "conf": "conf", "mem": "mem",
     "stat": "stat", "xact": "transaction", "lsn": "L-S-N", "xid": "X-I-D", "oid": "O-I-D",
     "autovacuum": "auto vacuum", "basebackup": "base backup", "isready": "is ready",

@@ -1,0 +1,875 @@
+{
+ "ep": 21,
+ "total": 140,
+ "title": "pg_hba.conf: Client Authentication",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "One pg_hba.conf line can block your application.",
+   "cap": "One *pg_hba.conf* line can *block your app.*"
+  },
+  {
+   "say": "This is episode twenty one of the PostgreSQL DBA series. Today: who may connect, and safe changes.",
+   "cap": "Episode 21: who may *connect*, and *safe changes.*",
+   "cue": "safe"
+  },
+  {
+   "say": "pg_hba.conf is the client authentication file. HBA means host based.",
+   "cap": "*HBA* = *host-based authentication.*",
+   "cue": "authentication"
+  },
+  {
+   "say": "By default it lives in the data directory. SHOW hba_file prints the real path.",
+   "cap": "*SHOW hba_file* prints the real path.",
+   "cue": "path"
+  },
+  {
+   "say": "On Ubuntu packages, it is under slash etc instead.",
+   "cap": "Ubuntu packages: under */etc.*",
+   "cue": "etc"
+  },
+  {
+   "say": "Each line is one rule: connection type, database, user, client address and method.",
+   "cap": "One line = *type, database, user, address, method.*",
+   "cue": "method"
+  },
+  {
+   "say": "Type local is a Unix socket. Type host is a network connection, with or without SSL.",
+   "cap": "*local* = Unix socket. *host* = TCP/IP.",
+   "cue": "SSL"
+  },
+  {
+   "say": "hostssl needs SSL. hostnossl matches only connections without it.",
+   "cap": "*hostssl* = SSL only. *hostnossl* = no SSL.",
+   "cue": "hostnossl"
+  },
+  {
+   "say": "Addresses use CIDR. Slash thirty two is one IPv4 host. All zeros, slash zero, is every IPv4 address.",
+   "cap": "*/32* = one host. *0.0.0.0/0* = every IPv4 address.",
+   "cue": "every"
+  },
+  {
+   "say": "Methods: scram-sha-256 checks a password, and peer checks the local OS user.",
+   "cap": "*scram-sha-256* = password. *peer* = OS user.",
+   "cue": "peer"
+  },
+  {
+   "say": "reject refuses the connection, and trust lets anyone in with no password.",
+   "cap": "*reject* refuses. *trust* = *no password.*",
+   "cue": "trust"
+  },
+  {
+   "say": "The rule people miss: lines are read top to bottom, and the first match is used.",
+   "cap": "*Top to bottom.* The *first match* is used.",
+   "cue": "first"
+  },
+  {
+   "say": "No fall through. If that line's authentication fails, later lines are never tried.",
+   "cap": "*No fall-through:* later lines are never tried.",
+   "cue": "never"
+  },
+  {
+   "say": "We tested it. Line two asks app_user for a SCRAM password. Line three says trust.",
+   "cap": "Line 2: *scram-sha-256.* Line 3: *trust.*",
+   "cue": "trust"
+  },
+  {
+   "say": "A wrong password still failed. The trust line was never reached. Output trimmed.",
+   "cap": "Wrong password: *failed.* Trust line *ignored.*",
+   "cue": "never"
+  },
+  {
+   "say": "A reject line above the normal rule gives: pg_hba.conf rejects connection.",
+   "cap": "A *reject* line on top blocks the app.",
+   "cue": "rejects"
+  },
+  {
+   "say": "With no matching line at all: no pg_hba.conf entry for host, user, database.",
+   "cap": "*no pg_hba.conf entry* = no line matched.",
+   "cue": "entry"
+  },
+  {
+   "say": "Saving is not enough. Reload with pg_ctl reload, pg_reload_conf, or a SIGHUP.",
+   "cap": "Changes apply only after a *reload.*",
+   "cue": "SIGHUP"
+  },
+  {
+   "say": "Check first. The view pg_hba_file_rules has an error column for broken lines.",
+   "cap": "Check first: *pg_hba_file_rules.*",
+   "cue": "error"
+  },
+  {
+   "say": "Our typo, a missing dash in scram-sha-256, was flagged: invalid authentication method.",
+   "cap": "Typo caught: *invalid authentication method.*",
+   "cue": "invalid"
+  },
+  {
+   "say": "pg_reload_conf still returned true, but the log said: not reloaded.",
+   "cap": "Returned *true*, but *was not reloaded.*",
+   "cue": "log"
+  },
+  {
+   "say": "So the old rules stayed. Always read the log after a reload.",
+   "cap": "Old rules *stay.* Read the *log.*",
+   "cue": "log"
+  },
+  {
+   "say": "Common mistake: trust from any address. Anyone who reaches the server logs in as any user.",
+   "cap": "*trust* from anywhere = *no password at all.*",
+   "cue": "Anyone"
+  },
+  {
+   "say": "A common practice: tight rules first, scram-sha-256, and only the networks you need.",
+   "cap": "Tight rules first. *scram-sha-256.* Real networks.",
+   "cue": "networks"
+  },
+  {
+   "say": "Recap: first match wins, no fall through. Check the view, reload, then read the log.",
+   "cap": "Recap: *first match wins.* Check, reload, read the log.",
+   "cue": "log"
+  },
+  {
+   "say": "Next up: password authentication and SCRAM. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *passwords and SCRAM.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "One *pg_hba.conf* line can *block your application.*",
+   "sub": "Episode 21 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 21 · INSTALLATION & ADMINISTRATION",
+   "title": "pg_hba.conf: Client Authentication",
+   "sub": "Who may connect, and how"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 3,
+   "heading": "Host-based authentication",
+   "nodes": [
+    {
+     "id": "c",
+     "label": "Client",
+     "sub": "app_user, appdb",
+     "x": 540,
+     "y": 520,
+     "w": 340,
+     "h": 130,
+     "icon": "users",
+     "color": "blue",
+     "shape": "pill",
+     "at": 2
+    },
+    {
+     "id": "h",
+     "label": "pg_hba.conf",
+     "sub": "rules, top to bottom",
+     "x": 540,
+     "y": 820,
+     "w": 380,
+     "h": 150,
+     "icon": "file",
+     "color": "orange",
+     "at": 2
+    },
+    {
+     "id": "ok",
+     "label": "Connected",
+     "sub": "rule matched, auth OK",
+     "x": 280,
+     "y": 1150,
+     "w": 340,
+     "h": 140,
+     "icon": "check",
+     "color": "green",
+     "at": 2
+    },
+    {
+     "id": "no",
+     "label": "Refused",
+     "sub": "FATAL error",
+     "x": 800,
+     "y": 1150,
+     "w": 340,
+     "h": 140,
+     "icon": "lock",
+     "color": "red",
+     "at": 2
+    }
+   ],
+   "edges": [
+    {
+     "from": "c",
+     "to": "h",
+     "label": "connects",
+     "at": 2,
+     "flow": true,
+     "color": "blue"
+    },
+    {
+     "from": "h",
+     "to": "ok",
+     "at": 2,
+     "flow": true,
+     "color": "green"
+    },
+    {
+     "from": "h",
+     "to": "no",
+     "at": 2,
+     "dashed": true,
+     "color": "red"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "h"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 3,
+   "to": 5,
+   "heading": "Where is pg_hba.conf?",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SHOW hba_file;",
+     "at": 3,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "out",
+     "text": "             hba_file",
+     "at": 3
+    },
+    {
+     "kind": "out",
+     "text": "-------------------------------------",
+     "at": 3
+    },
+    {
+     "kind": "out",
+     "text": " /etc/postgresql/16/main/pg_hba.conf",
+     "at": 3
+    },
+    {
+     "kind": "out",
+     "text": "(1 row)",
+     "at": 3
+    },
+    {
+     "kind": "comment",
+     "text": "-- Ubuntu packages: under /etc",
+     "at": 4
+    },
+    {
+     "kind": "comment",
+     "text": "-- initdb default: data directory",
+     "at": 4
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 5,
+   "to": 6,
+   "heading": "One rule, five fields",
+   "columns": 2,
+   "items": [
+    {
+     "at": 5,
+     "icon": "network",
+     "title": "TYPE",
+     "text": "host",
+     "color": "blue"
+    },
+    {
+     "at": 5,
+     "icon": "database",
+     "title": "DATABASE",
+     "text": "appdb",
+     "color": "cyan"
+    },
+    {
+     "at": 5,
+     "icon": "users",
+     "title": "USER",
+     "text": "app_user",
+     "color": "purple"
+    },
+    {
+     "at": 5,
+     "icon": "server",
+     "title": "ADDRESS",
+     "text": "192.0.2.0/24",
+     "color": "amber"
+    },
+    {
+     "at": 5,
+     "icon": "key",
+     "title": "METHOD",
+     "text": "scram-sha-256",
+     "color": "green"
+    },
+    {
+     "at": 5,
+     "icon": "file",
+     "title": "Optional: options",
+     "text": "name=value after the method",
+     "color": "orange"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 6,
+   "to": 9,
+   "heading": "Connection types and addresses",
+   "columns": 2,
+   "items": [
+    {
+     "at": 6,
+     "icon": "terminal",
+     "title": "local",
+     "text": "Unix-domain socket",
+     "color": "cyan"
+    },
+    {
+     "at": 6,
+     "icon": "network",
+     "title": "host",
+     "text": "TCP/IP, SSL or not",
+     "color": "blue"
+    },
+    {
+     "at": 7,
+     "icon": "lock",
+     "title": "hostssl",
+     "text": "TCP/IP with SSL only",
+     "color": "green"
+    },
+    {
+     "at": 7,
+     "icon": "alert",
+     "title": "hostnossl",
+     "text": "TCP/IP without SSL only",
+     "color": "amber"
+    },
+    {
+     "at": 8,
+     "icon": "server",
+     "title": "127.0.0.1/32",
+     "text": "one IPv4 host",
+     "color": "purple"
+    },
+    {
+     "at": 8,
+     "icon": "cloud",
+     "title": "0.0.0.0/0",
+     "text": "every IPv4 address",
+     "color": "red"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 9,
+   "to": 11,
+   "heading": "Common auth methods",
+   "columns": 2,
+   "items": [
+    {
+     "at": 9,
+     "icon": "key",
+     "title": "scram-sha-256",
+     "text": "verifies the password",
+     "color": "green"
+    },
+    {
+     "at": 9,
+     "icon": "users",
+     "title": "peer",
+     "text": "local OS user name must match",
+     "color": "cyan"
+    },
+    {
+     "at": 10,
+     "icon": "lock",
+     "title": "reject",
+     "text": "refuses the connection",
+     "color": "red"
+    },
+    {
+     "at": 10,
+     "icon": "alert",
+     "title": "trust",
+     "text": "lets anyone in, no password",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 11,
+   "to": 13,
+   "heading": "First match wins",
+   "nodes": [
+    {
+     "id": "c",
+     "label": "Connection",
+     "sub": "app_user to appdb",
+     "x": 540,
+     "y": 500,
+     "w": 360,
+     "h": 120,
+     "icon": "users",
+     "color": "blue",
+     "shape": "pill",
+     "at": 11
+    },
+    {
+     "id": "r1",
+     "label": "Line 1",
+     "sub": "no match: skip",
+     "x": 230,
+     "y": 720,
+     "w": 320,
+     "h": 130,
+     "icon": "file",
+     "color": "purple",
+     "at": 11
+    },
+    {
+     "id": "r2",
+     "label": "Line 2",
+     "sub": "match: use it",
+     "x": 230,
+     "y": 960,
+     "w": 320,
+     "h": 130,
+     "icon": "check",
+     "color": "green",
+     "at": 11
+    },
+    {
+     "id": "r3",
+     "label": "Line 3",
+     "sub": "never checked",
+     "x": 230,
+     "y": 1200,
+     "w": 320,
+     "h": 130,
+     "icon": "eye",
+     "color": "red",
+     "at": 12
+    },
+    {
+     "id": "a",
+     "label": "Auth fails",
+     "sub": "connection refused",
+     "x": 840,
+     "y": 960,
+     "w": 300,
+     "h": 130,
+     "icon": "lock",
+     "color": "red",
+     "at": 12
+    }
+   ],
+   "edges": [
+    {
+     "from": "c",
+     "to": "r1",
+     "at": 11,
+     "flow": true,
+     "color": "blue"
+    },
+    {
+     "from": "r1",
+     "to": "r2",
+     "at": 11,
+     "flow": true,
+     "color": "blue"
+    },
+    {
+     "from": "r2",
+     "to": "a",
+     "label": "wrong password",
+     "at": 12,
+     "flow": true,
+     "color": "red"
+    },
+    {
+     "from": "r2",
+     "to": "r3",
+     "label": "no fall-through",
+     "at": 12,
+     "dashed": true,
+     "color": "red"
+    }
+   ],
+   "focus": [
+    {
+     "at": 11,
+     "id": "r2"
+    },
+    {
+     "at": 12,
+     "id": "a"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 13,
+   "to": 14,
+   "heading": "Our test pg_hba.conf",
+   "columns": 1,
+   "items": [
+    {
+     "at": 13,
+     "title": "1  local all postgres",
+     "text": "peer",
+     "color": "cyan"
+    },
+    {
+     "at": 13,
+     "title": "2  host appdb app_user",
+     "text": "127.0.0.1/32  scram-sha-256",
+     "color": "green"
+    },
+    {
+     "at": 13,
+     "title": "3  host all all",
+     "text": "127.0.0.1/32  trust",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 14,
+   "to": 15,
+   "heading": "Wrong password, trust below",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "psql -h 127.0.0.1 -U app_user appdb",
+     "at": 14,
+     "prompt": "$ "
+    },
+    {
+     "kind": "out",
+     "text": "psql: error: connection to server",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "at \"127.0.0.1\", port 5432 failed:",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "FATAL:  password authentication",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "failed for user \"app_user\"",
+     "at": 14
+    },
+    {
+     "kind": "comment",
+     "text": "-- output trimmed",
+     "at": 14
+    },
+    {
+     "kind": "comment",
+     "text": "-- line 3 (trust) never reached",
+     "at": 14
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 15,
+   "to": 17,
+   "heading": "Two errors to know",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- reject line above the rule:",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "text": "psql -h 127.0.0.1 -U app_user appdb",
+     "at": 15,
+     "prompt": "$ "
+    },
+    {
+     "kind": "out",
+     "text": "FATAL:  pg_hba.conf rejects",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "connection for host \"127.0.0.1\",",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "user \"app_user\", database \"appdb\"",
+     "at": 15
+    },
+    {
+     "kind": "comment",
+     "text": "-- no line for appdb at all:",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "FATAL:  no pg_hba.conf entry for",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "host \"127.0.0.1\", user \"app_user\",",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "database \"appdb\"",
+     "at": 16
+    },
+    {
+     "kind": "comment",
+     "text": "-- output trimmed",
+     "at": 16
+    }
+   ]
+  },
+  {
+   "type": "steps",
+   "from": 17,
+   "to": 18,
+   "heading": "Reload: three ways",
+   "items": [
+    {
+     "at": 17,
+     "icon": "terminal",
+     "title": "pg_ctl reload",
+     "text": "from the server shell",
+     "color": "blue"
+    },
+    {
+     "at": 17,
+     "icon": "database",
+     "title": "SELECT pg_reload_conf();",
+     "text": "from SQL",
+     "color": "green"
+    },
+    {
+     "at": 17,
+     "icon": "bolt",
+     "title": "kill -HUP",
+     "text": "send SIGHUP to the postmaster",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 18,
+   "to": 20,
+   "heading": "Check before you reload",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT line_number, error",
+     "at": 18,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "FROM pg_hba_file_rules",
+     "at": 18,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "WHERE error IS NOT NULL;",
+     "at": 18,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "comment",
+     "text": "-- shown with \\x",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "line_number | 3",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "error       | invalid authentication",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "              method \"scram-sha256\"",
+     "at": 19
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 20,
+   "to": 22,
+   "heading": "Reload anyway?",
+   "title": "psql: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT pg_reload_conf();",
+     "at": 20,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "out",
+     "text": " pg_reload_conf",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "----------------",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": " t",
+     "at": 20
+    },
+    {
+     "kind": "comment",
+     "text": "-- server log (trimmed):",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "LOG:  invalid authentication",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "method \"scram-sha256\"",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "LOG:  .../pg_hba.conf was not",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "reloaded",
+     "at": 20
+    },
+    {
+     "kind": "comment",
+     "text": "-- old rules stay in force",
+     "at": 21
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 22,
+   "to": 23,
+   "kind": "warning",
+   "title": "trust from anywhere",
+   "text": "host all all 0.0.0.0/0 trust lets anyone who reaches the server log in as any user."
+  },
+  {
+   "type": "cards",
+   "from": 23,
+   "to": 24,
+   "heading": "A common practice",
+   "columns": 1,
+   "items": [
+    {
+     "at": 23,
+     "icon": "layers",
+     "title": "Tight rules first",
+     "text": "specific database, user and address on top",
+     "color": "blue"
+    },
+    {
+     "at": 23,
+     "icon": "key",
+     "title": "scram-sha-256",
+     "text": "for password logins",
+     "color": "green"
+    },
+    {
+     "at": 23,
+     "icon": "network",
+     "title": "Only real networks",
+     "text": "for example 192.0.2.0/24, not 0.0.0.0/0",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "checklist",
+   "from": 24,
+   "to": 25,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 24,
+     "title": "First match wins"
+    },
+    {
+     "at": 24,
+     "title": "No fall-through on failure"
+    },
+    {
+     "at": 24,
+     "title": "Check pg_hba_file_rules"
+    },
+    {
+     "at": 24,
+     "title": "Reload, then read the log"
+    },
+    {
+     "at": 24,
+     "title": "Never leave trust open"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 25,
+   "to": 26,
+   "next": "Ep 22 · Passwords and SCRAM"
+  }
+ ]
+}
