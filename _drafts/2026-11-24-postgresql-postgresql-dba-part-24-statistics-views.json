@@ -1,0 +1,2110 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 24: Statistics Views Every DBA Uses",
+ "slug": "postgresql-dba-part-24-statistics-views",
+ "category": "postgresql",
+ "description": "Read pg_stat_database, pg_stat_user_tables, pg_stat_user_indexes and pg_statio in PostgreSQL 18: cache hit ratio, seq scans, unused indexes, real output.",
+ "focusKeyword": "pg_stat_user_tables",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "monitoring",
+  "statistics",
+  "performance"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-12-vacuum-autovacuum/",
+  "/posts/postgresql/postgresql-dba-part-13-table-index-bloat/",
+  "/posts/postgresql/postgresql-dba-part-10-connections-sessions/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: 27.2. The Cumulative Statistics System",
+   "url": "https://www.postgresql.org/docs/18/monitoring-stats.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: 19.9. Run-time Statistics (track_counts, track_io_timing, stats_fetch_consistency)",
+   "url": "https://www.postgresql.org/docs/18/runtime-config-statistics.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pg_test_timing",
+   "url": "https://www.postgresql.org/docs/18/pgtesttiming.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Release 18 notes (new statistics columns)",
+   "url": "https://www.postgresql.org/docs/18/release-18.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pgbench",
+   "url": "https://www.postgresql.org/docs/18/pgbench.html"
+  }
+ ],
+ "reviewNotes": "Series part 24. Publish Part 23 first (Parts 19-23 are not live yet; Part 23 is named without a link and is not in related). TEST ENVIRONMENT: PostgreSQL 18 could NOT be run in this sandbox. postgresql-18 (18.7-1.pgdg24.04+5) installed from PGDG, but its binaries need liburing.so.2 from the Ubuntu archive, which the sandbox network blocks (a stub package satisfied apt but initdb/postgres fail with 'liburing.so.2: cannot open shared object file'); building liburing from source was not permitted. Following the task instructions, all SQL and shell examples were run on the distribution PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on Ubuntu 24.04.5 LTS, cluster 16 main on port 5432. The article is written for PostgreSQL 18 (paths /etc/postgresql/18/main, postgresql@18-main, /usr/lib/postgresql/18/bin). Every column queried in the article exists in both 16 and 18 with the same meaning (checked against the PostgreSQL 18 monitoring-stats page), so the SQL result tables are real output from 16. Outputs where the 18 text differs are captioned '(expected output)': the reload log line (shown with the 18 log file path) and the pg_settings sourcefile row (path changed from /etc/postgresql/16/... to /etc/postgresql/18/...; that table has no caption, so the editor may want to label it). The pgbench outputs are trimmed to the last lines because the first line prints the pgbench version (it would say 18). 18-only items mentioned in text but NOT executed: track_cost_delay_timing, pg_stat_database.parallel_workers_to_launch/parallel_workers_launched, pg_stat_all_tables.total_vacuum_time/total_autovacuum_time/total_analyze_time/total_autoanalyze_time, track_wal_io_timing moving WAL timing to pg_stat_io (all from the 18 docs and release notes). Please re-run Steps 1, 7 and 9 on a real PostgreSQL 18 server before publishing; Step 1 on 18 should be identical. Sandbox notes: no systemd, so reloads/restarts were done with SELECT pg_reload_conf() and pg_ctlcluster; the article shows systemctl reload/restart postgresql@18-main as equivalents. The cluster had been used before (template1 shows 921 commits). The 'idx_scan is a sum of the index counters' statement was verified with pg_get_viewdef('pg_stat_all_tables') on 16; please confirm on 18 with \\d+ pg_stat_all_tables. The tps numbers (196 vs 4,961) are real measurements from this sandbox, used only to show the effect of the index, and the article says they will differ. Documentation followed: PostgreSQL 18 docs (/docs/18/; postgresql.org/docs/current now shows version 19, so sources point to /docs/18/).",
+ "generatedAt": "2026-11-24T13:10:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is <b>Part 24 of the PostgreSQL DBA series</b>. In Part 23 we made the server log record slow queries, lock waits and temporary files. The log tells you about single events. This part covers the other half of monitoring: the <b>cumulative statistics views</b>, the counters PostgreSQL keeps for every database, table and index."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you only remember three views, remember these. <code class=\"inline-code\">pg_stat_database</code> gives one row per database with commits, rollbacks, cache hits, temporary files and deadlocks. <code class=\"inline-code\">pg_stat_user_tables</code> gives one row per table with sequential scans, index scans, inserts, updates, deletes, dead rows and the last vacuum and analyze times. The <code class=\"inline-code\">pg_statio_*</code> views count how many blocks were found in memory and how many had to be read."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "By the end of this part you will be able to check the health of a database in one query, find tables that are read by full scans and need an index, find indexes that are never used, calculate cache hit ratios correctly, and measure what changed over a time window without resetting anything. Every query was run against a test database with a real workload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "How the cumulative statistics system collects its numbers, and why they lag by about a second",
+      "items": []
+     },
+     {
+      "content": "How to read <code class=\"inline-code\">pg_stat_database</code>: commits, rollbacks, cache hit ratio, temp files, deadlocks and session counters",
+      "items": []
+     },
+     {
+      "content": "How to use <code class=\"inline-code\">pg_stat_user_tables</code> to find tables that need an index and tables with dead rows",
+      "items": []
+     },
+     {
+      "content": "How to find unused indexes with <code class=\"inline-code\">pg_stat_user_indexes</code>, and when not to drop them",
+      "items": []
+     },
+     {
+      "content": "How to read block I/O per table and index from <code class=\"inline-code\">pg_statio_user_tables</code> and <code class=\"inline-code\">pg_statio_user_indexes</code>",
+      "items": []
+     },
+     {
+      "content": "How to measure changes with snapshots instead of resetting counters, and what a reset or a crash does",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 23 of this series, especially <a href=\"/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/\">Part 5 (postgresql.conf and reloads)</a>, <a href=\"/posts/postgresql/postgresql-dba-part-10-connections-sessions/\">Part 10 (pg_stat_activity)</a> and <a href=\"/posts/postgresql/postgresql-dba-part-12-vacuum-autovacuum/\">Part 12 (VACUUM and autovacuum)</a>.",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server with PostgreSQL 18 from the PGDG repository and the cluster <b>18 main</b> running on port 5432.",
+      "items": []
+     },
+     {
+      "content": "A shell user with sudo. Commands run as the <code class=\"inline-code\">postgres</code> operating system user unless a step says otherwise.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">pgbench</code>, which is installed with PostgreSQL. We use it to create a realistic workload.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of the statistics views as the odometer and trip meters of a car. They do not show what is happening this second (that is pg_stat_activity, from Part 10). They show how much has happened since the counters started: how many sequential scans a table has had, how many rows were updated, how many blocks were read."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The official name is the <b>cumulative statistics system</b>. Every server process (backend) counts its own work locally. It copies those counts into shared memory just before it goes idle, but not more often than once a second. So a query that is still running is not in the totals yet, and the numbers you see are always slightly behind."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When you read the views, PostgreSQL caches what you read until the end of your transaction. This is controlled by <code class=\"inline-code\">stats_fetch_consistency</code> (default <code class=\"inline-code\">cache</code>). It is a feature: several queries in one transaction see the same numbers. It is also a common surprise, which Step 14 shows."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On a clean shutdown the counters are saved to the <code class=\"inline-code\">pg_stat</code> folder in the data directory and loaded again at the next start. After a crash, an immediate shutdown, a restore from a base backup or a point-in-time recovery, all counters start again from zero."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The views come in two families:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Family",
+      "What it counts",
+      "Examples"
+     ],
+     [
+      "pg_stat_*",
+      "Actions: scans, rows inserted, updated, deleted, vacuums, transactions",
+      "pg_stat_database, pg_stat_user_tables, pg_stat_user_indexes"
+     ],
+     [
+      "pg_statio_*",
+      "Blocks: found in shared buffers (hit) or requested from the operating system (read)",
+      "pg_statio_user_tables, pg_statio_user_indexes, pg_statio_user_sequences"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each table view has three versions: <code class=\"inline-code\">_all_</code> (everything), <code class=\"inline-code\">_sys_</code> (system catalogs only) and <code class=\"inline-code\">_user_</code> (your own tables only). DBAs nearly always use the <code class=\"inline-code\">_user_</code> versions. Table and index views show only the database you are connected to; <code class=\"inline-code\">pg_stat_database</code> shows every database in the cluster."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A few terms used below. A <b>block</b> (or page) is the 8 kB unit PostgreSQL reads and writes. <b>Shared buffers</b> is PostgreSQL's own memory cache of blocks. A <b>sequential scan</b> reads a whole table from start to end. A <b>dead row</b> is an old row version left behind by an UPDATE or DELETE until VACUUM removes it (Part 11)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Check that statistics are being collected",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Check the statistics settings",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the <code class=\"inline-code\">postgres</code> user, open psql and look at the parameters that control the statistics system."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql",
+    "caption": "Connect as the postgres superuser"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, context\n  FROM pg_settings\n WHERE name IN ('track_counts', 'track_io_timing', 'track_functions',\n                'track_activities', 'track_wal_io_timing',\n                'stats_fetch_consistency')\n ORDER BY name;",
+    "caption": "Statistics settings"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "name",
+      "setting",
+      "context"
+     ],
+     [
+      "stats_fetch_consistency",
+      "cache",
+      "user"
+     ],
+     [
+      "track_activities",
+      "on",
+      "superuser"
+     ],
+     [
+      "track_counts",
+      "on",
+      "superuser"
+     ],
+     [
+      "track_functions",
+      "none",
+      "superuser"
+     ],
+     [
+      "track_io_timing",
+      "off",
+      "superuser"
+     ],
+     [
+      "track_wal_io_timing",
+      "off",
+      "superuser"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "These are the defaults. What each one does:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Parameter",
+      "What it does",
+      "Default"
+     ],
+     [
+      "track_counts",
+      "Collects table and index access statistics. Autovacuum needs these counters, so leave it on.",
+      "on"
+     ],
+     [
+      "track_io_timing",
+      "Times every block read and write, filling blk_read_time and blk_write_time.",
+      "off"
+     ],
+     [
+      "track_functions",
+      "Counts calls and time of user functions: pl (procedural languages only) or all.",
+      "none"
+     ],
+     [
+      "track_activities",
+      "Shows the current command of each session in pg_stat_activity.",
+      "on"
+     ],
+     [
+      "track_wal_io_timing",
+      "Times WAL I/O. In PostgreSQL 18 the timings appear in pg_stat_io (object wal).",
+      "off"
+     ],
+     [
+      "stats_fetch_consistency",
+      "How stats are cached inside a transaction: none, cache or snapshot.",
+      "cache"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">context</code> column says who can change a setting. <code class=\"inline-code\">superuser</code> means only superusers (or roles granted SET on it) can change it in a session; anyone can change it in postgresql.conf with a reload. PostgreSQL 18 also adds <code class=\"inline-code\">track_cost_delay_timing</code>, which times cost-based vacuum delays and is off by default."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Measure the timing overhead on this server",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">track_io_timing</code> is off by default because it asks the operating system for the time on every block read, and on some hardware that is slow. The <code class=\"inline-code\">pg_test_timing</code> tool measures that cost. On db1, as the postgres user:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres /usr/lib/postgresql/18/bin/pg_test_timing -d 3",
+    "caption": "Measure clock overhead for 3 seconds"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-d 3",
+      "Run the test for 3 seconds (the default is 3)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Testing timing overhead for 3 seconds.\nPer loop time including overhead: 24.59 ns\nHistogram of timing durations:\n  < us   % of total      count\n     1     97.62882  119097616\n     2      2.36663    2887052\n     4      0.00049        602\n     8      0.00052        635\n    16      0.00211       2572\n    32      0.00112       1366\n    64      0.00018        222\n   128      0.00009        104\n   256      0.00002         30\n   512      0.00001         13\n  1024      0.00000          4\n  2048      0.00001          8\n  4096      0.00000          2",
+    "caption": "Output (your numbers will differ)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation calls a result good when more than 90% of timing calls take under one microsecond and the per-loop time is below 100 nanoseconds. Here 97.6% are under 1 µs and the loop is 24.59 ns, so timing is cheap on this server and it is safe to turn on track_io_timing."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Turn on track_io_timing",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, edit the configuration file as root."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo nano /etc/postgresql/18/main/postgresql.conf",
+    "caption": "Edit the main configuration file"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "#track_io_timing = off",
+    "caption": "Before (in the STATISTICS section)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "track_io_timing = on",
+    "caption": "After"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This setting does not need a restart. Reload the configuration:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl reload postgresql@18-main",
+    "caption": "Reload the configuration"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The command prints nothing when it works. You can also run <code class=\"inline-code\">SELECT pg_reload_conf();</code> in psql. The server log confirms the change:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo tail -2 /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Check the log"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "2026-11-24 12:48:17.021 UTC [2289] LOG:  received SIGHUP, reloading configuration files\n2026-11-24 12:48:17.022 UTC [2289] LOG:  parameter \"track_io_timing\" changed to \"on\"",
+    "caption": "Output (expected output; the timestamp and PID will differ)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify</b> in a new psql session (a session opened before the reload may still show the old value until it processes the reload):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT name, setting, source, sourcefile\n  FROM pg_settings\n WHERE name = 'track_io_timing';",
+    "caption": "Confirm the new value"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "name",
+      "setting",
+      "source",
+      "sourcefile"
+     ],
+     [
+      "track_io_timing",
+      "on",
+      "configuration file",
+      "/etc/postgresql/18/main/postgresql.conf"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> put the <code class=\"inline-code\">#</code> back in front of the line (or set it to off) and reload again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup: a shop database with a real workload",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Create the sample database and tables",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres user, create a database with customers and orders. The orders table has an index on created_at that the application never uses. We will find it later."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres createdb shop\nsudo -u postgres psql -d shop",
+    "caption": "Create the database and connect to it"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE customers (\n    customer_id  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    full_name    text NOT NULL,\n    city         text NOT NULL\n);\n\nCREATE TABLE orders (\n    order_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer_id  bigint NOT NULL REFERENCES customers,\n    status       text NOT NULL,\n    amount       numeric(10,2) NOT NULL,\n    created_at   timestamptz NOT NULL\n);\n\nINSERT INTO customers (full_name, city)\nSELECT 'Customer ' || g,\n       (ARRAY['Hyderabad','Pune','Chennai','Bengaluru'])[1 + g % 4]\n  FROM generate_series(1, 5000) AS g;\n\nINSERT INTO orders (customer_id, status, amount, created_at)\nSELECT 1 + g % 5000,\n       (ARRAY['new','paid','shipped','cancelled'])[1 + g % 4],\n       round((random() * 5000)::numeric, 2),\n       now() - g * interval '1 minute'\n  FROM generate_series(1, 200000) AS g;\n\nCREATE INDEX orders_customer_id_idx ON orders (customer_id);\nCREATE INDEX orders_created_at_idx  ON orders (created_at);\nANALYZE;",
+    "caption": "Sample schema and data"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLE\nCREATE TABLE\nINSERT 0 5000\nINSERT 0 200000\nCREATE INDEX\nCREATE INDEX\nANALYZE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Verify:</b> <code class=\"inline-code\">SELECT count(*) FROM orders;</code> returns 200000."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Run an application-like workload with pgbench",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Statistics are only interesting when something has happened. <code class=\"inline-code\">pgbench</code> can run our own SQL script from several connections at once. On db1, as the postgres user, create the script in the postgres home directory:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres tee /var/lib/postgresql/shop_workload.sql > /dev/null <<'EOF'\n\\set cid random(1, 5000)\nSELECT count(*) FROM orders WHERE customer_id = :cid;\nSELECT order_id, amount FROM orders WHERE status = 'new' AND amount > 4990;\nUPDATE orders SET status = 'paid' WHERE order_id = :cid * 40;\nSELECT full_name, city FROM customers WHERE customer_id = :cid;\nEOF",
+    "caption": "Create the workload script"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each run of the script picks a random customer, counts their orders, searches orders by status and amount (there is no index for this), updates one order, and reads one customer. Now run it for 30 seconds:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbench -n -c 4 -T 30 -f /var/lib/postgresql/shop_workload.sql shop",
+    "caption": "Run the workload"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-n",
+      "Perform no vacuuming before the test; needed for a custom script that does not use the standard pgbench tables"
+     ],
+     [
+      "-c 4",
+      "Number of concurrent database sessions (clients)"
+     ],
+     [
+      "-T 30",
+      "Run for 30 seconds"
+     ],
+     [
+      "-f file",
+      "Use this custom script instead of the built-in test"
+     ],
+     [
+      "shop",
+      "The database to connect to"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "number of clients: 4\nnumber of threads: 1\nmaximum number of tries: 1\nduration: 30 s\nnumber of transactions actually processed: 5893\nnumber of failed transactions: 0 (0.000%)\nlatency average = 20.365 ms\ninitial connection time = 7.018 ms\ntps = 196.414085 (without initial connection time)",
+    "caption": "Output (last lines; your numbers will differ)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The script ran 5,893 times in 30 seconds, about 196 runs per second. Remember this number. Then run two more things in psql: a GROUP BY with a deliberately small work_mem so it spills to disk, and a DELETE that is rolled back."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET work_mem = '1MB';\nSELECT customer_id, sum(amount) AS total\n  FROM orders\n GROUP BY customer_id\n ORDER BY total DESC\n LIMIT 3;\n\nBEGIN;\nDELETE FROM orders WHERE status = 'cancelled';\nROLLBACK;",
+    "caption": "A query that uses temporary files, and a rolled-back transaction"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "SET\n customer_id |   total\n-------------+-----------\n        2498 | 140182.07\n        3238 | 132665.18\n        2107 | 130161.17\n(3 rows)\n\nBEGIN\nDELETE 50000\nROLLBACK",
+    "caption": "Output (totals depend on random data)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_stat_database: the health of each database",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_stat_database</code> has one row per database, plus one row for objects shared by the whole cluster (such as pg_database itself). Only <code class=\"inline-code\">numbackends</code> shows the current state, the number of sessions connected now. Every other column is a total since the last reset."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Run the database health query",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In psql connected to shop, as the postgres user:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT datname, numbackends, xact_commit, xact_rollback,\n       blks_read, blks_hit,\n       round(100.0 * blks_hit / nullif(blks_hit + blks_read, 0), 2)\n         AS cache_hit_pct,\n       temp_files, pg_size_pretty(temp_bytes) AS temp_size,\n       deadlocks\n  FROM pg_stat_database\n WHERE datname = 'shop';",
+    "caption": "Database health check"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "datname",
+      "numbackends",
+      "xact_commit",
+      "xact_rollback",
+      "blks_read",
+      "blks_hit",
+      "cache_hit_pct",
+      "temp_files",
+      "temp_size",
+      "deadlocks"
+     ],
+     [
+      "shop",
+      "1",
+      "35458",
+      "1",
+      "3299",
+      "13170674",
+      "99.97",
+      "6",
+      "11 MB",
+      "0"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "How to read each value:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>numbackends 1</b>: only our psql session is connected right now.",
+      "items": []
+     },
+     {
+      "content": "<b>xact_commit and xact_rollback</b>: every autocommitted statement counts as one transaction. The one rollback is our DELETE. A rollback count that keeps rising quickly usually means application errors; check the log from Part 23.",
+      "items": []
+     },
+     {
+      "content": "<b>blks_hit and blks_read</b>: a hit means the block was already in shared buffers. A read means PostgreSQL asked the operating system for it. The operating system may still have served it from its own file cache, so blks_read is not the same as physical disk reads.",
+      "items": []
+     },
+     {
+      "content": "<b>cache_hit_pct 99.97</b>: the share of block requests served from shared buffers. Many OLTP databases run in the high 90s, but the trend on your own server matters more than any fixed target.",
+      "items": []
+     },
+     {
+      "content": "<b>temp_files 6 and 11 MB</b>: our GROUP BY ran out of its 1 MB work_mem and wrote temporary files. These counters include every temporary file, whatever the log_temp_files setting is.",
+      "items": []
+     },
+     {
+      "content": "<b>deadlocks 0</b>: any non-zero value deserves a look at the log, which records the queries involved.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Why nullif?",
+    "text": "On a database that has never been read, blks_hit + blks_read is 0 and the division would fail with \"division by zero\". <code class=\"inline-code\">nullif(x, 0)</code> turns 0 into NULL, so the ratio is simply NULL."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: See every database and the session counters",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT coalesce(datname, '(shared objects)') AS datname,\n       numbackends, xact_commit, xact_rollback, deadlocks, stats_reset\n  FROM pg_stat_database\n ORDER BY datname NULLS FIRST;",
+    "caption": "All databases in the cluster"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "datname",
+      "numbackends",
+      "xact_commit",
+      "xact_rollback",
+      "deadlocks",
+      "stats_reset"
+     ],
+     [
+      "(shared objects)",
+      "0",
+      "0",
+      "0",
+      "0",
+      ""
+     ],
+     [
+      "postgres",
+      "0",
+      "12",
+      "0",
+      "0",
+      ""
+     ],
+     [
+      "shop",
+      "1",
+      "35460",
+      "1",
+      "0",
+      ""
+     ],
+     [
+      "template0",
+      "0",
+      "0",
+      "0",
+      "0",
+      ""
+     ],
+     [
+      "template1",
+      "0",
+      "921",
+      "0",
+      "0",
+      ""
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The row with a NULL datname is the shared objects row. An empty <code class=\"inline-code\">stats_reset</code> means nobody has reset these counters with a reset function. Always check stats_reset before comparing numbers: a total since yesterday and a total since last year mean very different things."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The session columns tell you how sessions ended and where their time went:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT datname, sessions, sessions_abandoned, sessions_fatal,\n       sessions_killed,\n       round(session_time::numeric / 1000) AS session_s,\n       round(active_time::numeric / 1000) AS active_s,\n       round(idle_in_transaction_time::numeric / 1000) AS idle_in_tx_s,\n       round(blk_read_time::numeric, 1) AS blk_read_ms\n  FROM pg_stat_database\n WHERE datname = 'shop';",
+    "caption": "Session statistics"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "datname",
+      "sessions",
+      "sessions_abandoned",
+      "sessions_fatal",
+      "sessions_killed",
+      "session_s",
+      "active_s",
+      "idle_in_tx_s",
+      "blk_read_ms"
+     ],
+     [
+      "shop",
+      "9",
+      "0",
+      "0",
+      "0",
+      "121",
+      "116",
+      "0",
+      "27.0"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Column",
+      "Meaning"
+     ],
+     [
+      "sessions_abandoned",
+      "Sessions that ended because the client connection was lost"
+     ],
+     [
+      "sessions_fatal",
+      "Sessions ended by a fatal error"
+     ],
+     [
+      "sessions_killed",
+      "Sessions ended by an operator, for example pg_terminate_backend() from Part 10"
+     ],
+     [
+      "active_time",
+      "Milliseconds spent running SQL"
+     ],
+     [
+      "idle_in_transaction_time",
+      "Milliseconds sessions sat idle inside an open transaction. Growth here means an application is holding transactions open."
+     ],
+     [
+      "blk_read_time",
+      "Milliseconds spent reading blocks. Non-zero only because we turned on track_io_timing in Step 3."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The time values are in milliseconds, so the query divides by 1000 to show seconds. PostgreSQL 18 also adds <code class=\"inline-code\">parallel_workers_to_launch</code> and <code class=\"inline-code\">parallel_workers_launched</code> to this view. If launched is often lower than to_launch, queries wanted more parallel workers than the server could give them (see max_parallel_workers)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_stat_user_tables: how each table is used",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_stat_user_tables</code> is the view DBAs open most. It answers three questions: which tables are read by full scans, which tables change the most, and when vacuum and analyze last ran."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Find tables that are read by sequential scans",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT relname, seq_scan, seq_tup_read, idx_scan, idx_tup_fetch,\n       n_live_tup\n  FROM pg_stat_user_tables\n ORDER BY seq_tup_read DESC;",
+    "caption": "Sequential scans versus index scans"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "relname",
+      "seq_scan",
+      "seq_tup_read",
+      "idx_scan",
+      "idx_tup_fetch",
+      "n_live_tup"
+     ],
+     [
+      "orders",
+      "11793",
+      "1179400000",
+      "11786",
+      "241613",
+      "200000"
+     ],
+     [
+      "customers",
+      "1",
+      "0",
+      "205893",
+      "205893",
+      "5000"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The orders table has had 11,793 sequential scans that read about 1.18 billion rows in total. That is the warning sign: a big table read from end to end again and again. The number to sort by is <code class=\"inline-code\">seq_tup_read</code>, not seq_scan. Many sequential scans of a 10-row lookup table cost nothing; a few on a large table can cost a lot."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Why 11,793 scans when the status query ran 5,893 times? EXPLAIN shows the planner used a parallel scan, and the leader and the worker each count a scan:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN SELECT order_id, amount FROM orders WHERE status = 'new' AND amount > 4990;",
+    "caption": "Check the plan of the suspect query"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                QUERY PLAN\n--------------------------------------------------------------------------\n Gather  (cost=1000.00..4515.81 rows=101 width=14)\n   Workers Planned: 1\n   ->  Parallel Seq Scan on orders  (cost=0.00..3505.71 rows=59 width=14)\n         Filter: ((amount > '4990'::numeric) AND (status = 'new'::text))\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Look also at customers: 205,893 index scans. Only 5,893 came from our script. The other 200,000 came from the INSERT into orders, because every new order checks its customer_id against the customers primary key (the foreign key). Statistics count internal work like this too."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The view tells you <i>which table</i> is scanned; it does not tell you <i>which query</i> does it. Use the slow query log from Part 23, or pg_stat_statements in Part 25, to find the statement. Here we already know it: the status and amount search. We fix it in Step 15."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Check writes, dead rows and vacuum activity",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT relname, n_tup_ins, n_tup_upd, n_tup_hot_upd, n_tup_del,\n       n_live_tup, n_dead_tup, n_mod_since_analyze\n  FROM pg_stat_user_tables\n ORDER BY relname;",
+    "caption": "Write activity and dead rows"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "relname",
+      "n_tup_ins",
+      "n_tup_upd",
+      "n_tup_hot_upd",
+      "n_tup_del",
+      "n_live_tup",
+      "n_dead_tup",
+      "n_mod_since_analyze"
+     ],
+     [
+      "customers",
+      "5000",
+      "0",
+      "0",
+      "0",
+      "5000",
+      "0",
+      "0"
+     ],
+     [
+      "orders",
+      "200000",
+      "5893",
+      "4161",
+      "50000",
+      "200000",
+      "0",
+      "5893"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>n_tup_upd 5893, n_tup_hot_upd 4161</b>: 71% of updates were HOT (heap-only tuple) updates. A HOT update keeps the new row version on the same page and does not touch the indexes, which is cheaper and creates less bloat. A low HOT share on a heavily updated table is a reason to look at fillfactor and at indexes on updated columns (Part 13).",
+      "items": []
+     },
+     {
+      "content": "<b>n_tup_del 50000</b>: these are the rows from our DELETE, even though it was rolled back. The counters record work that was attempted. The rows are still live, which is why n_live_tup is still 200,000 and n_dead_tup is 0.",
+      "items": []
+     },
+     {
+      "content": "<b>n_dead_tup and n_mod_since_analyze</b>: these are the counters autovacuum uses to decide when to vacuum and analyze a table (Part 12). They are estimates, not exact counts.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT relname, last_vacuum, last_autovacuum, last_analyze,\n       last_autoanalyze, autovacuum_count, autoanalyze_count\n  FROM pg_stat_user_tables\n ORDER BY relname;",
+    "caption": "When vacuum and analyze last ran"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "relname",
+      "last_vacuum",
+      "last_autovacuum",
+      "last_analyze",
+      "last_autoanalyze",
+      "autovacuum_count",
+      "autoanalyze_count"
+     ],
+     [
+      "customers",
+      "",
+      "2026-11-24 12:49:10.818834+00",
+      "2026-11-24 12:47:59.124494+00",
+      "",
+      "1",
+      "0"
+     ],
+     [
+      "orders",
+      "",
+      "2026-11-24 12:49:10.911578+00",
+      "2026-11-24 12:47:59.165988+00",
+      "",
+      "1",
+      "0"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "last_analyze is our manual ANALYZE from Step 4. Autovacuum vacuumed both tables once during the workload. A large, busy table with an empty or very old last_autovacuum is the classic sign that autovacuum cannot keep up or is blocked. New in PostgreSQL 18, the view also has <code class=\"inline-code\">total_vacuum_time</code>, <code class=\"inline-code\">total_autovacuum_time</code>, <code class=\"inline-code\">total_analyze_time</code> and <code class=\"inline-code\">total_autoanalyze_time</code> in milliseconds, so you can see which tables cost autovacuum the most time."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_stat_user_indexes: find indexes nobody uses",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every index makes INSERTs and many UPDATEs slower and takes disk space and memory. An index that no query reads is pure cost. pg_stat_user_indexes has one row per index with the number of scans that used it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: List index usage",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT relname, indexrelname, idx_scan, idx_tup_read, idx_tup_fetch,\n       pg_size_pretty(pg_relation_size(indexrelid)) AS index_size\n  FROM pg_stat_user_indexes\n ORDER BY idx_scan;",
+    "caption": "Index usage"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "relname",
+      "indexrelname",
+      "idx_scan",
+      "idx_tup_read",
+      "idx_tup_fetch",
+      "index_size"
+     ],
+     [
+      "orders",
+      "orders_created_at_idx",
+      "0",
+      "0",
+      "0",
+      "4408 kB"
+     ],
+     [
+      "orders",
+      "orders_pkey",
+      "5893",
+      "6874",
+      "5893",
+      "4408 kB"
+     ],
+     [
+      "orders",
+      "orders_customer_id_idx",
+      "5893",
+      "237421",
+      "0",
+      "1400 kB"
+     ],
+     [
+      "customers",
+      "customers_pkey",
+      "205893",
+      "205893",
+      "205893",
+      "128 kB"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">orders_created_at_idx</code> has never been scanned. Notice also that orders_customer_id_idx returned 237,421 index entries (<code class=\"inline-code\">idx_tup_read</code>) but fetched 0 table rows (<code class=\"inline-code\">idx_tup_fetch</code>). The count(*) query used an index-only scan or a bitmap scan, and the documentation explains that neither adds to this index's idx_tup_fetch. A zero there does not mean the index is useless; idx_scan is the column to judge by."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Since PostgreSQL 16 there is also <code class=\"inline-code\">last_idx_scan</code>, the time of the most recent scan. It is easier to argue for dropping an index that has not been used for three months than one with a low count."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT indexrelname, idx_scan, last_idx_scan\n  FROM pg_stat_user_indexes\n WHERE relname = 'orders'\n ORDER BY indexrelname;",
+    "caption": "When each index was last used"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "indexrelname",
+      "idx_scan",
+      "last_idx_scan"
+     ],
+     [
+      "orders_created_at_idx",
+      "0",
+      ""
+     ],
+     [
+      "orders_customer_id_idx",
+      "5893",
+      "2026-11-24 12:49:02.931777+00"
+     ],
+     [
+      "orders_pkey",
+      "5893",
+      "2026-11-24 12:49:02.931777+00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Build the unused index report",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Primary keys and unique indexes enforce rules, so they must stay even with zero scans. This query leaves them out:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT s.relname, s.indexrelname,\n       pg_size_pretty(pg_relation_size(s.indexrelid)) AS index_size\n  FROM pg_stat_user_indexes AS s\n  JOIN pg_index AS i ON i.indexrelid = s.indexrelid\n WHERE s.idx_scan = 0\n   AND NOT i.indisunique\n   AND NOT i.indisprimary\n ORDER BY pg_relation_size(s.indexrelid) DESC;",
+    "caption": "Unused, non-unique indexes"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "relname",
+      "indexrelname",
+      "index_size"
+     ],
+     [
+      "orders",
+      "orders_created_at_idx",
+      "4408 kB"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Before you drop an index",
+    "text": "Statistics are kept per server. Scans on a standby are counted only on that standby, so check every standby too. Check stats_reset and the server start time so you know how long the counter has been collecting: a monthly report or a year-end job may need an index that looks unused for weeks. When you do drop one, use DROP INDEX CONCURRENTLY so you do not block writes, and keep its CREATE INDEX statement so you can rebuild it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "pg_statio_user_tables: block I/O per table and index",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The pg_statio views split the database-level cache hit ratio from Step 6 down to each table, its indexes and its TOAST data (TOAST is where PostgreSQL stores large values out of line). Use them when the database ratio drops and you need to know which table is responsible."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Cache hit ratio per table",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT relname, heap_blks_read, heap_blks_hit,\n       round(100.0 * heap_blks_hit\n             / nullif(heap_blks_hit + heap_blks_read, 0), 2) AS heap_hit_pct,\n       idx_blks_read, idx_blks_hit,\n       round(100.0 * idx_blks_hit\n             / nullif(idx_blks_hit + idx_blks_read, 0), 2) AS idx_hit_pct\n  FROM pg_statio_user_tables\n ORDER BY heap_blks_read + heap_blks_hit DESC;",
+    "caption": "Heap and index hit ratio per table"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "relname",
+      "heap_blks_read",
+      "heap_blks_hit",
+      "heap_hit_pct",
+      "idx_blks_read",
+      "idx_blks_hit",
+      "idx_hit_pct"
+     ],
+     [
+      "orders",
+      "1728",
+      "10966249",
+      "99.98",
+      "1278",
+      "394529",
+      "99.68"
+     ],
+     [
+      "customers",
+      "40",
+      "411038",
+      "99.99",
+      "17",
+      "421383",
+      "100.00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "\"Heap\" is the table data itself. The orders table is 14 MB (1,741 blocks) and shared_buffers is the default 128 MB, so after the first 1,728 reads the whole table stayed in memory and almost every later access was a hit. On a production server the interesting rows are large tables with a low hit percentage and a high <code class=\"inline-code\">heap_blks_read</code>: those are the tables whose reads go to the operating system and possibly to disk."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: I/O per index",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT indexrelname, idx_blks_read, idx_blks_hit\n  FROM pg_statio_user_indexes\n ORDER BY indexrelname;",
+    "caption": "Block I/O per index"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "indexrelname",
+      "idx_blks_read",
+      "idx_blks_hit"
+     ],
+     [
+      "customers_pkey",
+      "17",
+      "421383"
+     ],
+     [
+      "orders_created_at_idx",
+      "551",
+      "5203"
+     ],
+     [
+      "orders_customer_id_idx",
+      "175",
+      "15256"
+     ],
+     [
+      "orders_pkey",
+      "552",
+      "374070"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the hidden cost of the unused index. orders_created_at_idx has never been scanned, yet it has 5,754 block accesses. They come from maintenance: every non-HOT update (1,732 of the 5,893 updates in Step 9) had to add a new entry to every index on orders, including this one. Every future INSERT pays the same price."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Reading statistics correctly: caching and snapshots",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: See why numbers do not change inside a transaction",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In psql connected to shop, start a transaction, read a counter, run a query in another session (the <code class=\"inline-code\">\\!</code> meta-command runs a shell command), and read the counter again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\nSELECT seq_scan FROM pg_stat_user_tables WHERE relname = 'customers';\n\\! psql -d shop -qAt -c \"SELECT count(*) FROM customers WHERE city = 'Pune';\"\nSELECT seq_scan FROM pg_stat_user_tables WHERE relname = 'customers';\nSELECT pg_stat_clear_snapshot();\nSELECT seq_scan FROM pg_stat_user_tables WHERE relname = 'customers';\nCOMMIT;",
+    "caption": "The statistics cache inside one transaction"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\n seq_scan\n----------\n        1\n(1 row)\n\n1250\n seq_scan\n----------\n        1\n(1 row)\n\n pg_stat_clear_snapshot\n------------------------\n\n(1 row)\n\n seq_scan\n----------\n        2\n(1 row)\n\nCOMMIT",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The other session did a sequential scan of customers (1,250 customers live in Pune), but our transaction still saw 1. With stats_fetch_consistency = cache, the first read of an object's statistics is kept until the transaction ends. <code class=\"inline-code\">pg_stat_clear_snapshot()</code> throws the cached values away, and the next read shows 2. Monitoring scripts that sample in a loop inside one transaction must call it, or simply run each sample in its own transaction."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: Measure a time window with a snapshot table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Totals since the last reset are hard to read. What you usually want is \"what happened in the last hour\" or \"what changed after the fix\". Instead of resetting counters, save a copy and subtract. First, the fix for our scan problem. In psql connected to shop:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX CONCURRENTLY orders_status_amount_idx ON orders (status, amount);",
+    "caption": "Add an index for the status and amount search"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE INDEX",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Then, in a <b>new</b> psql call (so the index build's own scans are already flushed into the counters), save a snapshot:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE table_stats_snap AS\nSELECT now() AS taken_at, relid, relname,\n       seq_scan, seq_tup_read, idx_scan, n_tup_upd, n_tup_hot_upd\n  FROM pg_stat_user_tables;",
+    "caption": "Save the current counters"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "SELECT 2",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run the same 30-second workload again from the shell:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres pgbench -n -c 4 -T 30 -f /var/lib/postgresql/shop_workload.sql shop",
+    "caption": "Run the workload again"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "number of transactions actually processed: 148820\ntps = 4961.524018 (without initial connection time)",
+    "caption": "Output (last lines; your numbers will differ)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now compare the live counters with the snapshot:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT t.relname,\n       round(extract(epoch FROM now() - s.taken_at)) AS seconds,\n       t.seq_scan      - s.seq_scan      AS seq_scans,\n       t.seq_tup_read  - s.seq_tup_read  AS rows_seq_read,\n       t.idx_scan      - s.idx_scan      AS idx_scans,\n       t.n_tup_upd     - s.n_tup_upd     AS updates,\n       t.n_tup_hot_upd - s.n_tup_hot_upd AS hot_updates\n  FROM pg_stat_user_tables AS t\n  JOIN table_stats_snap AS s USING (relid)\n ORDER BY rows_seq_read DESC;",
+    "caption": "What changed since the snapshot"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "relname",
+      "seconds",
+      "seq_scans",
+      "rows_seq_read",
+      "idx_scans",
+      "updates",
+      "hot_updates"
+     ],
+     [
+      "customers",
+      "34",
+      "0",
+      "0",
+      "148820",
+      "0",
+      "0"
+     ],
+     [
+      "orders",
+      "34",
+      "0",
+      "0",
+      "446460",
+      "148820",
+      "148699"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In this window orders had no sequential scans at all. The index scans are 3 per script run (the customer_id lookup, the new status index and the primary key used by the UPDATE). The same workload ran 148,820 times in 30 seconds instead of 5,893, because the most expensive query no longer reads the whole table. Almost every update was HOT: status is now indexed, but most of the updated orders were already \"paid\" from the first run, so no indexed value changed and the indexes did not need new entries."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is how monitoring tools work: they store samples and graph the difference. A cron job that saves a copy of pg_stat_user_tables and pg_stat_database every few minutes into a table gives you the same history for free. <b>Cleanup:</b> <code class=\"inline-code\">DROP TABLE table_stats_snap;</code>"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Resetting statistics, restarts and crashes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 16: Reset one table's counters (test servers only)",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Read this before resetting",
+    "text": "The documentation warns that resetting statistics also resets the counters autovacuum uses to decide when to vacuum and analyze. That can stop autovacuum from doing necessary work and cause bloat or stale planner statistics. Do not reset counters on production to \"start fresh\"; use snapshots as in Step 15. If you do reset, run ANALYZE afterwards."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the test database only, as the postgres user, reset the counters for orders:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_stat_reset_single_table_counters('orders'::regclass);\n\nSELECT relname, seq_scan, idx_scan, n_live_tup, n_dead_tup,\n       n_mod_since_analyze\n  FROM pg_stat_user_tables\n WHERE relname = 'orders';",
+    "caption": "Reset one table and look at the result"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "relname",
+      "seq_scan",
+      "idx_scan",
+      "n_live_tup",
+      "n_dead_tup",
+      "n_mod_since_analyze"
+     ],
+     [
+      "orders",
+      "0",
+      "908432",
+      "0",
+      "0",
+      "0"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two lessons in one result. First, n_live_tup and n_dead_tup are now 0: autovacuum now believes the table has no dead rows, which is exactly what the warning is about. Second, idx_scan did not reset. In pg_stat_user_tables, idx_scan is the sum of the counters of the table's indexes (you can see this with <code class=\"inline-code\">\\d+ pg_stat_all_tables</code>), and indexes have their own entries. To reset those too, call the same function with each index name."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Run ANALYZE to put the live and dead row estimates back:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ANALYZE orders;\n\nSELECT relname, seq_scan, idx_scan, n_live_tup, n_dead_tup, last_analyze\n  FROM pg_stat_user_tables\n WHERE relname = 'orders';",
+    "caption": "Restore the estimates"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "relname",
+      "seq_scan",
+      "idx_scan",
+      "n_live_tup",
+      "n_dead_tup",
+      "last_analyze"
+     ],
+     [
+      "orders",
+      "0",
+      "908432",
+      "200000",
+      "3538",
+      "2026-11-24 12:51:51.577553+00"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Other reset functions: <code class=\"inline-code\">pg_stat_reset()</code> resets every counter of the current database, and <code class=\"inline-code\">pg_stat_reset_shared('io')</code> and its other targets reset cluster-wide views such as pg_stat_io, pg_stat_wal and pg_stat_checkpointer. All are restricted to superusers by default."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 17: See what a clean restart and a crash do to the counters",
+    "level": 3
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Test server only",
+    "text": "The immediate stop below aborts all server processes without a checkpoint, as a crash would. The server recovers from WAL on the next start. Never run it on a production server."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as a sudo user, read the commit counter, restart cleanly, and read it again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d shop -Atc \"SELECT xact_commit FROM pg_stat_database WHERE datname = 'shop'\"\nsudo systemctl restart postgresql@18-main\nsudo -u postgres psql -d shop -Atc \"SELECT xact_commit FROM pg_stat_database WHERE datname = 'shop'\"",
+    "caption": "Counters across a clean restart"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-A",
+      "Unaligned output (no padding)"
+     ],
+     [
+      "-t",
+      "Print rows only, no headers or footer"
+     ],
+     [
+      "-c",
+      "Run this one command and exit"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "1231060\n1231062",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The counter survived the restart (the two extra commits are our own queries). Now stop the server in immediate mode and start it again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo pg_ctlcluster 18 main stop -m immediate\nsudo pg_ctlcluster 18 main start\nsudo -u postgres psql -d shop -c \"SELECT xact_commit, stats_reset FROM pg_stat_database WHERE datname = 'shop'\"",
+    "caption": "Counters after an immediate stop"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " xact_commit | stats_reset\n-------------+-------------\n           1 |\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All totals were lost, and stats_reset is still empty, because no reset function was called. So an empty stats_reset does not prove the counters are old: also check <code class=\"inline-code\">pg_postmaster_start_time()</code> and the log, which shows \"database system was not properly shut down; automatic recovery in progress\" after a crash. The same reset happens after a restore from a base backup or a point-in-time recovery (Parts 18 to 20)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Querying pg_stat_user_tables in the wrong database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Connected to the postgres database, the orders table seems to have no statistics:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -d postgres -c \"SELECT relname, seq_scan FROM pg_stat_user_tables WHERE relname = 'orders';\"",
+    "caption": "Wrong database"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " relname | seq_scan\n---------+----------\n(0 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> table, index and statio views show only the current database. Connect to the right one (<code class=\"inline-code\">psql -d shop</code>, or <code class=\"inline-code\">\\c shop</code> inside psql). Only pg_stat_database, pg_stat_activity and the cluster-wide views cover every database."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "permission denied for function pg_stat_reset",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET ROLE app_user;\nSELECT pg_stat_reset();",
+    "caption": "A normal role tries to reset statistics"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  permission denied for function pg_stat_reset",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> the reset functions are superuser-only by default. Usually the right answer is not to reset (Step 15). If a monitoring role really needs it, a superuser can run <code class=\"inline-code\">GRANT EXECUTE ON FUNCTION pg_stat_reset() TO monitor_role;</code>. For reading all statistics, including other users' query text in pg_stat_activity, grant the built-in role <code class=\"inline-code\">pg_read_all_stats</code> instead of superuser."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "permission denied to set parameter \"track_io_timing\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET ROLE app_user;\nSET track_io_timing = off;",
+    "caption": "A normal role tries to turn off timing"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  permission denied to set parameter \"track_io_timing\"",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> this is intended. The documentation says only superusers may change the track_* settings with SET, so that ordinary users cannot hide their activity from the administrator. Change it in postgresql.conf and reload."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Turning off track_counts",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Some old tuning guides suggest turning off track_counts to save overhead. Do not. Autovacuum depends on these counters; without them it cannot tell which tables need vacuuming, and dead rows and transaction ID age (Part 14) build up."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Trusting a cache hit ratio right after a restart",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "After a restart shared buffers are empty, so the first hours show many reads and a lower ratio. The counters, however, still include all the hits from before the restart. Compare hit ratios over a fixed window using snapshots, and remember that a \"read\" may have been served by the operating system cache."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Find the table in shop with the most dead rows and show its dead-row percentage (n_dead_tup as a share of n_live_tup + n_dead_tup) and when autovacuum last ran on it.",
+      "items": []
+     },
+     {
+      "content": "Drop the unused index orders_created_at_idx without blocking writes, then confirm it no longer appears in pg_stat_user_indexes.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "1: <code class=\"inline-code\">SELECT relname, n_live_tup, n_dead_tup, round(100.0 * n_dead_tup / nullif(n_live_tup + n_dead_tup, 0), 2) AS dead_pct, last_autovacuum FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 1;</code> 2: first save the definition with <code class=\"inline-code\">SELECT pg_get_indexdef('orders_created_at_idx'::regclass);</code>, then run <code class=\"inline-code\">DROP INDEX CONCURRENTLY orders_created_at_idx;</code> and check with <code class=\"inline-code\">SELECT indexrelname FROM pg_stat_user_indexes WHERE relname = 'orders';</code>. DROP INDEX CONCURRENTLY cannot run inside a transaction block."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Check the statistics settings\nsudo -u postgres psql -c \"SELECT name, setting, context FROM pg_settings WHERE name LIKE 'track%' OR name = 'stats_fetch_consistency';\"\n\n# Measure clock overhead before enabling track_io_timing\nsudo -u postgres /usr/lib/postgresql/18/bin/pg_test_timing -d 3\n\n# Enable track_io_timing (set track_io_timing = on), then reload\nsudo nano /etc/postgresql/18/main/postgresql.conf\nsudo systemctl reload postgresql@18-main\n\n# Database health: commits, rollbacks, cache hit, temp files, deadlocks\nsudo -u postgres psql -d shop -c \"SELECT datname, xact_commit, xact_rollback, round(100.0*blks_hit/nullif(blks_hit+blks_read,0),2) AS hit_pct, temp_files, deadlocks, stats_reset FROM pg_stat_database WHERE datname IS NOT NULL;\"\n\n# Tables read by sequential scans\nsudo -u postgres psql -d shop -c \"SELECT relname, seq_scan, seq_tup_read, idx_scan FROM pg_stat_user_tables ORDER BY seq_tup_read DESC LIMIT 10;\"\n\n# Dead rows and last (auto)vacuum\nsudo -u postgres psql -d shop -c \"SELECT relname, n_dead_tup, last_autovacuum, last_autoanalyze FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 10;\"\n\n# Unused non-unique indexes\nsudo -u postgres psql -d shop -c \"SELECT s.relname, s.indexrelname, pg_size_pretty(pg_relation_size(s.indexrelid)) FROM pg_stat_user_indexes s JOIN pg_index i USING (indexrelid) WHERE s.idx_scan = 0 AND NOT i.indisunique ORDER BY pg_relation_size(s.indexrelid) DESC;\"\n\n# Cache hit ratio per table\nsudo -u postgres psql -d shop -c \"SELECT relname, heap_blks_read, heap_blks_hit, round(100.0*heap_blks_hit/nullif(heap_blks_hit+heap_blks_read,0),2) AS hit_pct FROM pg_statio_user_tables ORDER BY heap_blks_read DESC LIMIT 10;\"\n\n# Save a snapshot, wait, then subtract (instead of resetting)\nsudo -u postgres psql -d shop -c \"CREATE TABLE table_stats_snap AS SELECT now() AS taken_at, relid, relname, seq_scan, seq_tup_read, idx_scan, n_tup_upd, n_tup_hot_upd FROM pg_stat_user_tables;\"\n\n# Test servers only: reset one table, then re-analyze\nsudo -u postgres psql -d shop -c \"SELECT pg_stat_reset_single_table_counters('orders'::regclass);\" -c \"ANALYZE orders;\"",
+    "caption": "All commands from this part"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Cumulative statistics are totals since the last reset or crash, flushed about once a second, and cached until the end of your transaction.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "track_counts must stay on; track_io_timing is worth turning on after pg_test_timing shows cheap timing.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "pg_stat_database: watch xact_rollback, cache hit ratio, temp_files, deadlocks and idle_in_transaction_time.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "pg_stat_user_tables: sort by seq_tup_read to find missing indexes; watch n_dead_tup, the HOT share and last_autovacuum.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "pg_stat_user_indexes: idx_scan = 0 on a non-unique index (checked on every standby, over a long window) marks a candidate to drop.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "pg_statio views show which tables and indexes cause block reads.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Measure with snapshots and differences; avoid resets on production, and run ANALYZE after any reset.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 25 we find the slowest queries with pg_stat_statements."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your orders table had 11,793 full scans in 30 seconds, and nothing in the log looked wrong.\n\nThat is what PostgreSQL's statistics views show you. Part 24 of my PostgreSQL DBA series covers the ones I check first:\n\n→ pg_stat_database: one row per database. Commits, rollbacks, blks_hit vs blks_read, temp_files, deadlocks.\n→ pg_stat_user_tables: sort by seq_tup_read, not seq_scan. A big table read end to end again and again needs an index.\n→ pg_stat_user_indexes: idx_scan = 0 on a non-unique index is a drop candidate. Check every standby first, stats are per server.\n→ pg_statio_user_tables: cache hit ratio per table, so you know which table causes the reads.\n→ Inside one transaction the numbers do not change. Call pg_stat_clear_snapshot() in monitoring loops.\n\nIn the test, one index on (status, amount) took the workload from about 196 to about 4,960 runs per second, and the delta query proved the sequential scans were gone.\n\nDo not reset counters to start fresh: autovacuum uses them. Save a snapshot and subtract instead.\n\nWhich statistics view do you open first when a database feels slow?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #Database #SQL",
+  "slides": [
+   {
+    "title": "PostgreSQL statistics views for DBAs",
+    "body": "Part 24 of the PostgreSQL DBA series: pg_stat_database, pg_stat_user_tables, pg_statio"
+   },
+   {
+    "title": "How the counters work",
+    "points": [
+     "Totals since the last reset or crash",
+     "Each backend flushes at most once a second",
+     "Cached until your transaction ends",
+     "Saved on clean shutdown, lost after a crash"
+    ]
+   },
+   {
+    "title": "Database health in one query",
+    "code": "SELECT datname, xact_commit,\n  xact_rollback, temp_files,\n  deadlocks,\n  round(100.0 * blks_hit /\n    nullif(blks_hit + blks_read, 0), 2)\n    AS hit_pct\nFROM pg_stat_database\nWHERE datname = 'shop';",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Tables that need an index",
+    "points": [
+     "Sort pg_stat_user_tables by seq_tup_read",
+     "A big table scanned end to end, again and again",
+     "Find the query in the slow log, then index it"
+    ],
+    "code": "SELECT relname, seq_scan,\n  seq_tup_read, idx_scan\nFROM pg_stat_user_tables\nORDER BY seq_tup_read DESC;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Unused indexes",
+    "points": [
+     "idx_scan = 0 on a non-unique index",
+     "It still costs every INSERT and non-HOT UPDATE",
+     "Check each standby and a long time window",
+     "Drop with DROP INDEX CONCURRENTLY"
+    ]
+   },
+   {
+    "title": "Measure, do not reset",
+    "points": [
+     "Save pg_stat_user_tables into a table",
+     "Run the workload, then subtract",
+     "Resets also wipe autovacuum counters",
+     "After any reset, run ANALYZE"
+    ]
+   }
+  ]
+ }
+}

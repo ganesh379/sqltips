@@ -69,3 +69,4 @@
 - 2026-11-21 [PostgreSQL] postgresql isolation levels -> _drafts/2026-11-21-postgresql-postgresql-isolation-levels-explained.json
 - 2026-11-22 [PostgreSQL] postgresql delete duplicate rows but keep one -> _drafts/2026-11-22-postgresql-postgresql-delete-duplicate-rows-but-keep-one.json
 - 2026-11-23 [PostgreSQL] postgresql log slow queries -> _drafts/2026-11-23-postgresql-postgresql-dba-part-23-logging-slow-queries-auto-explain.json
+- 2026-11-24 [PostgreSQL] pg_stat_user_tables -> _drafts/2026-11-24-postgresql-postgresql-dba-part-24-statistics-views.json
