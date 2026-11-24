@@ -95,7 +95,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain record order, connection types, address, auth method and safe reload/testing.
   - Format: Config animation · Level: Intermediate
   - Hook: One pg_hba.conf line can block your application.
-- [ ] Ep 022 | 2026-11-25 | Password Authentication and SCRAM
+- [x] Ep 022 | 2026-11-25 | Password Authentication and SCRAM (posted 2026-11-25 13:00, Buffer 6b05237e060d9b64824d1039)
   - Objective: Explain password storage/authentication at a high level, SCRAM-SHA-256 and migration considerations.
   - Format: Security explainer · Level: Intermediate
   - Hook: Is your PostgreSQL password authentication secure?
