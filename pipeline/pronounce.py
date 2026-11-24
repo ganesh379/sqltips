@@ -62,7 +62,7 @@ WORDS = {
     "stat": "stat", "xact": "transaction", "lsn": "L-S-N", "xid": "X-I-D", "oid": "O-I-D",
     "autovacuum": "auto vacuum", "basebackup": "base backup", "isready": "is ready",
     "waldump": "wall dump", "receivewal": "receive wall", "dumpall": "dump all",
-    "statio": "stat I-O", "tblspc": "T-B-L-S-P-C", "filepath": "file path", "filenode": "file node", "pid": "P-I-D", "repack": "re-pack",
+    "statio": "stat I-O", "tblspc": "T-B-L-S-P-C", "filepath": "file path", "filenode": "file node", "pid": "P-I-D", "repack": "re-pack", "authid": "auth I-D", "rolpassword": "role password",
     "ctid": "C-T-I-D", "ctids": "C-T-I-Ds", "pageinspect": "page inspect", "xmin": "X-min", "xmax": "X-max",
     "walsender": "wall sender", "walreceiver": "wall receiver", "walwriter": "wall writer",
     # extensions, tools and related products

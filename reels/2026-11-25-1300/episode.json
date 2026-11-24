@@ -1,0 +1,574 @@
+{
+ "ep": 22,
+ "total": 140,
+ "title": "Password Authentication and SCRAM",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "Is your PostgreSQL password authentication secure?",
+   "cap": "Is your *password authentication* secure?"
+  },
+  {
+   "say": "This is episode twenty two of the PostgreSQL DBA series. Today: how passwords are stored, and how to move to SCRAM.",
+   "cap": "Episode 22: *how passwords are stored,* and *SCRAM.*",
+   "cue": "SCRAM"
+  },
+  {
+   "say": "pg_hba.conf offers three password methods.",
+   "cap": "*Three* password methods.",
+   "cue": "methods"
+  },
+  {
+   "say": "password sends it in clear text. Avoid it unless the connection uses SSL.",
+   "cap": "*password* = clear text. Avoid it without *SSL.*",
+   "cue": "SSL"
+  },
+  {
+   "say": "md5 stops sniffing, but gives no protection if the stored hash is stolen.",
+   "cap": "*md5:* weak if the *hash is stolen.*",
+   "cue": "stolen"
+  },
+  {
+   "say": "scram-sha-256 stores only a salted hash. The docs call it the most secure.",
+   "cap": "*scram-sha-256:* the *most secure.*",
+   "cue": "secure"
+  },
+  {
+   "say": "But older client libraries may not support it.",
+   "cap": "*Older client libraries* may lack SCRAM.",
+   "cue": "libraries"
+  },
+  {
+   "say": "The stored format comes from password_encryption, when the password is set.",
+   "cap": "Format = *password_encryption* at set time.",
+   "cue": "set"
+  },
+  {
+   "say": "The default is scram-sha-256. The other value is md5.",
+   "cap": "Default: *scram-sha-256.* Other: *md5.*",
+   "cue": "md5"
+  },
+  {
+   "say": "We made app_user with the default, and old_app with md5, then read pg_authid.",
+   "cap": "Two users. Read *pg_authid.*",
+   "cue": "pg_authid"
+  },
+  {
+   "say": "Same server, two formats. Hashes trimmed.",
+   "cap": "*SCRAM-SHA-256$* vs *md5.*",
+   "cue": "two"
+  },
+  {
+   "say": "Inside the SCRAM secret, four thousand ninety six is the scram_iterations default.",
+   "cap": "*4096* = default *scram_iterations.*",
+   "cue": "default"
+  },
+  {
+   "say": "Now the trap. A scram-sha-256 line in pg_hba.conf.",
+   "cap": "The trap: a *scram-sha-256* line.",
+   "cue": "line"
+  },
+  {
+   "say": "old_app typed the right password, and was refused.",
+   "cap": "Right password. *Refused.*",
+   "cue": "refused"
+  },
+  {
+   "say": "Only the server log said why: no valid SCRAM secret.",
+   "cap": "Log: *no valid SCRAM secret.*",
+   "cue": "SCRAM"
+  },
+  {
+   "say": "The reverse works: an md5 line accepts a SCRAM password, and uses SCRAM.",
+   "cap": "*md5* line + SCRAM password = *works.*",
+   "cue": "uses"
+  },
+  {
+   "say": "Migration, per the docs: check client libraries, and set password_encryption to scram-sha-256.",
+   "cap": "Check clients. Set *password_encryption.*",
+   "cue": "password_encryption"
+  },
+  {
+   "say": "Have every user set a new password. Only then, change pg_hba.conf.",
+   "cap": "*New passwords* first. *Then* pg_hba.conf.",
+   "cue": "then"
+  },
+  {
+   "say": "Find who is left: rolpassword like md5 percent.",
+   "cap": "Find leftovers: *LIKE 'md5%'.*",
+   "cue": "percent"
+  },
+  {
+   "say": "Reset each with psql backslash password. It keeps the password out of history and logs.",
+   "cap": "*\\password:* out of *history and logs.*",
+   "cue": "history"
+  },
+  {
+   "say": "Zero rows left, and old_app now logs in.",
+   "cap": "*0 rows.* old_app *logs in.*",
+   "cue": "logs"
+  },
+  {
+   "say": "Common mistake: switch pg_hba.conf first, and md5 users are locked out.",
+   "cap": "Switch first = *md5 users locked out.*",
+   "cue": "locked"
+  },
+  {
+   "say": "The current docs also say MD5 password support is deprecated.",
+   "cap": "Current docs: MD5 passwords *deprecated.*",
+   "cue": "deprecated"
+  },
+  {
+   "say": "Recap: use scram-sha-256. Find md5 users, reset them, then switch pg_hba.conf.",
+   "cap": "Recap: *find, reset, then switch.*",
+   "cue": "switch"
+  },
+  {
+   "say": "Next up: connection limits and max_connections. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *max_connections.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "Is your PostgreSQL *password authentication* secure?",
+   "sub": "Episode 22 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 22 \u00b7 INSTALLATION & ADMINISTRATION",
+   "title": "Password Authentication and SCRAM",
+   "sub": "Stored, checked, migrated"
+  },
+  {
+   "type": "cards",
+   "from": 2,
+   "to": 7,
+   "heading": "Three password methods",
+   "columns": 1,
+   "items": [
+    {
+     "at": 2,
+     "icon": "eye",
+     "title": "password",
+     "text": "clear text on the wire: avoid unless SSL",
+     "color": "red"
+    },
+    {
+     "at": 4,
+     "icon": "alert",
+     "title": "md5",
+     "text": "no sniffing, but a stolen hash is not protected",
+     "color": "amber"
+    },
+    {
+     "at": 5,
+     "icon": "shield",
+     "title": "scram-sha-256",
+     "text": "challenge-response, only a salted hash stored",
+     "color": "green"
+    },
+    {
+     "at": 6,
+     "icon": "wrench",
+     "title": "Check drivers first",
+     "text": "older client libraries lack SCRAM",
+     "color": "blue"
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 7,
+   "to": 9,
+   "heading": "How a password is stored",
+   "nodes": [
+    {
+     "id": "r",
+     "label": "CREATE ROLE",
+     "sub": "or ALTER ROLE ... PASSWORD",
+     "x": 540,
+     "y": 500,
+     "w": 380,
+     "h": 130,
+     "icon": "terminal",
+     "color": "blue",
+     "shape": "pill",
+     "at": 7
+    },
+    {
+     "id": "p",
+     "label": "The setting",
+     "sub": "password_encryption",
+     "x": 540,
+     "y": 760,
+     "w": 380,
+     "h": 140,
+     "icon": "wrench",
+     "color": "orange",
+     "at": 7
+    },
+    {
+     "id": "s",
+     "label": "SCRAM",
+     "sub": "scram-sha-256, default",
+     "x": 290,
+     "y": 1060,
+     "w": 380,
+     "h": 140,
+     "icon": "shield",
+     "color": "green",
+     "at": 8
+    },
+    {
+     "id": "m",
+     "label": "MD5",
+     "sub": "md5",
+     "x": 820,
+     "y": 1060,
+     "w": 300,
+     "h": 140,
+     "icon": "alert",
+     "color": "amber",
+     "at": 8
+    }
+   ],
+   "edges": [
+    {
+     "from": "r",
+     "to": "p",
+     "at": 7,
+     "flow": true,
+     "color": "blue"
+    },
+    {
+     "from": "p",
+     "to": "s",
+     "label": "default",
+     "at": 8,
+     "flow": true,
+     "color": "green"
+    },
+    {
+     "from": "p",
+     "to": "m",
+     "at": 8,
+     "dashed": true,
+     "color": "amber"
+    }
+   ],
+   "focus": [
+    {
+     "at": 7,
+     "id": "p"
+    },
+    {
+     "at": 8,
+     "id": "s"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 9,
+   "to": 11,
+   "heading": "Two formats, one server",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT rolname,",
+     "at": 9,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "left(rolpassword, 14) AS head",
+     "at": 9,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "FROM pg_authid",
+     "at": 9,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "WHERE rolname LIKE '%app%';",
+     "at": 9,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": " rolname  |      head",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "----------+----------------",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": " app_user | SCRAM-SHA-256$",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": " old_app  | md502a4baa38e5",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "(2 rows)",
+     "at": 10
+    }
+   ]
+  },
+  {
+   "type": "stat",
+   "from": 11,
+   "to": 12,
+   "value": "4096",
+   "label": "default scram_iterations",
+   "text": "SCRAM-SHA-256$4096:<salt>$<StoredKey>:<ServerKey>",
+   "color": "green"
+  },
+  {
+   "type": "terminal",
+   "from": 12,
+   "to": 15,
+   "heading": "The trap",
+   "title": "shell: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- pg_hba.conf line 2:",
+     "at": 12
+    },
+    {
+     "kind": "comment",
+     "text": "-- host appdb all 127.0.0.1/32",
+     "at": 12
+    },
+    {
+     "kind": "comment",
+     "text": "--      scram-sha-256",
+     "at": 12
+    },
+    {
+     "kind": "cmd",
+     "text": "psql -h 127.0.0.1 -U old_app appdb",
+     "at": 13,
+     "prompt": "$ "
+    },
+    {
+     "kind": "out",
+     "text": "FATAL:  password authentication",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "failed for user \"old_app\"",
+     "at": 13
+    },
+    {
+     "kind": "comment",
+     "text": "-- server log:",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "DETAIL:  User \"old_app\" does not",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "have a valid SCRAM secret.",
+     "at": 14
+    },
+    {
+     "kind": "comment",
+     "text": "-- output trimmed",
+     "at": 14
+    }
+   ]
+  },
+  {
+   "type": "compare",
+   "from": 15,
+   "to": 16,
+   "heading": "Which line accepts which?",
+   "left": {
+    "title": "scram-sha-256 line",
+    "color": "green",
+    "rows": [
+     "SCRAM password: OK",
+     "md5 password: FAILS"
+    ]
+   },
+   "right": {
+    "title": "md5 line",
+    "color": "amber",
+    "rows": [
+     "SCRAM password: OK",
+     "(SCRAM is used)",
+     "md5 password: OK"
+    ]
+   }
+  },
+  {
+   "type": "steps",
+   "from": 16,
+   "to": 18,
+   "heading": "Migration path (docs)",
+   "items": [
+    {
+     "at": 16,
+     "icon": "wrench",
+     "title": "Check client libraries",
+     "text": "new enough for SCRAM",
+     "color": "blue"
+    },
+    {
+     "at": 16,
+     "icon": "file",
+     "title": "password_encryption",
+     "text": "= 'scram-sha-256'",
+     "color": "orange"
+    },
+    {
+     "at": 17,
+     "icon": "key",
+     "title": "Every user: new password",
+     "text": "stored as SCRAM",
+     "color": "green"
+    },
+    {
+     "at": 17,
+     "icon": "lock",
+     "title": "pg_hba.conf",
+     "text": "md5 lines to scram-sha-256",
+     "color": "purple"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 18,
+   "to": 21,
+   "heading": "Find and fix md5 users",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT rolname FROM pg_authid",
+     "at": 18,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "WHERE rolpassword LIKE 'md5%';",
+     "at": 18,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": " rolname",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "---------",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": " old_app",
+     "at": 18
+    },
+    {
+     "kind": "cmd",
+     "text": "\\password old_app",
+     "at": 19,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "Enter new password for user \"old_app\":",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "Enter it again:",
+     "at": 19
+    },
+    {
+     "kind": "comment",
+     "text": "-- same query again:",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "(0 rows)",
+     "at": 20
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 21,
+   "to": 22,
+   "kind": "warning",
+   "title": "Do not switch pg_hba.conf first",
+   "text": "Users that still have an md5 password cannot log in through a scram-sha-256 line."
+  },
+  {
+   "type": "callout",
+   "from": 22,
+   "to": 23,
+   "kind": "fact",
+   "title": "MD5 is deprecated",
+   "text": "Current PostgreSQL docs: support for MD5-encrypted passwords will be removed in a future release."
+  },
+  {
+   "type": "checklist",
+   "from": 23,
+   "to": 24,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 23,
+     "title": "Avoid password and md5"
+    },
+    {
+     "at": 23,
+     "title": "Use scram-sha-256"
+    },
+    {
+     "at": 23,
+     "title": "Find md5 users in pg_authid"
+    },
+    {
+     "at": 23,
+     "title": "Reset with \\password"
+    },
+    {
+     "at": 23,
+     "title": "Then switch pg_hba.conf"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 24,
+   "to": 25,
+   "next": "Ep 23 \u00b7 Connection limits"
+  }
+ ]
+}

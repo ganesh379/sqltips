@@ -1,0 +1,13 @@
+Is your PostgreSQL password authentication secure? Here is how to move from MD5 to SCRAM safely.
+
+pg_hba.conf has three password methods. password sends it in clear text. md5 stops sniffing but gives no protection if the stored hash is stolen. scram-sha-256 stores only a salted hash, and the docs call it the most secure of the three.
+
+The stored format is decided by password_encryption at the moment the password is set (default scram-sha-256). You can see it in pg_authid.rolpassword: SCRAM-SHA-256$4096... versus md5... In our test, a user with an md5 password hit a scram-sha-256 line and got "password authentication failed", while the server log said "does not have a valid SCRAM secret".
+
+Migration path from the docs: check client libraries, set password_encryption = 'scram-sha-256', have every user set a new password, then change pg_hba.conf. Find leftovers with WHERE rolpassword LIKE 'md5%' and reset them with psql \password. The current docs say MD5 password support is deprecated. Tested on PostgreSQL 16.
+
+Episode 22 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #security
