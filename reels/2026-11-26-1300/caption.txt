@@ -1,0 +1,13 @@
+Why raising max_connections in PostgreSQL can make things worse, not better.
+
+max_connections sets the maximum number of concurrent connections. The default is typically 100 and it can only be set at server start. PostgreSQL uses a process per user model: the postmaster spawns one backend process for every connection.
+
+Not every slot is for your app. superuser_reserved_connections keeps 3 slots for superusers by default, and reserved_connections (default 0) can keep more for roles with pg_use_reserved_connections. In our lab with max_connections = 6, the 4th app_user login failed with "FATAL: remaining connection slots are reserved for roles with the SUPERUSER attribute", and once all 6 were used even a superuser got "FATAL: sorry, too many clients already".
+
+Why not just set 5000? work_mem applies per sort or hash operation, and the docs warn total memory can be many times work_mem when many sessions run at once. Each allowed connection also needs a semaphore, and a standby needs max_connections the same or higher than the primary. Measure client backends in pg_stat_activity first. A common practice is a modest limit plus a connection pooler. Tested on PostgreSQL 16.
+
+Episode 23 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql

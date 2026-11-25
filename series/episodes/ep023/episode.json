@@ -1,0 +1,586 @@
+{
+ "ep": 23,
+ "total": 140,
+ "title": "Connection Limits and max_connections",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "Why raising max_connections can make things worse.",
+   "cap": "Why *more connections* can make things *worse.*"
+  },
+  {
+   "say": "This is episode twenty three of the PostgreSQL DBA series. Today: connection slots, the reserved ones, and why bigger is not always better.",
+   "cap": "Episode 23: *connection slots* and their *cost.*",
+   "cue": "reserved"
+  },
+  {
+   "say": "max_connections sets the maximum number of concurrent connections to the database server.",
+   "cap": "*max_connections* = max *concurrent* connections.",
+   "cue": "concurrent"
+  },
+  {
+   "say": "The default is typically one hundred, and it can only be set at server start.",
+   "cap": "Default *100.* Set at *server start* only.",
+   "cue": "start"
+  },
+  {
+   "say": "Why does that matter? PostgreSQL uses a process per user model.",
+   "cap": "A *process per user* model.",
+   "cue": "process"
+  },
+  {
+   "say": "The postmaster listens for connections, and spawns a new backend process for each one.",
+   "cap": "postmaster *spawns a backend* per connection.",
+   "cue": "backend"
+  },
+  {
+   "say": "So every single connection costs a whole server process.",
+   "cap": "1 connection = *1 server process.*",
+   "cue": "process"
+  },
+  {
+   "say": "And not every slot is for your app. superuser_reserved_connections keeps three slots for superusers by default.",
+   "cap": "*3 slots* reserved for *superusers.*",
+   "cue": "three"
+  },
+  {
+   "say": "reserved_connections can keep more slots for roles with pg_use_reserved_connections. Its default is zero.",
+   "cap": "*reserved_connections:* default *0.*",
+   "cue": "zero"
+  },
+  {
+   "say": "So with the defaults, normal roles get ninety seven slots.",
+   "cap": "100 minus 3 minus 0 = *97* for normal roles.",
+   "cue": "ninety"
+  },
+  {
+   "say": "Let's prove it. In a lab, we set max_connections to six, and restarted.",
+   "cap": "Lab: *max_connections = 6.*",
+   "cue": "six"
+  },
+  {
+   "say": "Three app_user sessions are open. A fourth app_user connection tries to log in.",
+   "cap": "3 sessions open. A *4th* tries.",
+   "cue": "fourth"
+  },
+  {
+   "say": "Refused. The error, output trimmed, says the remaining slots are reserved for superusers.",
+   "cap": "*Refused:* slots reserved for *SUPERUSER.*",
+   "cue": "reserved"
+  },
+  {
+   "say": "Fill all six, and even a superuser gets: sorry, too many clients already.",
+   "cap": "All full: *sorry, too many clients already.*",
+   "cue": "sorry"
+  },
+  {
+   "say": "So why not just set it to five thousand?",
+   "cap": "Why not set it to *5000?*",
+   "cue": "thousand"
+  },
+  {
+   "say": "Each backend has its own working memory. work_mem applies per sort or hash operation, not per server.",
+   "cap": "*work_mem* is per *operation,* not per server.",
+   "cue": "operation"
+  },
+  {
+   "say": "The docs warn that total memory used could be many times work_mem, when many sessions do this at once.",
+   "cap": "Total can be *many times work_mem.*",
+   "cue": "many"
+  },
+  {
+   "say": "The docs also count one semaphore per allowed connection, so the kernel must allow enough.",
+   "cap": "*1 semaphore* per allowed connection.",
+   "cue": "semaphore"
+  },
+  {
+   "say": "And on a standby, max_connections must be the same or higher than on the primary.",
+   "cap": "Standby: *same or higher* than primary.",
+   "cue": "standby"
+  },
+  {
+   "say": "So measure before you change anything. Count client backends in pg_stat_activity.",
+   "cap": "Measure first: *pg_stat_activity.*",
+   "cue": "pg_stat_activity"
+  },
+  {
+   "say": "Here, four are in use, including our own session, out of one hundred.",
+   "cap": "*4 used* out of *100.*",
+   "cue": "four"
+  },
+  {
+   "say": "Common mistake: raising the limit every time you see too many clients.",
+   "cap": "Mistake: *raise the limit* every time.",
+   "cue": "mistake"
+  },
+  {
+   "say": "A common practice is to keep max_connections modest, and put a connection pooler in front.",
+   "cap": "Common practice: modest limit + *a pooler.*",
+   "cue": "pooler"
+  },
+  {
+   "say": "Recap: one process per connection, and three slots kept for superusers.",
+   "cap": "Recap: *1 process each,* *3 reserved.*",
+   "cue": "three"
+  },
+  {
+   "say": "Memory grows with sessions. Measure first, then pool.",
+   "cap": "*Memory grows.* Measure, *then pool.*",
+   "cue": "pool"
+  },
+  {
+   "say": "Next up: connection pooling with PgBouncer. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *PgBouncer.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "Why raising *max_connections* can make things *worse*",
+   "sub": "Episode 23 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 23 \u00b7 INSTALLATION & ADMINISTRATION",
+   "title": "Connection Limits and max_connections",
+   "sub": "Slots, reserves and real cost"
+  },
+  {
+   "type": "cards",
+   "from": 2,
+   "to": 4,
+   "heading": "What max_connections is",
+   "columns": 1,
+   "items": [
+    {
+     "at": 2,
+     "icon": "users",
+     "title": "max_connections",
+     "text": "maximum concurrent connections to the server",
+     "color": "blue"
+    },
+    {
+     "at": 3,
+     "icon": "gauge",
+     "title": "Default: typically 100",
+     "text": "less if kernel settings cannot support it",
+     "color": "green"
+    },
+    {
+     "at": 3,
+     "icon": "alert",
+     "title": "Server start only",
+     "text": "changing it needs a restart",
+     "color": "amber"
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 4,
+   "to": 7,
+   "heading": "One connection, one process",
+   "nodes": [
+    {
+     "id": "c1",
+     "label": "Client 1",
+     "x": 200,
+     "y": 520,
+     "w": 270,
+     "h": 120,
+     "icon": "users",
+     "color": "cyan",
+     "at": 4
+    },
+    {
+     "id": "c2",
+     "label": "Client 2",
+     "x": 540,
+     "y": 520,
+     "w": 270,
+     "h": 120,
+     "icon": "users",
+     "color": "cyan",
+     "at": 4
+    },
+    {
+     "id": "c3",
+     "label": "Client 3",
+     "x": 880,
+     "y": 520,
+     "w": 270,
+     "h": 120,
+     "icon": "users",
+     "color": "cyan",
+     "at": 4
+    },
+    {
+     "id": "pm",
+     "label": "postmaster",
+     "sub": "listens, then spawns",
+     "x": 540,
+     "y": 830,
+     "w": 380,
+     "h": 140,
+     "icon": "server",
+     "color": "orange",
+     "shape": "pill",
+     "at": 5
+    },
+    {
+     "id": "b1",
+     "label": "Backend",
+     "sub": "process",
+     "x": 200,
+     "y": 1150,
+     "w": 270,
+     "h": 130,
+     "icon": "cpu",
+     "color": "green",
+     "at": 5
+    },
+    {
+     "id": "b2",
+     "label": "Backend",
+     "sub": "process",
+     "x": 540,
+     "y": 1150,
+     "w": 270,
+     "h": 130,
+     "icon": "cpu",
+     "color": "green",
+     "at": 5
+    },
+    {
+     "id": "b3",
+     "label": "Backend",
+     "sub": "process",
+     "x": 880,
+     "y": 1150,
+     "w": 270,
+     "h": 130,
+     "icon": "cpu",
+     "color": "green",
+     "at": 6
+    }
+   ],
+   "edges": [
+    {
+     "from": "c1",
+     "to": "pm",
+     "at": 5,
+     "flow": true,
+     "color": "cyan"
+    },
+    {
+     "from": "c2",
+     "to": "pm",
+     "label": "connect",
+     "at": 5,
+     "flow": true,
+     "color": "cyan"
+    },
+    {
+     "from": "c3",
+     "to": "pm",
+     "at": 5,
+     "flow": true,
+     "color": "cyan"
+    },
+    {
+     "from": "pm",
+     "to": "b1",
+     "at": 5,
+     "flow": true,
+     "color": "green"
+    },
+    {
+     "from": "pm",
+     "to": "b2",
+     "label": "spawns",
+     "at": 5,
+     "flow": true,
+     "color": "green"
+    },
+    {
+     "from": "pm",
+     "to": "b3",
+     "at": 6,
+     "flow": true,
+     "color": "green"
+    }
+   ],
+   "focus": [
+    {
+     "at": 5,
+     "id": "pm"
+    },
+    {
+     "at": 6,
+     "id": "b3"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 7,
+   "to": 10,
+   "heading": "Who gets the 100 slots?",
+   "columns": 1,
+   "items": [
+    {
+     "at": 7,
+     "icon": "gauge",
+     "title": "max_connections = 100",
+     "text": "every connection takes one slot",
+     "color": "blue"
+    },
+    {
+     "at": 7,
+     "icon": "shield",
+     "title": "superuser_reserved: 3",
+     "text": "superuser_reserved_connections, the final reserve",
+     "color": "red"
+    },
+    {
+     "at": 8,
+     "icon": "key",
+     "title": "reserved_connections: 0",
+     "text": "for roles with pg_use_reserved_connections",
+     "color": "purple"
+    },
+    {
+     "at": 9,
+     "icon": "users",
+     "title": "Normal roles: 97",
+     "text": "100 - 3 - 0 with the defaults",
+     "color": "green"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 10,
+   "to": 14,
+   "heading": "Lab: a server with 6 slots",
+   "title": "shell: db1 (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- lab: max_connections = 6",
+     "at": 10
+    },
+    {
+     "kind": "comment",
+     "text": "-- 3 app_user sessions open",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "text": "psql -h 127.0.0.1 -U app_user appdb",
+     "prompt": "$ ",
+     "at": 11
+    },
+    {
+     "kind": "out",
+     "text": "FATAL:  remaining connection slots",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "are reserved for roles with the",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "SUPERUSER attribute",
+     "at": 12
+    },
+    {
+     "kind": "comment",
+     "text": "-- all 6 slots in use:",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "text": "psql",
+     "prompt": "postgres$ ",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "FATAL:  sorry, too many clients",
+     "at": 13
+    },
+    {
+     "kind": "out",
+     "text": "already",
+     "at": 13
+    },
+    {
+     "kind": "comment",
+     "text": "-- output trimmed",
+     "at": 13
+    }
+   ]
+  },
+  {
+   "type": "stat",
+   "from": 14,
+   "to": 15,
+   "value": "5000?",
+   "label": "why not just raise it?",
+   "color": "red"
+  },
+  {
+   "type": "cards",
+   "from": 15,
+   "to": 19,
+   "heading": "The cost of more slots",
+   "columns": 1,
+   "items": [
+    {
+     "at": 15,
+     "icon": "memory",
+     "title": "work_mem per operation",
+     "text": "each sort or hash in each session",
+     "color": "orange"
+    },
+    {
+     "at": 16,
+     "icon": "growth",
+     "title": "Many sessions at once",
+     "text": "total can be many times work_mem",
+     "color": "red"
+    },
+    {
+     "at": 17,
+     "icon": "cpu",
+     "title": "Kernel semaphores",
+     "text": "one per allowed connection",
+     "color": "purple"
+    },
+    {
+     "at": 18,
+     "icon": "sync",
+     "title": "Standby rule",
+     "text": "max_connections same or higher than primary",
+     "color": "blue"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 19,
+   "to": 21,
+   "heading": "Measure before you change",
+   "title": "psql: appdb (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT count(*) AS used,",
+     "prompt": "appdb=# ",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "text": "current_setting('max_connections')",
+     "prompt": "appdb-# ",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "text": "AS max FROM pg_stat_activity",
+     "prompt": "appdb-# ",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "text": "WHERE backend_type =",
+     "prompt": "appdb-# ",
+     "at": 19
+    },
+    {
+     "kind": "cmd",
+     "text": "'client backend';",
+     "prompt": "appdb-# ",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": " used | max ",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "------+-----",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "    4 | 100",
+     "at": 20
+    },
+    {
+     "kind": "out",
+     "text": "(1 row)",
+     "at": 20
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 21,
+   "to": 22,
+   "kind": "warning",
+   "title": "Raising the limit is not a fix",
+   "text": "More slots means more processes and more memory that can be in use at the same time."
+  },
+  {
+   "type": "callout",
+   "from": 22,
+   "to": 23,
+   "kind": "tip",
+   "title": "A common practice",
+   "text": "Keep max_connections modest and put a connection pooler in front of PostgreSQL."
+  },
+  {
+   "type": "checklist",
+   "from": 23,
+   "to": 25,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 23,
+     "title": "1 connection = 1 process"
+    },
+    {
+     "at": 23,
+     "title": "3 slots kept for superusers"
+    },
+    {
+     "at": 24,
+     "title": "Memory grows with sessions"
+    },
+    {
+     "at": 24,
+     "title": "Measure in pg_stat_activity"
+    },
+    {
+     "at": 24,
+     "title": "Then pool, do not just raise"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 25,
+   "to": 26,
+   "next": "Ep 24 \u00b7 Pooling with PgBouncer"
+  }
+ ]
+}
