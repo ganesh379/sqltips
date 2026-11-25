@@ -99,7 +99,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain password storage/authentication at a high level, SCRAM-SHA-256 and migration considerations.
   - Format: Security explainer · Level: Intermediate
   - Hook: Is your PostgreSQL password authentication secure?
-- [ ] Ep 023 | 2026-11-26 | Connection Limits and max_connections
+- [x] Ep 023 | 2026-11-26 | Connection Limits and max_connections (posted 2026-11-26 13:00, Buffer 6b067440d8874a038cf5c6a1)
   - Objective: Explain connection slots, reserved slots where applicable, memory implications and pooling alternatives.
   - Format: Capacity visual · Level: Intermediate
   - Hook: Why increasing max_connections may make things worse.

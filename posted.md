@@ -56,3 +56,4 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-23 | 13:00 | Instagram | Series Ep 020 | GRANT, REVOKE and Default Privileges | reels/2026-11-23-1300 | 6b02813a024796909228368e
 - 2026-11-24 | 13:00 | Instagram | Series Ep 021 | pg_hba.conf: Client Authentication | reels/2026-11-24-1300 | 6b03cff3cc364169c1b2cd1d
 - 2026-11-25 | 13:00 | Instagram | Series Ep 022 | Password Authentication and SCRAM | reels/2026-11-25-1300 | 6b05237e060d9b64824d1039
+- 2026-11-26 | 13:00 | Instagram | Series Ep 023 | Connection Limits and max_connections | reels/2026-11-26-1300 | 6b067440d8874a038cf5c6a1
