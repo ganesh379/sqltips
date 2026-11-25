@@ -23,3 +23,4 @@
 - Part 22 | postgresql-dba-part-22-testing-backups-restore-drills | 2026-11-20
 - Part 23 | postgresql-dba-part-23-logging-slow-queries-auto-explain | 2026-11-23
 - Part 24 | postgresql-dba-part-24-statistics-views | 2026-11-24
+- Part 25 | postgresql-dba-part-25-pg-stat-statements | 2026-11-25

@@ -1,0 +1,1450 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 25: Find Slow Queries with pg_stat_statements",
+ "slug": "postgresql-dba-part-25-pg-stat-statements",
+ "category": "postgresql",
+ "description": "Enable pg_stat_statements on PostgreSQL 18, find the queries that cost the most time and I/O, and prove a fix by resetting one statement. Real output.",
+ "focusKeyword": "pg_stat_statements",
+ "tags": [
+  "postgresql-dba-series",
+  "pg-stat-statements",
+  "performance",
+  "monitoring"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-5-postgresql-conf-basics/",
+  "/posts/postgresql/postgresql-dba-part-7-roles-and-privileges/",
+  "/posts/postgresql/postgresql-dba-part-10-connections-sessions/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: F.32 pg_stat_statements",
+   "url": "https://www.postgresql.org/docs/18/pgstatstatements.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Run-time Statistics (compute_query_id, track_io_timing)",
+   "url": "https://www.postgresql.org/docs/18/runtime-config-statistics.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: pgbench",
+   "url": "https://www.postgresql.org/docs/18/pgbench.html"
+  },
+  {
+   "title": "PostgreSQL 18 release notes",
+   "url": "https://www.postgresql.org/docs/18/release-18.html"
+  },
+  {
+   "title": "PostgreSQL 17 release notes (column renames, reset return value)",
+   "url": "https://www.postgresql.org/docs/17/release-17.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Shared Library Preloading (shared_preload_libraries)",
+   "url": "https://www.postgresql.org/docs/18/runtime-config-client.html"
+  }
+ ],
+ "reviewNotes": "Series part 25. Publish Part 24 first (Parts 19-24 are not live yet; Part 24 is named without a link and is not in related). TEST ENVIRONMENT: PostgreSQL 18 could NOT be run in this sandbox. postgresql-18 (18.7-1.pgdg24.04+5) is available from PGDG but depends on liburing2 from the Ubuntu archive, which the sandbox network blocks (apt: \"Depends: liburing2 (>= 2.5) but it is not installable\"). Following the task instructions, all SQL and shell examples were run on the distribution PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on Ubuntu 24.04.5 LTS, cluster 16 main, port 5432, pgbench 16.15. The article is written for PostgreSQL 18 (paths /etc/postgresql/18/main, postgresql@18-main, /usr/lib/postgresql/18/bin). Documentation followed: PostgreSQL 18 docs (/docs/18/; postgresql.org/docs/current now shows 19) plus the 17 and 18 release notes.\nEvery column queried (queryid, query, calls, total_exec_time, mean/stddev/max_exec_time, rows, shared_blks_hit/read, temp_blks_written, userid) exists in both 16 and 18 with the same meaning, so the result tables are real 16 output. Items that differ on 18 and are captioned '(expected output)' or described in text only: (1) pg_stat_statements_reset() returns timestamptz since 17 (void on 16), so its output is described in words, not shown; (2) the IN-list grouping example output is the 18 behaviour from the docs (on 16 it really printed separate rows 'IN ($1, $2, $3)' and 'IN ($1, $2, $3, $4)', both calls 1, plus '= $1' calls 2); (3) pg_lsclusters for 18 main; (4) the 'must be loaded via \"shared_preload_libraries\"' error: on 16 the real text is unquoted ('must be loaded via shared_preload_libraries'); I wrote the quoted form assuming the PostgreSQL 17 change that quotes GUC names in messages, PLEASE VERIFY on 18; (5) the reload log lines are real 16 lines with the path changed to 18 and timestamps removed; (6) the EXPLAIN plan is real 16 output, trimmed, with a sentence saying 18 shows fractional rows (rows=5.67). Not run: track_io_timing read-time columns (shared_blk_read_time is 17+; on 16 it is blk_read_time), 18-only columns parallel_workers_to_launch/launched, wal_buffers_full. Step 2 'before' lines are simplified (comments trimmed). Sandbox has no systemd, so restarts were done with pg_ctlcluster; the article shows systemctl restart postgresql@18-main with pg_ctlcluster as the alternative. Step 15 used SET ROLE as postgres instead of logging in as the roles (peer auth). pgbench and timing numbers are real from this sandbox and will differ on other hardware; the article says so. GRANT EXECUTE ON FUNCTION pg_stat_statements_reset TO monitor (no argument list) was tested on 16 and lets the role reset. Please re-run Steps 1-4, 7 and the IN-list example on a real PostgreSQL 18 server before publishing.",
+ "generatedAt": "2026-11-25T13:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is <b>Part 25 of the PostgreSQL DBA series</b>. In Part 24 we used the cumulative statistics views to see which tables and indexes are busy. Those views tell you <i>where</i> the work happens, but not <i>which SQL statements</i> cause it. That is the job of <code class=\"inline-code\">pg_stat_statements</code>, and by the end of this part you will have it running on PostgreSQL 18 and know how to read it to find the queries worth fixing first."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">pg_stat_statements</code> is an extension that ships with PostgreSQL. Once it is loaded, it keeps a running total for every distinct SQL statement the server executes: how many times it ran, the total and average time, how many rows it returned and how many data blocks it touched. You then query it like a normal view and sort by the column that matters to you."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Turning it on takes one configuration line, one restart and one SQL command. The rest of this part is about reading the numbers correctly, because the slowest single query is often not the query that costs your server the most."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "How <code class=\"inline-code\">pg_stat_statements</code> groups statements and why you see <code class=\"inline-code\">$1</code> instead of real values",
+      "items": []
+     },
+     {
+      "content": "How to enable it on Ubuntu: <code class=\"inline-code\">shared_preload_libraries</code>, a restart and <code class=\"inline-code\">CREATE EXTENSION</code>",
+      "items": []
+     },
+     {
+      "content": "Four queries that find the most expensive SQL: by total time, by average time, by share of the workload and by I/O",
+      "items": []
+     },
+     {
+      "content": "How to prove a fix worked by resetting the statistics for one statement",
+      "items": []
+     },
+     {
+      "content": "Who can see other users' query text, and how to grant it with <code class=\"inline-code\">pg_read_all_stats</code>",
+      "items": []
+     },
+     {
+      "content": "The settings that control the extension and the mistakes that stop it working",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 24 of this series, especially Part 5 (editing postgresql.conf, reload versus restart), Part 7 (roles and privileges) and Part 24 (statistics views).",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server with PostgreSQL 18 from the PGDG repository and the default cluster <b>18 main</b> on port 5432, set up as in Part 2.",
+      "items": []
+     },
+     {
+      "content": "A user with <code class=\"inline-code\">sudo</code> rights. You run SQL as the <code class=\"inline-code\">postgres</code> operating system user, which connects as the <code class=\"inline-code\">postgres</code> superuser through peer authentication.",
+      "items": []
+     },
+     {
+      "content": "Permission to restart PostgreSQL once. Loading <code class=\"inline-code\">pg_stat_statements</code> cannot be done with a reload, so plan the restart for a quiet moment on a production server.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of <code class=\"inline-code\">pg_stat_statements</code> as a till receipt for your database. Every time a statement finishes, the extension adds a line to the receipt for that kind of statement: one more call, so many milliseconds, so many rows. It never stores every single execution; it only keeps running totals per statement."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To decide which statements are \"the same kind\", PostgreSQL calculates a <b>query identifier</b> (the <code class=\"inline-code\">queryid</code> column), a hash of the statement's structure after parsing. Two statements that differ only in their constant values get the same identifier. So <code class=\"inline-code\">WHERE customer_id = 42</code> and <code class=\"inline-code\">WHERE customer_id = 7</code> land on one line, and the extension shows the constant as a placeholder: <code class=\"inline-code\">WHERE customer_id = $1</code>. This is called <b>normalisation</b>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The query identifier is computed by the core server when the setting <code class=\"inline-code\">compute_query_id</code> allows it. Its default, <code class=\"inline-code\">auto</code>, lets modules such as <code class=\"inline-code\">pg_stat_statements</code> switch it on automatically, so you normally do not touch it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The counters live in <b>shared memory</b>, the memory area every PostgreSQL process can read. Shared memory is sized when the server starts, which is why the module must be listed in <code class=\"inline-code\">shared_preload_libraries</code> and why adding or removing it needs a restart. The query texts themselves are kept in a file on disk (in the <code class=\"inline-code\">pg_stat_tmp</code> folder of the data directory), not in shared memory."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Statistics are collected for <b>all databases</b> in the cluster. The <code class=\"inline-code\">CREATE EXTENSION</code> command only creates the view and functions in the database where you run it, so you can read the numbers. Each row of the view is one combination of user, database, query identifier and whether the statement was top level."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "application sessions --(SQL)--> backend process --(when the statement ends)--> counters in shared memory\n                                                                              |\nDBA: SELECT ... FROM pg_stat_statements  <-------------------------------------+",
+    "caption": "Where the numbers come from"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The columns you will use most often:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Column",
+      "What it means"
+     ],
+     [
+      "queryid",
+      "Hash that identifies the normalised statement"
+     ],
+     [
+      "query",
+      "Text of a representative statement, with constants replaced by $1, $2 ..."
+     ],
+     [
+      "calls",
+      "Number of times the statement was executed"
+     ],
+     [
+      "total_exec_time",
+      "Total time spent executing it, in milliseconds"
+     ],
+     [
+      "mean_exec_time / max_exec_time / stddev_exec_time",
+      "Average, slowest and spread of execution time, in milliseconds"
+     ],
+     [
+      "rows",
+      "Total rows retrieved or affected"
+     ],
+     [
+      "shared_blks_hit / shared_blks_read",
+      "8 kB blocks found in shared buffers / read from outside them"
+     ],
+     [
+      "temp_blks_written",
+      "Blocks written to temporary files, for example by sorts that did not fit in work_mem"
+     ],
+     [
+      "toplevel",
+      "True if the client issued the statement directly, false if it ran inside a function"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "Times are in milliseconds and cover the execution phase only. Planning time is in separate <code class=\"inline-code\">*_plan_time</code> columns, which stay at zero unless you turn on <code class=\"inline-code\">pg_stat_statements.track_planning</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Enable pg_stat_statements",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Check whether it is already loaded",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the database server (db1), as a sudo user. First see what <code class=\"inline-code\">shared_preload_libraries</code> contains now, so you do not remove another library that is already there."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SHOW shared_preload_libraries;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " shared_preload_libraries \n--------------------------\n \n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The value is empty, which is the default. If your server already lists libraries here (for example <code class=\"inline-code\">auto_explain</code> from Part 23), keep them and add <code class=\"inline-code\">pg_stat_statements</code> to the list, separated by a comma."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Add the library to postgresql.conf",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as a sudo user. Open the main configuration file in an editor:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo nano /etc/postgresql/18/main/postgresql.conf",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Find the two lines below and change them. <code class=\"inline-code\">track_io_timing</code> is optional but useful: it fills in the read and write time columns so you can see how long a statement waited for disk."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "# before\n#shared_preload_libraries = ''\n#track_io_timing = off\n\n# after\nshared_preload_libraries = 'pg_stat_statements'\ntrack_io_timing = on",
+    "caption": "/etc/postgresql/18/main/postgresql.conf"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Setting",
+      "Default",
+      "How it is applied"
+     ],
+     [
+      "shared_preload_libraries",
+      "'' (empty)",
+      "Server start only: needs a restart"
+     ],
+     [
+      "track_io_timing",
+      "off",
+      "Reload; only superusers and users with the SET privilege can change it in a session"
+     ],
+     [
+      "compute_query_id",
+      "auto",
+      "Leave it at auto; pg_stat_statements enables it"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "The documentation warns that <code class=\"inline-code\">track_io_timing</code> asks the operating system for the current time over and over, which can be expensive on some platforms. Measure the overhead with <code class=\"inline-code\">/usr/lib/postgresql/18/bin/pg_test_timing</code> before enabling it on a busy production server."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To see what happens if you only reload, run a reload now and check the pending_restart flag:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SELECT pg_reload_conf();\"\nsudo -u postgres psql -c \"SELECT name, setting, pending_restart FROM pg_settings WHERE name IN ('shared_preload_libraries','track_io_timing');\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "           name           | setting | pending_restart \n--------------------------+---------+-----------------\n shared_preload_libraries |         | t\n track_io_timing          | on      | f\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">track_io_timing</code> is already active because it is reloadable. <code class=\"inline-code\">shared_preload_libraries</code> is still empty and <code class=\"inline-code\">pending_restart</code> is <code class=\"inline-code\">t</code>: the new value is waiting for a restart. The server log says the same:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "LOG:  parameter \"track_io_timing\" changed to \"on\"\nLOG:  parameter \"shared_preload_libraries\" cannot be changed without restarting the server\nLOG:  configuration file \"/etc/postgresql/18/main/postgresql.conf\" contains errors; unaffected changes were applied",
+    "caption": "Output from /var/log/postgresql/postgresql-18-main.log (timestamps removed)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Restart the cluster",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as a sudo user. A restart disconnects every session, so tell application owners first."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl restart postgresql@18-main\npg_lsclusters",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Ver Cluster Port Status Owner    Data directory              Log file\n18  main    5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If you prefer the PostgreSQL wrapper, <code class=\"inline-code\">sudo pg_ctlcluster 18 main restart</code> does the same thing. Verify that the library is now loaded and look at the extension's own settings:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"SHOW shared_preload_libraries;\"\nsudo -u postgres psql -c \"SELECT name, setting, context FROM pg_settings WHERE name LIKE 'pg_stat_statements.%' ORDER BY name;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " shared_preload_libraries \n--------------------------\n pg_stat_statements\n(1 row)\n\n               name                | setting |  context   \n-----------------------------------+---------+------------\n pg_stat_statements.max            | 5000    | postmaster\n pg_stat_statements.save           | on      | sighup\n pg_stat_statements.track          | top     | superuser\n pg_stat_statements.track_planning | off     | superuser\n pg_stat_statements.track_utility  | on      | superuser\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">context</code> column tells you how each setting is changed: <code class=\"inline-code\">postmaster</code> means restart, <code class=\"inline-code\">sighup</code> means reload, <code class=\"inline-code\">superuser</code> means a superuser can also change it in a session. These defaults match the documentation and are fine to start with."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Create the extension in your working database",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the <code class=\"inline-code\">postgres</code> user. We use a scratch database called <code class=\"inline-code\">shopdb</code>. Create the extension in every database from which you want to <i>read</i> the statistics; it still records statements from all databases."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres psql -c \"CREATE DATABASE shopdb;\"\nsudo -u postgres psql -d shopdb -c \"CREATE EXTENSION pg_stat_statements;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE DATABASE\nCREATE EXTENSION",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Verify with the extension's information view, which has a single row:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT * FROM pg_stat_statements_info;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " dealloc |          stats_reset          \n---------+-------------------------------\n       0 | 2026-11-25 12:47:43.615382+00\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">dealloc</code> counts how many times entries were thrown away because more than <code class=\"inline-code\">pg_stat_statements.max</code> distinct statements were seen. <code class=\"inline-code\">stats_reset</code> is when all statistics were last cleared. If you see this row, the extension is working."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "Many DBAs also create the extension in the <code class=\"inline-code\">postgres</code> database, because that is where they connect for admin work. To undo everything later: <code class=\"inline-code\">DROP EXTENSION pg_stat_statements;</code> in each database, remove it from <code class=\"inline-code\">shared_preload_libraries</code> and restart."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Create a sample workload",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Statistics are only interesting when something runs. We build an orders table and drive four kinds of statements against it with pgbench, the benchmarking tool that comes with PostgreSQL."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Create the sample table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the <code class=\"inline-code\">postgres</code> user, in <code class=\"inline-code\">shopdb</code>. The table has a primary key on <code class=\"inline-code\">order_id</code> but, on purpose, no index on <code class=\"inline-code\">customer_id</code>."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders (\n    order_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer_id  integer       NOT NULL,\n    status       text          NOT NULL,\n    amount       numeric(10,2) NOT NULL,\n    note         text,\n    created_at   timestamptz   NOT NULL\n);\n\nINSERT INTO orders (customer_id, status, amount, note, created_at)\nSELECT (random() * 20000)::int + 1,\n       (ARRAY['new','paid','shipped'])[1 + (g % 3)],\n       round((random() * 5000)::numeric, 2),\n       md5(g::text) || md5((g * 7)::text),\n       now() - (g || ' minutes')::interval\n  FROM generate_series(1, 300000) AS g;\n\nANALYZE orders;",
+    "caption": "300,000 sample orders"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLE\nINSERT 0 300000\nANALYZE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Write four workload scripts",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the <code class=\"inline-code\">postgres</code> operating system user (its home directory is <code class=\"inline-code\">/var/lib/postgresql</code>). Each file is one pgbench transaction. <code class=\"inline-code\">\\set</code> picks a random value, and <code class=\"inline-code\">:cid</code> or <code class=\"inline-code\">:oid</code> inserts it into the SQL."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -i -u postgres\nmkdir -p ~/workload && cd ~/workload\n\ncat > by_customer.sql <<'EOF'\n\\set cid random(1, 20000)\nSELECT order_id, amount, status FROM orders WHERE customer_id = :cid;\nEOF\n\ncat > by_id.sql <<'EOF'\n\\set oid random(1, 300000)\nSELECT order_id, customer_id, amount FROM orders WHERE order_id = :oid;\nEOF\n\ncat > ship.sql <<'EOF'\n\\set oid random(1, 300000)\nUPDATE orders SET status = 'shipped' WHERE order_id = :oid;\nEOF\n\ncat > report.sql <<'EOF'\nSELECT order_id, note FROM orders ORDER BY note LIMIT 50000;\nEOF",
+    "caption": ""
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There is no output. Check with <code class=\"inline-code\">ls ~/workload</code>; you should see the four .sql files."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Reset the statistics and run the workload",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Still as the <code class=\"inline-code\">postgres</code> user. Start from a clean slate so the numbers only describe this test, then run all four scripts together for 30 seconds."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "psql -d shopdb -c \"SELECT pg_stat_statements_reset();\"\n\n/usr/lib/postgresql/18/bin/pgbench -n -c 4 -j 2 -T 30 \\\n  -f by_customer.sql@2 -f by_id.sql@20 -f ship.sql@5 -f report.sql@1 shopdb",
+    "caption": ""
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "-n",
+      "Perform no vacuuming before running the test; needed for a custom test without the standard pgbench tables"
+     ],
+     [
+      "-c 4",
+      "Number of clients simulated, that is, number of concurrent database sessions"
+     ],
+     [
+      "-j 2",
+      "Number of worker threads within pgbench"
+     ],
+     [
+      "-T 30",
+      "Run the test for this many seconds"
+     ],
+     [
+      "-f file@weight",
+      "Add a transaction script read from the file; the weight sets how often it is picked relative to the others"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "transaction type: multiple scripts\nscaling factor: 1\nquery mode: simple\nnumber of clients: 4\nnumber of threads: 2\nmaximum number of tries: 1\nduration: 30 s\nnumber of transactions actually processed: 11428\nnumber of failed transactions: 0 (0.000%)\nlatency average = 10.538 ms\ninitial connection time = 6.115 ms\ntps = 379.562821 (without initial connection time)",
+    "caption": "Output (pgbench summary, per-script lines trimmed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On PostgreSQL 18 the reset prints one row containing the time of the reset (a timestamp with time zone); before PostgreSQL 17 the function returned nothing. The pgbench numbers depend on your hardware, so yours will differ. What matters is that 11,428 transactions ran with no failures, and now <code class=\"inline-code\">pg_stat_statements</code> has something to show."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find the most expensive queries",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There is no single \"slowest query\". A DBA looks at the same view from four angles, and each answers a different question."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Sort by total execution time",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the <code class=\"inline-code\">postgres</code> user, in <code class=\"inline-code\">shopdb</code>. This is the most useful query: which statements consumed the most server time overall?"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT queryid,\n       left(query, 60)                    AS query,\n       calls,\n       round(total_exec_time::numeric, 0) AS total_ms,\n       round(mean_exec_time::numeric, 2)  AS mean_ms,\n       rows\n  FROM pg_stat_statements\n ORDER BY total_exec_time DESC\n LIMIT 5;",
+    "caption": "Top 5 statements by total time"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "       queryid        |                            query                             | calls | total_ms | mean_ms |   rows   \n----------------------+--------------------------------------------------------------+-------+----------+---------+----------\n -5259757585030337844 | SELECT order_id, note FROM orders ORDER BY note LIMIT $1     |   415 |    90482 |  218.03 | 20750000\n  8050982999726607845 | SELECT order_id, amount, status FROM orders WHERE customer_i |   790 |    18146 |   22.97 |    11862\n  6255225213605425321 | SELECT order_id, customer_id, amount FROM orders WHERE order |  8217 |      115 |    0.01 |     8217\n -8472490887429388584 | UPDATE orders SET status = $1 WHERE order_id = $2            |  2006 |       96 |    0.05 |     2006\n  3042479536081193248 | SELECT pg_stat_statements_reset()                            |     1 |        0 |    0.07 |        1\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it row by row. The report query ran only 415 times but used about 90 seconds of execution time, because each run takes about 218 ms. The customer lookup comes second: 790 calls at about 23 ms each. The lookup by primary key ran 8,217 times, ten times more often, yet used only 115 ms in total."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Notice the placeholders. pgbench sent thousands of different <code class=\"inline-code\">customer_id</code> values, but you see one row with <code class=\"inline-code\">$1</code>. The <code class=\"inline-code\">queryid</code> is the stable handle you use to refer to that row later. The total of 90,482 ms is larger than the 30 seconds of the test because four sessions worked in parallel."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "The query text is shortened with <code class=\"inline-code\">left(query, 60)</code> only to fit the screen. Remove <code class=\"inline-code\">left()</code> or use <code class=\"inline-code\">\\x</code> in psql to see the full text."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: See each statement's share of the workload",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A percentage is easier to explain to a manager or developer than milliseconds. The window function <code class=\"inline-code\">sum() OVER ()</code> adds up the total time of all rows."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT left(query, 45) AS query,\n       calls,\n       round(total_exec_time::numeric, 0) AS total_ms,\n       round((100 * total_exec_time /\n              sum(total_exec_time) OVER ())::numeric, 1) AS pct_of_total\n  FROM pg_stat_statements\n ORDER BY total_exec_time DESC\n LIMIT 4;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                     query                     | calls | total_ms | pct_of_total \n-----------------------------------------------+-------+----------+--------------\n SELECT order_id, note FROM orders ORDER BY no |   415 |    90482 |         83.1\n SELECT order_id, amount, status FROM orders W |   790 |    18146 |         16.7\n SELECT order_id, customer_id, amount FROM ord |  8217 |      115 |          0.1\n UPDATE orders SET status = $1 WHERE order_id  |  2006 |       96 |          0.1\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two statements account for almost 100% of the execution time. Tuning the other two would save almost nothing, however often they run. On a real server this pattern is common: a handful of statements cause most of the load, and this query tells you which ones."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: Sort by average time",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Average time finds statements that feel slow to a user, even if they run rarely. The filter <code class=\"inline-code\">calls >= 50</code> hides one-off commands such as an index build."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT left(query, 50)                     AS query,\n       calls,\n       round(mean_exec_time::numeric, 2)   AS mean_ms,\n       round(stddev_exec_time::numeric, 2) AS stddev_ms,\n       round(max_exec_time::numeric, 2)    AS max_ms\n  FROM pg_stat_statements\n WHERE calls >= 50\n ORDER BY mean_exec_time DESC\n LIMIT 5;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                       query                        | calls | mean_ms | stddev_ms | max_ms \n----------------------------------------------------+-------+---------+-----------+--------\n SELECT order_id, note FROM orders ORDER BY note LI |   415 |  218.03 |     34.24 | 315.48\n SELECT order_id, amount, status FROM orders WHERE  |   790 |   22.97 |      6.34 |   61.31\n UPDATE orders SET status = $1 WHERE order_id = $2  |  2006 |    0.05 |      0.16 |   4.31\n SELECT order_id, customer_id, amount FROM orders W |  8217 |    0.01 |      0.06 |   5.22\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The standard deviation (<code class=\"inline-code\">stddev_ms</code>) shows how much each run varies. A small average with a large maximum, like the UPDATE (0.05 ms average, 4.31 ms maximum), usually means the statement sometimes waited, for example for a lock or for disk. A consistently slow statement, like the report, has a high average and a modest spread."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Sort by I/O",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Time depends on how busy the server was. Block counts do not, so they are a fairer way to compare the work a statement does."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT left(query, 45)                           AS query,\n       shared_blks_hit + shared_blks_read        AS blocks_touched,\n       round(100.0 * shared_blks_hit /\n             nullif(shared_blks_hit + shared_blks_read, 0), 1) AS hit_pct,\n       temp_blks_written\n  FROM pg_stat_statements\n ORDER BY shared_blks_hit + shared_blks_read DESC\n LIMIT 4;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                     query                     | blocks_touched | hit_pct | temp_blks_written \n-----------------------------------------------+----------------+---------+-------------------\n SELECT order_id, amount, status FROM orders W |        3790420 |    97.9 |                 0\n SELECT order_id, note FROM orders ORDER BY no |        2033692 |    98.5 |           1269757\n SELECT order_id, customer_id, amount FROM ord |          32916 |    97.4 |                 0\n UPDATE orders SET status = $1 WHERE order_id  |          22880 |    99.0 |                 0\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now the customer lookup is first: 3,790,420 blocks for 790 calls is about 4,800 blocks (around 37 MB) per call to return about 15 rows. That is the signature of a full table scan. <code class=\"inline-code\">hit_pct</code> is the share of blocks found in shared buffers, the PostgreSQL cache from Part 1."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The report query wrote 1,269,757 temporary blocks: its sort did not fit in <code class=\"inline-code\">work_mem</code> and spilled to disk. That is a memory tuning question for Part 28. <code class=\"inline-code\">nullif(..., 0)</code> avoids a division by zero for statements that touch no blocks."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "With <code class=\"inline-code\">track_io_timing = on</code>, the columns <code class=\"inline-code\">shared_blk_read_time</code> and <code class=\"inline-code\">shared_blk_write_time</code> show how many milliseconds each statement spent on disk reads and writes. Before PostgreSQL 17 these columns were called <code class=\"inline-code\">blk_read_time</code> and <code class=\"inline-code\">blk_write_time</code>, so older monitoring queries may need updating."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fix one query and prove it",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Finding a slow statement is half the work. The other half is showing that your change helped. <code class=\"inline-code\">pg_stat_statements</code> lets you reset the counters for one statement and measure again."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Confirm the cause",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, in <code class=\"inline-code\">shopdb</code>. Take the full text of the statement, put a real value in place of <code class=\"inline-code\">$1</code>, and look at the plan (Part 26 covers reading plans in depth):"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (ANALYZE, BUFFERS)\nSELECT order_id, amount, status FROM orders WHERE customer_id = 4242;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "Gather  (...) (actual time=0.418..15.027 rows=17 loops=1)\n  Workers Planned: 2\n  Workers Launched: 2\n  Buffers: shared hit=4798\n  ->  Parallel Seq Scan on orders  (...)\n        Filter: (customer_id = 4242)\n        Rows Removed by Filter: 99994\n        Buffers: shared hit=4798\nExecution Time: 15.084 ms",
+    "caption": "Output (trimmed)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A <b>Parallel Seq Scan</b> reads the whole table and throws away almost every row to return 17. That matches the 4,800 blocks per call we saw in Step 11. On PostgreSQL 18 the row counts in this output are shown with two decimals, for example <code class=\"inline-code\">rows=5.67</code>, because they are averaged across loops."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 13: Add the index and reset only this statement",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create the missing index, then clear the counters for this one <code class=\"inline-code\">queryid</code>. The function's arguments are user id, database id and query id; <code class=\"inline-code\">0</code> means \"any\"."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_customer_id_idx ON orders (customer_id);\n\nSELECT pg_stat_statements_reset(0, 0, 8050982999726607845);",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE INDEX",
+    "caption": "Output of the first statement"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The reset returns one row with the reset time, as in Step 7. Your <code class=\"inline-code\">queryid</code> will be different from the one shown here; copy it from your own Step 8 output. Only this statement's row is cleared. The other rows and the <code class=\"inline-code\">stats_reset</code> time in <code class=\"inline-code\">pg_stat_statements_info</code> stay as they were, because that time only changes when <i>all</i> statistics are reset."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "",
+    "text": "On a busy production server, use <code class=\"inline-code\">CREATE INDEX CONCURRENTLY</code> so that writes to the table are not blocked while the index builds. The plain form here is fine on a test server."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 14: Run the workload again and compare",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "As the <code class=\"inline-code\">postgres</code> user, in <code class=\"inline-code\">~/workload</code>, run the same pgbench command as Step 7 (without the reset), then look at the statement by its <code class=\"inline-code\">queryid</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "/usr/lib/postgresql/18/bin/pgbench -n -c 4 -j 2 -T 30 \\\n  -f by_customer.sql@2 -f by_id.sql@20 -f ship.sql@5 -f report.sql@1 shopdb\n\npsql -d shopdb -c \"SELECT left(query, 50) AS query, calls,\n       round(mean_exec_time::numeric, 2) AS mean_ms,\n       shared_blks_hit + shared_blks_read AS blocks_touched\n  FROM pg_stat_statements\n WHERE queryid = 8050982999726607845;\"",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                       query                        | calls | mean_ms | blocks_touched \n----------------------------------------------------+-------+---------+----------------\n SELECT order_id, amount, status FROM orders WHERE  |  1080 |    0.05 |          19313\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Customer lookup",
+      "Before the index",
+      "After the index"
+     ],
+     [
+      "Calls in 30 seconds",
+      "790",
+      "1080"
+     ],
+     [
+      "Mean time per call",
+      "22.97 ms",
+      "0.05 ms"
+     ],
+     [
+      "Blocks per call (approx.)",
+      "4,798",
+      "18"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The same statement now reads about 18 blocks instead of about 4,800 and runs hundreds of times faster. The <code class=\"inline-code\">queryid</code> stayed the same, because creating an index does not change the statement's structure. That is what makes before-and-after comparisons with <code class=\"inline-code\">pg_stat_statements</code> so easy."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Control who can see query text",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Query text can contain sensitive values, so the documentation limits it: only superusers and roles with the privileges of the built-in role <code class=\"inline-code\">pg_read_all_stats</code> can see the text and <code class=\"inline-code\">queryid</code> of statements run by <i>other</i> users. Everyone else still sees the numbers."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 15: Give a monitoring role read access",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the <code class=\"inline-code\">postgres</code> user, in <code class=\"inline-code\">shopdb</code>. We create an application role and a monitoring role. <code class=\"inline-code\">SET ROLE</code> lets the superuser act as each of them without setting up passwords (roles were covered in Part 7)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE ROLE app_user LOGIN;\nGRANT SELECT ON orders TO app_user;\nCREATE ROLE monitor LOGIN;\n\nSET ROLE app_user;\nSELECT count(*) FROM orders WHERE status = 'paid';\nRESET ROLE;\n\nSET ROLE monitor;\nSELECT userid::regrole AS username, left(query, 45) AS query, calls\n  FROM pg_stat_statements\n WHERE userid = 'app_user'::regrole\n   AND query NOT LIKE 'SET%';\nRESET ROLE;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " username |          query           | calls \n----------+--------------------------+-------\n app_user | <insufficient privilege> |     1\n app_user | <insufficient privilege> |     1\n(2 rows)",
+    "caption": "Output of the last SELECT"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The monitor role sees that <code class=\"inline-code\">app_user</code> ran statements, but not what they were. (The filter on <code class=\"inline-code\">SET%</code> cannot hide rows whose text is hidden, so the <code class=\"inline-code\">SET ROLE</code> command appears too.) Now grant the built-in role and try again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "GRANT pg_read_all_stats TO monitor;\n\nSET ROLE monitor;\nSELECT userid::regrole AS username, left(query, 45) AS query, calls\n  FROM pg_stat_statements\n WHERE userid = 'app_user'::regrole\n   AND query NOT LIKE 'SET%';\nRESET ROLE;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " username |                     query                     | calls \n----------+-----------------------------------------------+-------\n app_user | SELECT count(*) FROM orders WHERE status = $1 |     1\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The text is visible now. Note that <code class=\"inline-code\">pg_read_all_stats</code> does not allow resetting: by default only superusers can run <code class=\"inline-code\">pg_stat_statements_reset</code>. To let the monitor role reset too, grant it explicitly with <code class=\"inline-code\">GRANT EXECUTE ON FUNCTION pg_stat_statements_reset TO monitor;</code>. To undo this step: <code class=\"inline-code\">REVOKE pg_read_all_stats FROM monitor;</code> then <code class=\"inline-code\">DROP ROLE monitor;</code> and <code class=\"inline-code\">DROP ROLE app_user;</code> (revoke the SELECT grant on orders first)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Settings and PostgreSQL 18 changes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How statements are grouped",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Statements that differ only in constants, letter case or spacing are merged, and the stored text is the first one seen. On PostgreSQL 18, IN lists of different lengths are also merged into one entry, shown with a comment marker. Run this in <code class=\"inline-code\">shopdb</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_stat_statements_reset();\n\nSELECT * FROM orders WHERE order_id IN (1, 2, 3);\nSELECT * FROM orders WHERE order_id IN (4, 5, 6, 7);\nSELECT * FROM orders WHERE order_id = 10;\nselect * from orders   where order_id = 11;\n\nSELECT query, calls\n  FROM pg_stat_statements\n WHERE query ILIKE 'select * from orders%'\n ORDER BY query;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                         query                          | calls \n--------------------------------------------------------+-------\n SELECT * FROM orders WHERE order_id = $1               |     2\n SELECT * FROM orders WHERE order_id IN ($1 /*, ... */) |     2\n(2 rows)",
+    "caption": "Output (expected output on PostgreSQL 18)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The two <code class=\"inline-code\">= $1</code> statements merged even though one was lower case with extra spaces. Before PostgreSQL 18, each IN list length got its own row (<code class=\"inline-code\">IN ($1, $2, $3)</code> and <code class=\"inline-code\">IN ($1, $2, $3, $4)</code>), which could fill the view with near-duplicates from applications that build IN lists of varying size."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Other PostgreSQL 18 changes for this extension: the new columns <code class=\"inline-code\">parallel_workers_to_launch</code>, <code class=\"inline-code\">parallel_workers_launched</code> and <code class=\"inline-code\">wal_buffers_full</code>; <code class=\"inline-code\">CREATE TABLE AS</code> and <code class=\"inline-code\">DECLARE</code> statements are now tracked; and constants in <code class=\"inline-code\">SET</code> commands are replaced by placeholders, so many different <code class=\"inline-code\">SET</code> values no longer create separate rows."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The configuration parameters",
+    "level": 3
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Parameter",
+      "Default",
+      "What it controls"
+     ],
+     [
+      "pg_stat_statements.max",
+      "5000",
+      "Maximum number of statements tracked; the least-executed are discarded beyond this. Restart needed"
+     ],
+     [
+      "pg_stat_statements.track",
+      "top",
+      "top: statements sent by clients; all: also statements inside functions; none: off"
+     ],
+     [
+      "pg_stat_statements.track_utility",
+      "on",
+      "Whether commands other than SELECT, INSERT, UPDATE, DELETE and MERGE are tracked"
+     ],
+     [
+      "pg_stat_statements.track_planning",
+      "off",
+      "Whether planning time is tracked; the documentation warns of a noticeable performance penalty under high concurrency"
+     ],
+     [
+      "pg_stat_statements.save",
+      "on",
+      "Whether statistics are kept across server shutdowns. Reload"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If <code class=\"inline-code\">dealloc</code> in <code class=\"inline-code\">pg_stat_statements_info</code> keeps rising, the view is too small for your workload and entries are being thrown away. Raise <code class=\"inline-code\">pg_stat_statements.max</code> (for example to 10000) and restart. The extra shared memory is proportional to this value and is used whenever the module is loaded, even with <code class=\"inline-code\">track = none</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: pg_stat_statements must be loaded via shared_preload_libraries",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">CREATE EXTENSION</code> succeeds even when the library is not preloaded, but the first query fails:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  pg_stat_statements must be loaded via \"shared_preload_libraries\"",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix: add the library to <code class=\"inline-code\">shared_preload_libraries</code> (Step 2) and <b>restart</b>. A reload is not enough; check <code class=\"inline-code\">pending_restart</code> in <code class=\"inline-code\">pg_settings</code> as shown in Step 2."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: relation \"pg_stat_statements\" does not exist",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  relation \"pg_stat_statements\" does not exist\nLINE 1: SELECT * FROM pg_stat_statements LIMIT 1;\n                      ^",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You are connected to a database where the extension was not created (here, the <code class=\"inline-code\">postgres</code> database). Fix: run <code class=\"inline-code\">CREATE EXTENSION pg_stat_statements;</code> in that database, or connect to one that has it. If the extension lives in a schema that is not in your <code class=\"inline-code\">search_path</code> (Part 8), qualify the name, for example <code class=\"inline-code\">public.pg_stat_statements</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Query text shows <insufficient privilege>",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The role you are using is not a superuser and lacks <code class=\"inline-code\">pg_read_all_stats</code>. Fix: <code class=\"inline-code\">GRANT pg_read_all_stats TO monitor;</code> as in Step 15."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: permission denied for function pg_stat_statements_reset",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  permission denied for function pg_stat_statements_reset",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Reading and resetting are separate privileges. Fix: reset as a superuser, or grant <code class=\"inline-code\">EXECUTE</code> on the function to the role that needs it."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sorting only by mean time",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A 2-second report that runs once a night looks worse than a 20 ms query that runs a million times a day, but the second one costs far more. Always look at <code class=\"inline-code\">total_exec_time</code> first (Step 8), then at averages."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The query column is empty (NULL)",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation explains that if the external file of query texts grows too large, the extension may discard all texts; the statistics stay but <code class=\"inline-code\">query</code> shows NULL. If this happens, consider reducing <code class=\"inline-code\">pg_stat_statements.max</code> to prevent it recurring. Applications that generate very long or unique SQL texts make this more likely."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Expecting queryid to survive an upgrade",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The documentation says it is not safe to assume <code class=\"inline-code\">queryid</code> stays the same across major versions, and it can change if a referenced object is dropped and recreated. Save query text along with the identifier when you keep history."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Using the workload from Step 7, add a fifth script that runs <code class=\"inline-code\">SELECT count(*) FROM orders WHERE status = :s;</code> with a random status. Run pgbench again and find its rank by total time and by blocks touched.",
+      "items": []
+     },
+     {
+      "content": "Write one query that lists the top 3 statements by <code class=\"inline-code\">temp_blks_written</code>, showing <code class=\"inline-code\">calls</code> and <code class=\"inline-code\">temp_blks_written / calls</code> per call.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answers",
+    "text": "Answer for task 2: <code class=\"inline-code\">SELECT left(query, 45) AS query, calls, temp_blks_written, temp_blks_written / calls AS temp_per_call FROM pg_stat_statements WHERE temp_blks_written > 0 ORDER BY temp_blks_written DESC LIMIT 3;</code> On our test server only the report query appears, with about 3,060 temporary blocks per call (1,269,757 / 415). For task 1, there is no index on status, so every call reads the whole table: expect it near the top by blocks touched, with roughly the same blocks per call as the customer lookup had before its index."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# 1. Check what is preloaded now\nsudo -u postgres psql -c \"SHOW shared_preload_libraries;\"\n\n# 2. Edit the config: shared_preload_libraries = 'pg_stat_statements', track_io_timing = on\nsudo nano /etc/postgresql/18/main/postgresql.conf\n\n# 3. Restart (a reload is not enough) and verify\nsudo systemctl restart postgresql@18-main\nsudo -u postgres psql -c \"SHOW shared_preload_libraries;\"\n\n# 4. Create the extension in the database you read from\nsudo -u postgres psql -d shopdb -c \"CREATE EXTENSION pg_stat_statements;\"\nsudo -u postgres psql -d shopdb -c \"SELECT * FROM pg_stat_statements_info;\"\n\n# 5. Clear all statistics before a test\nsudo -u postgres psql -d shopdb -c \"SELECT pg_stat_statements_reset();\"\n\n# 6. Generate load with custom scripts (as postgres, in ~/workload)\n/usr/lib/postgresql/18/bin/pgbench -n -c 4 -j 2 -T 30 -f by_customer.sql@2 -f by_id.sql@20 -f ship.sql@5 -f report.sql@1 shopdb\n\n# 7. Top statements by total time\nsudo -u postgres psql -d shopdb -c \"SELECT queryid, left(query, 60) AS query, calls, round(total_exec_time::numeric, 0) AS total_ms, round(mean_exec_time::numeric, 2) AS mean_ms FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 5;\"\n\n# 8. Reset one statement after a fix (use your own queryid)\nsudo -u postgres psql -d shopdb -c \"SELECT pg_stat_statements_reset(0, 0, 8050982999726607845);\"\n\n# 9. Let a monitoring role read other users' query text\nsudo -u postgres psql -d shopdb -c \"GRANT pg_read_all_stats TO monitor;\"",
+    "caption": "All commands from this part"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">pg_stat_statements</code> keeps running totals per normalised statement for the whole cluster",
+      "meta": {
+       "checked": false
+      },
+      "items": []
+     },
+     {
+      "content": "It needs <code class=\"inline-code\">shared_preload_libraries</code> plus a restart, then <code class=\"inline-code\">CREATE EXTENSION</code> in each database you read from",
+      "meta": {
+       "checked": false
+      },
+      "items": []
+     },
+     {
+      "content": "Sort by <code class=\"inline-code\">total_exec_time</code> first, then look at mean time, share of the workload and blocks touched",
+      "meta": {
+       "checked": false
+      },
+      "items": []
+     },
+     {
+      "content": "Use <code class=\"inline-code\">temp_blks_written</code> to spot sorts and hashes that spill to disk",
+      "meta": {
+       "checked": false
+      },
+      "items": []
+     },
+     {
+      "content": "Prove a fix with <code class=\"inline-code\">pg_stat_statements_reset(0, 0, queryid)</code> and a second measurement",
+      "meta": {
+       "checked": false
+      },
+      "items": []
+     },
+     {
+      "content": "Grant <code class=\"inline-code\">pg_read_all_stats</code> to monitoring roles; resetting needs a separate grant",
+      "meta": {
+       "checked": false
+      },
+      "items": []
+     },
+     {
+      "content": "Watch <code class=\"inline-code\">dealloc</code> in <code class=\"inline-code\">pg_stat_statements_info</code> and raise <code class=\"inline-code\">pg_stat_statements.max</code> if it grows",
+      "meta": {
+       "checked": false
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 26 we take the statements you found here and read their execution plans with EXPLAIN (ANALYZE, BUFFERS), the way a DBA does."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your slowest query is often not the one hurting your PostgreSQL server the most.\n\nIn a 30-second test, a lookup by primary key ran 8,217 times and used 115 ms in total. A customer lookup ran only 790 times but used 18 seconds, because it scanned the whole table every time.\n\npg_stat_statements shows you this in one query. What to know:\n\n→ Add it to shared_preload_libraries and restart. A reload is not enough.\n→ Run CREATE EXTENSION pg_stat_statements in the database you query from. It still records all databases.\n→ Sort by total_exec_time first, not by mean time. Total time is what your server actually pays.\n→ Check shared_blks_hit + shared_blks_read per call. Thousands of blocks for a handful of rows means a missing index.\n→ After a fix, reset one statement with pg_stat_statements_reset(0, 0, queryid) and measure again.\n\nOn PostgreSQL 18, IN lists of different lengths are finally merged into one entry.\n\nThis is Part 25 of my PostgreSQL DBA series. Follow along for the next part on EXPLAIN (ANALYZE, BUFFERS).\n\nWhich column do you check first when the database gets slow?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #SQL #Database",
+  "slides": [
+   {
+    "title": "Find slow queries with pg_stat_statements",
+    "body": "PostgreSQL DBA series, Part 25: enable it, read it, prove your fix"
+   },
+   {
+    "title": "Step 1: load it and restart",
+    "points": [
+     "Add it to shared_preload_libraries in postgresql.conf",
+     "A reload is not enough: restart postgresql@18-main",
+     "Then CREATE EXTENSION in the database you query from"
+    ],
+    "code": "-- postgresql.conf\nshared_preload_libraries =\n  'pg_stat_statements'\n\nCREATE EXTENSION pg_stat_statements;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 2: sort by total time",
+    "code": "SELECT left(query, 40) AS query,\n  calls,\n  round(total_exec_time::numeric)\n    AS total_ms,\n  round(mean_exec_time::numeric, 2)\n    AS mean_ms\nFROM pg_stat_statements\nORDER BY total_exec_time DESC\nLIMIT 5;",
+    "lang": "postgresql",
+    "points": [
+     "Total time is what the server pays; mean time can mislead"
+    ]
+   },
+   {
+    "title": "Step 3: look at blocks per call",
+    "points": [
+     "shared_blks_hit + shared_blks_read = blocks touched",
+     "About 4,800 blocks per call for 15 rows meant a full table scan",
+     "temp_blks_written shows sorts spilling to disk"
+    ]
+   },
+   {
+    "title": "Step 4: fix and prove it",
+    "code": "CREATE INDEX orders_customer_id_idx\n  ON orders (customer_id);\n\nSELECT pg_stat_statements_reset(\n  0, 0, 8050982999726607845);",
+    "lang": "postgresql",
+    "points": [
+     "Mean time fell from 22.97 ms to 0.05 ms in our test"
+    ]
+   },
+   {
+    "title": "Access and PostgreSQL 18",
+    "points": [
+     "Other users' query text needs pg_read_all_stats",
+     "Resetting needs its own EXECUTE grant",
+     "PostgreSQL 18 merges IN lists of any length into one row"
+    ]
+   }
+  ]
+ }
+}
