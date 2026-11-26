@@ -103,7 +103,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain connection slots, reserved slots where applicable, memory implications and pooling alternatives.
   - Format: Capacity visual · Level: Intermediate
   - Hook: Why increasing max_connections may make things worse.
-- [ ] Ep 024 | 2026-11-27 | Connection Pooling with PgBouncer
+- [x] Ep 024 | 2026-11-27 | Connection Pooling with PgBouncer (posted 2026-11-27 13:00, Buffer 6b07c6ea9f6dda31ccc8cda4)
   - Objective: Explain client/server pooling modes, transaction pooling caveats, prepared statements and session state.
   - Format: Animated pool · Level: Intermediate
   - Hook: How connection pooling protects PostgreSQL.
