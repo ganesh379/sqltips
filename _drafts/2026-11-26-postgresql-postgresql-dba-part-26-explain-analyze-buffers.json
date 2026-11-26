@@ -1,0 +1,1311 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 26: Reading EXPLAIN (ANALYZE, BUFFERS)",
+ "slug": "postgresql-dba-part-26-explain-analyze-buffers",
+ "category": "postgresql",
+ "description": "Learn to read PostgreSQL EXPLAIN ANALYZE with BUFFERS: cost vs actual rows, loops, shared hit and read, temp files and heap fetches, with real plans.",
+ "focusKeyword": "postgresql explain analyze buffers",
+ "tags": [
+  "postgresql-dba-series",
+  "explain",
+  "query-tuning",
+  "performance"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-12-vacuum-autovacuum/",
+  "/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: EXPLAIN",
+   "url": "https://www.postgresql.org/docs/18/sql-explain.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Using EXPLAIN",
+   "url": "https://www.postgresql.org/docs/18/using-explain.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Release 18 (EXPLAIN changes)",
+   "url": "https://www.postgresql.org/docs/18/release-18.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Run-time Statistics (track_io_timing)",
+   "url": "https://www.postgresql.org/docs/18/runtime-config-statistics.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Resource Consumption (work_mem, hash_mem_multiplier)",
+   "url": "https://www.postgresql.org/docs/18/runtime-config-resource.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Index-Only Scans and Covering Indexes",
+   "url": "https://www.postgresql.org/docs/18/indexes-index-only-scans.html"
+  }
+ ],
+ "reviewNotes": "Series part 26. Publish Part 25 first (Part 25 and Parts 19-24 are not live yet; Part 25 is named without a link and is not in related). TEST ENVIRONMENT: PostgreSQL 18 could NOT be installed in this sandbox. postgresql-18 is available from PGDG but depends on liburing2 from the Ubuntu archive, which the sandbox network blocks (apt: 'postgresql-18 : Depends: liburing2 (>= 2.5) but it is not installable'). Following the task instructions, every SQL statement was run exactly as written on the distribution PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on Ubuntu 24.04.5 LTS, cluster 16 main; all plan outputs are real output from that server, captioned '(expected output)'. Documentation followed: PostgreSQL 18 pages (/docs/18/). Note that postgresql.org/docs/current/ now serves PostgreSQL 19 documentation (it lists an EXPLAIN IO option that does not exist in 18), so I used the /docs/18/ URLs in sources. KNOWN PG 18 DIFFERENCES the editor should check by re-running on 18 and replacing the plan outputs: (1) actual rows print with two decimals (rows=33.33 loops=3); (2) Index Scan/Bitmap Index Scan/Index Only Scan nodes add an 'Index Searches: N' line; (3) BUFFERS is automatic with ANALYZE (the article writes BUFFERS explicitly, which is valid on 18); (4) PostgreSQL 18 uses asynchronous I/O (io_method), so cold-cache 'shared read' timings in Steps 3-4 may look different. Costs, estimated rows and buffer counts should match for the same data. Also check: the three error messages in Common mistakes were captured on 16 (texts match the 18 source to my knowledge but were not run on 18); the systemd unit postgresql@18-main and the path /usr/lib/postgresql/18/bin/pg_test_timing are written for 18 per the series platform. The work_mem example honestly shows the in-memory sort was slightly slower on the test machine (temp files stayed in OS cache); the text explains this rather than claiming a speed-up.",
+ "generatedAt": "2026-11-26T12:54:25Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is <b>Part 26 of the PostgreSQL DBA series</b>. In Part 25 we used <code class=\"inline-code\">pg_stat_statements</code> to find the statements that cost the server the most time. Now you need to know <i>why</i> they are slow, and that is what <code class=\"inline-code\">EXPLAIN (ANALYZE, BUFFERS)</code> tells you. By the end of this part you will be able to run it safely, read every important line of the output, and turn what you see into a fix: an index, fresh statistics, more <code class=\"inline-code\">work_mem</code> or a VACUUM."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The short answer: <code class=\"inline-code\">EXPLAIN</code> shows the plan PostgreSQL <i>intends</i> to use, with estimated costs and row counts. Adding <code class=\"inline-code\">ANALYZE</code> really runs the query and adds the actual time, rows and loops for every step. <code class=\"inline-code\">BUFFERS</code> adds how many 8 kB pages each step found in memory (hit) or had to read from the operating system (read). On PostgreSQL 18, <code class=\"inline-code\">EXPLAIN ANALYZE</code> includes the buffer numbers automatically."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "How a query plan is built as a tree of nodes, and which order to read it in.",
+      "items": []
+     },
+     {
+      "content": "The difference between estimated cost and rows and the actual time, rows and loops.",
+      "items": []
+     },
+     {
+      "content": "What <code class=\"inline-code\">shared hit</code>, <code class=\"inline-code\">shared read</code>, <code class=\"inline-code\">temp read/written</code> and <code class=\"inline-code\">I/O Timings</code> tell a DBA.",
+      "items": []
+     },
+     {
+      "content": "How to spot the classic problems: missing index, stale statistics, sorts spilling to disk, too many heap fetches and loop multiplication.",
+      "items": []
+     },
+     {
+      "content": "How to run EXPLAIN ANALYZE on UPDATE and DELETE without changing data, and how to explain queries copied from pg_stat_statements that contain $1.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 25 of this series. You will use ideas from <a href=\"/posts/postgresql/postgresql-dba-part-11-mvcc-xmin-xmax/\">Part 11 (MVCC)</a>, <a href=\"/posts/postgresql/postgresql-dba-part-12-vacuum-autovacuum/\">Part 12 (VACUUM and the visibility map)</a> and Part 25 (pg_stat_statements).",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server, called <b>db1</b> in this part, with PostgreSQL 18 from the PGDG repository and the default cluster <b>18 main</b> on port 5432, installed as in <a href=\"/posts/postgresql/postgresql-dba-part-2-install-postgresql-18-ubuntu/\">Part 2</a>.",
+      "items": []
+     },
+     {
+      "content": "A user with <code class=\"inline-code\">sudo</code> rights. Every SQL step runs in psql as the <code class=\"inline-code\">postgres</code> superuser, which connects through peer authentication.",
+      "items": []
+     },
+     {
+      "content": "About 100 MB of free disk space for the practice database. Use a test server, not production, because some steps restart PostgreSQL.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "When you send a query, the <b>planner</b> (the part of PostgreSQL that decides how to run a query) considers several ways to get the answer and picks the one it thinks is cheapest. The result is a <b>plan</b>: a tree of steps called <b>nodes</b>. Each node does one job, such as reading a table (Seq Scan), using an index (Index Scan), joining two inputs (Nested Loop, Hash Join) or sorting (Sort)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Think of it like a navigation app. Before you leave, it shows a route and an estimated travel time. That is plain <code class=\"inline-code\">EXPLAIN</code>. If you actually drive the route and write down how long each stretch took, that is <code class=\"inline-code\">EXPLAIN ANALYZE</code>. A big gap between the estimate and the real trip tells you where the app's map (the table statistics) is wrong."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read a plan from the inside out. The most indented nodes run first and pass rows up to their parent, marked with <code class=\"inline-code\">-></code>. The top line is the last step and its numbers include everything below it."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every node line has the same parts:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Part of the line",
+      "What it means"
+     ],
+     [
+      "cost=5.20..353.71",
+      "Estimated startup cost (work before the first row comes out) and total cost (work to return all rows). The unit is arbitrary, based on settings such as seq_page_cost, not milliseconds."
+     ],
+     [
+      "rows=100",
+      "Estimated number of rows this node returns (not how many it reads)."
+     ],
+     [
+      "width=30",
+      "Estimated average size of one output row, in bytes."
+     ],
+     [
+      "actual time=0.019..0.068",
+      "Real milliseconds to the first row and to the last row, per loop. Only with ANALYZE."
+     ],
+     [
+      "rows=100 (actual)",
+      "Real rows returned, averaged per loop. Only with ANALYZE."
+     ],
+     [
+      "loops=10",
+      "How many times the node ran. Multiply actual time and rows by loops to get the totals."
+     ],
+     [
+      "Buffers: shared hit=103",
+      "8 kB pages found in PostgreSQL's shared buffer cache (hit) or read from the operating system (read), for this node and all its children."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Under the node line you see detail lines, for example <code class=\"inline-code\">Filter</code> and <code class=\"inline-code\">Rows Removed by Filter</code> (rows that were read and then thrown away), <code class=\"inline-code\">Sort Method</code> (in memory or on disk), <code class=\"inline-code\">Heap Fetches</code> (table visits during an index-only scan) and, at the bottom, <code class=\"inline-code\">Planning Time</code> and <code class=\"inline-code\">Execution Time</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What changed in PostgreSQL 18",
+    "level": 3
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>BUFFERS is automatic with ANALYZE.</b> <code class=\"inline-code\">EXPLAIN ANALYZE</code> now prints the Buffers lines without asking. Before PostgreSQL 18 you had to write <code class=\"inline-code\">EXPLAIN (ANALYZE, BUFFERS)</code>. This part writes <code class=\"inline-code\">BUFFERS</code> explicitly so the commands work the same on older versions.",
+      "items": []
+     },
+     {
+      "content": "<b>Fractional row counts.</b> Actual rows are shown with two decimals, for example <code class=\"inline-code\">rows=33.33 loops=3</code>. Older versions round this to <code class=\"inline-code\">rows=33</code>, which hides small per-loop numbers.",
+      "items": []
+     },
+     {
+      "content": "<b>Index Searches.</b> Index Scan, Bitmap Index Scan and Index Only Scan nodes print an <code class=\"inline-code\">Index Searches: N</code> line with the total number of index lookups across all loops.",
+      "items": []
+     },
+     {
+      "content": "<b>More detail elsewhere:</b> the WAL option also reports how often WAL buffers became full, Material, Window Aggregate and CTE nodes report memory and disk use, and disabled nodes are marked <code class=\"inline-code\">Disabled: true</code>.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "About the outputs in this part",
+    "text": "The commands below are written for PostgreSQL 18. The plan outputs were captured on a test machine and are marked as expected output: on PostgreSQL 18 your actual rows will show two decimals (rows=100.00) and index scan nodes will have an extra Index Searches line. Timings will differ on every machine, but costs, row counts and buffer counts should be the same or very close if you load the same data."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Set up a practice database",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Create the shop database and sample tables",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as your sudo user. The commands switch to the postgres operating system user: first create the database from the shell, then connect to it with psql."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres createdb shop\nsudo -u postgres psql -d shop",
+    "caption": "Create and connect to the practice database"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now create two tables. The data is generated with simple arithmetic instead of random numbers, so you get exactly the same rows and the same plans as shown here. Customer 42 has 100 orders; one order in every hundred is pending."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE customers (\n    customer_id  integer PRIMARY KEY,\n    full_name    text    NOT NULL,\n    city         text    NOT NULL\n);\n\nCREATE TABLE orders (\n    order_id     bigint  GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    customer_id  integer NOT NULL REFERENCES customers,\n    status       text    NOT NULL,\n    order_date   date    NOT NULL,\n    amount       numeric(10,2) NOT NULL\n);\n\nINSERT INTO customers\nSELECT g, 'Customer ' || g,\n       (ARRAY['Mumbai','Delhi','Bengaluru','Chennai','Pune'])[g % 5 + 1]\n  FROM generate_series(1, 5000) AS g;\n\nINSERT INTO orders (customer_id, status, order_date, amount)\nSELECT g % 5000 + 1,\n       CASE WHEN g % 100 = 0 THEN 'pending' ELSE 'shipped' END,\n       date '2026-01-01' + (g % 300),\n       (g % 997) + 0.99\n  FROM generate_series(1, 500000) AS g;\n\nVACUUM ANALYZE customers, orders;",
+    "caption": "Sample tables: 5,000 customers and 500,000 orders"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLE\nCREATE TABLE\nINSERT 0 5000\nINSERT 0 500000\nVACUUM",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">VACUUM ANALYZE</code> at the end collects fresh statistics, so the planner starts with an accurate picture of the tables. To verify, check the page and row counts the planner will use:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT relpages, reltuples FROM pg_class WHERE relname = 'orders';",
+    "caption": "Verify: planner statistics for orders"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " relpages | reltuples\n----------+-----------\n     3677 |    500000\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The orders table fills 3,677 pages of 8 kB and holds 500,000 rows. Keep these two numbers in mind for the next step."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Read a plan without running the query",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: Run plain EXPLAIN",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres operating system user, connected to the <b>shop</b> database with <code class=\"inline-code\">sudo -u postgres psql -d shop</code>. Plain EXPLAIN only plans the query. It does not run it, so it is safe on any statement, even on a busy production server."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN SELECT * FROM orders WHERE customer_id = 42;",
+    "caption": "Show the estimated plan"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                QUERY PLAN\n--------------------------------------------------------------------------\n Gather  (cost=1000.00..7291.17 rows=100 width=30)\n   Workers Planned: 2\n   ->  Parallel Seq Scan on orders  (cost=0.00..6281.17 rows=42 width=30)\n         Filter: (customer_id = 42)\n(4 rows)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Read it from the inside out. The bottom node is a <b>Parallel Seq Scan</b>: each process reads part of the table and keeps rows where <code class=\"inline-code\">customer_id = 42</code>. <code class=\"inline-code\">Workers Planned: 2</code> means two background worker processes help the main process (the <i>leader</i>). The <b>Gather</b> node on top collects their rows. The planner expects 100 rows in total, about 42 per process."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Where does the cost come from? For a plain sequential scan the documentation's formula is: pages × <code class=\"inline-code\">seq_page_cost</code> (default 1.0) + rows × <code class=\"inline-code\">cpu_tuple_cost</code> (default 0.01) + rows × <code class=\"inline-code\">cpu_operator_cost</code> (default 0.0025) for the filter. You can check it by turning parallel query off for your session only:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET max_parallel_workers_per_gather = 0;\nEXPLAIN SELECT * FROM orders WHERE customer_id = 42;\nRESET max_parallel_workers_per_gather;",
+    "caption": "Verify: the non-parallel cost"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "SET\n                         QUERY PLAN\n------------------------------------------------------------\n Seq Scan on orders  (cost=0.00..9927.00 rows=100 width=30)\n   Filter: (customer_id = 42)\n(2 rows)\n\nRESET",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "3,677 × 1.0 + 500,000 × 0.01 + 500,000 × 0.0025 = 3,677 + 5,000 + 1,250 = 9,927, exactly the total cost shown. The parallel plan was estimated at 7,291, so the planner chose it. This is the whole idea of the planner: it compares estimated costs and picks the lowest."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Run the query with ANALYZE and BUFFERS",
+    "level": 2
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "EXPLAIN ANALYZE really runs the statement",
+    "text": "With ANALYZE the statement is executed. For a SELECT that means the full work and load on the server, only the result rows are thrown away. For INSERT, UPDATE, DELETE, MERGE and CREATE TABLE AS the data really changes. Step 10 shows the safe way. On production, never run EXPLAIN ANALYZE on a query that already takes minutes without thinking about the extra load."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Compare a cold run and a warm run",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as your sudo user, restart the cluster so PostgreSQL's cache (shared buffers) is empty. Do this on a test server only."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl restart postgresql@18-main\nsudo -u postgres psql -d shop",
+    "caption": "Restart the cluster (test server only) and reconnect"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Then, in psql as postgres, run the same query twice with ANALYZE and BUFFERS:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE customer_id = 42;\nEXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE customer_id = 42;",
+    "caption": "Run the query twice"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "ANALYZE",
+      "Carries out the command and shows actual run times and other statistics."
+     ],
+     [
+      "BUFFERS",
+      "Shows shared, local and temp blocks hit, read, dirtied and written. Automatic with ANALYZE on PostgreSQL 18."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                      QUERY PLAN\n----------------------------------------------------------------------------------------------------------------------\n Gather  (cost=1000.00..7291.17 rows=100 width=30) (actual time=0.850..44.557 rows=100 loops=1)\n   Workers Planned: 2\n   Workers Launched: 2\n   Buffers: shared read=3677\n   ->  Parallel Seq Scan on orders  (cost=0.00..6281.17 rows=42 width=30) (actual time=1.271..37.439 rows=33 loops=3)\n         Filter: (customer_id = 42)\n         Rows Removed by Filter: 166633\n         Buffers: shared read=3677\n Planning Time: 0.040 ms\n Execution Time: 44.590 ms\n(10 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line), first run"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                      QUERY PLAN\n----------------------------------------------------------------------------------------------------------------------\n Gather  (cost=1000.00..7291.17 rows=100 width=30) (actual time=0.141..14.726 rows=100 loops=1)\n   Workers Planned: 2\n   Workers Launched: 2\n   Buffers: shared hit=3677\n   ->  Parallel Seq Scan on orders  (cost=0.00..6281.17 rows=42 width=30) (actual time=0.018..10.150 rows=33 loops=3)\n         Filter: (customer_id = 42)\n         Rows Removed by Filter: 166633\n         Buffers: shared hit=3677\n Planning Time: 0.051 ms\n Execution Time: 14.746 ms\n(10 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line), second run"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Look at three things. First, <code class=\"inline-code\">Buffers: shared read=3677</code> in the first run and <code class=\"inline-code\">shared hit=3677</code> in the second: the same 3,677 pages, first read from the operating system, then found in PostgreSQL's cache. The execution time dropped from about 45 ms to about 15 ms only because of that."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Second, <code class=\"inline-code\">rows=33 loops=3</code> on the Parallel Seq Scan. The node ran three times (the leader plus two workers) and returned about 33 rows each time: 33 × 3 ≈ 100, which matches the Gather node. On PostgreSQL 18 this line reads <code class=\"inline-code\">rows=33.33 loops=3</code>. <code class=\"inline-code\">Rows Removed by Filter: 166633</code> is also a per-process average: almost 500,000 rows were read and thrown away to find 100."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Third, the estimate (rows=100) and the actual result (100 rows) agree, so the statistics are good. The plan is slow because it reads the whole table, not because the planner was misled."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Always run a query twice when you measure",
+    "text": "The first run after a restart, or for data nobody touched for a while, pays for reading pages from disk. Look at the shared read count, not just the time. If a production query is slow and shows a high read count, the data is not in memory; if it shows a high hit count, the query simply touches too many pages."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Measure time spent on I/O with track_io_timing",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The read count tells you how many pages came from outside PostgreSQL, not how long they took. The setting <code class=\"inline-code\">track_io_timing</code> adds that. Its default is off, because it asks the operating system for the current time repeatedly, which can add noticeable overhead on some platforms. Only superusers and roles with the SET privilege on it can change it, so here you turn it on for your own session only. Restart the cluster again first (test server only) so the cache is cold:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo systemctl restart postgresql@18-main\nsudo -u postgres psql -d shop",
+    "caption": "Restart and reconnect (test server only)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET track_io_timing = on;\nEXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE customer_id = 42;",
+    "caption": "Turn on I/O timing for this session"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                      QUERY PLAN\n----------------------------------------------------------------------------------------------------------------------\n Gather  (cost=1000.00..7291.17 rows=100 width=30) (actual time=0.666..43.868 rows=100 loops=1)\n   Workers Planned: 2\n   Workers Launched: 2\n   Buffers: shared read=3677\n   I/O Timings: shared read=78.441\n   ->  Parallel Seq Scan on orders  (cost=0.00..6281.17 rows=42 width=30) (actual time=0.233..35.621 rows=33 loops=3)\n         Filter: (customer_id = 42)\n         Rows Removed by Filter: 166633\n         Buffers: shared read=3677\n         I/O Timings: shared read=78.441\n Planning:\n   Buffers: shared hit=55 read=17\n   I/O Timings: shared read=0.852\n Planning Time: 1.927 ms\n Execution Time: 44.236 ms\n(15 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">I/O Timings: shared read=78.441</code> is the time in milliseconds spent waiting for those 3,677 reads. It is larger than the 44 ms execution time because it adds up the waits of all three processes, which ran at the same time. The <code class=\"inline-code\">Planning:</code> section shows that even planning needed to read 17 pages of system catalog data after the restart."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To check how expensive timing is on your hardware before you enable it for the whole server, run <code class=\"inline-code\">/usr/lib/postgresql/18/bin/pg_test_timing</code>. If the overhead is low, many DBAs enable it permanently:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER SYSTEM SET track_io_timing = on;\nSELECT pg_reload_conf();\nSHOW track_io_timing;",
+    "caption": "Optional: enable for the whole cluster (reload, no restart)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A reload is enough for this parameter. To undo it, run <code class=\"inline-code\">ALTER SYSTEM RESET track_io_timing;</code> and <code class=\"inline-code\">SELECT pg_reload_conf();</code>. With it on, pg_stat_statements (Part 25) and pg_stat_database (Part 24) also fill their I/O time columns."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Use the plan to fix a query",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Add an index and compare the plans",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres operating system user, connected to the <b>shop</b> database with <code class=\"inline-code\">sudo -u postgres psql -d shop</code>. The plan in Step 3 read 3,677 pages and threw away almost 500,000 rows to return 100. That pattern (a big <code class=\"inline-code\">Rows Removed by Filter</code> on a Seq Scan for a selective condition) is the classic sign of a missing index."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_customer_id_idx ON orders (customer_id);\nEXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE customer_id = 42;",
+    "caption": "Create the index and explain again"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                            QUERY PLAN\n-----------------------------------------------------------------------------------------------------------------------------------\n Bitmap Heap Scan on orders  (cost=5.20..353.71 rows=100 width=30) (actual time=0.019..0.068 rows=100 loops=1)\n   Recheck Cond: (customer_id = 42)\n   Heap Blocks: exact=100\n   Buffers: shared hit=103\n   ->  Bitmap Index Scan on orders_customer_id_idx  (cost=0.00..5.17 rows=100 width=0) (actual time=0.008..0.008 rows=100 loops=1)\n         Index Cond: (customer_id = 42)\n         Buffers: shared hit=3\n Planning Time: 0.036 ms\n Execution Time: 0.079 ms\n(9 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line), second run after the index"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now the plan has two nodes. The <b>Bitmap Index Scan</b> reads the index (3 pages) and builds a list of table pages that contain matching rows. The <b>Bitmap Heap Scan</b> then visits those pages. <code class=\"inline-code\">Heap Blocks: exact=100</code> says the 100 rows sit on 100 different pages, which is true for this data: orders for one customer are spread across the table. On PostgreSQL 18 the Bitmap Index Scan also shows <code class=\"inline-code\">Index Searches: 1</code>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Verify the fix with the numbers: 103 buffers instead of 3,677, and an execution time of 0.079 ms instead of about 15 ms. Buffers are the more reliable comparison, because they do not change with machine speed or cache state."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Catch a bad row estimate caused by stale statistics",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres operating system user, connected to the <b>shop</b> database with <code class=\"inline-code\">sudo -u postgres psql -d shop</code>. The planner trusts the statistics that ANALYZE (or autovacuum) collects. If a table changes a lot and the statistics are not refreshed yet, the estimates are wrong, and wrong estimates lead to wrong plans. To show this, switch autovacuum off for this table only and load 50,000 cancelled orders, a status the statistics have never seen:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ALTER TABLE orders SET (autovacuum_enabled = off);\n\nINSERT INTO orders (customer_id, status, order_date, amount)\nSELECT g % 5000 + 1, 'cancelled', date '2026-11-01', 10.00\n  FROM generate_series(1, 50000) AS g;\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT count(*) FROM orders WHERE status = 'cancelled';",
+    "caption": "Load new data without refreshing statistics"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                         QUERY PLAN\n-----------------------------------------------------------------------------------------------------------------------------\n Aggregate  (cost=7993.60..7993.61 rows=1 width=8) (actual time=17.367..20.100 rows=1 loops=1)\n   Buffers: shared hit=4094\n   ->  Gather  (cost=1000.00..7993.60 rows=1 width=0) (actual time=11.152..17.546 rows=50000 loops=1)\n         Workers Planned: 2\n         Workers Launched: 2\n         Buffers: shared hit=4094\n         ->  Parallel Seq Scan on orders  (cost=0.00..6993.50 rows=1 width=0) (actual time=9.018..11.442 rows=16667 loops=3)\n               Filter: (status = 'cancelled'::text)\n               Rows Removed by Filter: 166667\n               Buffers: shared hit=4094\n Planning:\n   Buffers: shared hit=12 read=4\n Planning Time: 0.276 ms\n Execution Time: 20.119 ms\n(14 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Compare estimate and actual on the Parallel Seq Scan: the planner expected <code class=\"inline-code\">rows=1</code> but each process returned 16,667 rows, 50,000 in total. An error of this size is the most important thing to look for in any plan. Here it does no harm, because a full scan is the right plan anyway, but in a join the same mistake can make the planner choose a nested loop that runs 50,000 times instead of once."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "ANALYZE orders;\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT count(*) FROM orders WHERE status = 'cancelled';",
+    "caption": "Refresh statistics and check again"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                              QUERY PLAN\n---------------------------------------------------------------------------------------------------------------------------------------\n Finalize Aggregate  (cost=8010.76..8010.77 rows=1 width=8) (actual time=13.768..16.645 rows=1 loops=1)\n   Buffers: shared hit=4094\n   ->  Gather  (cost=8010.55..8010.76 rows=2 width=8) (actual time=13.677..16.639 rows=3 loops=1)\n         Workers Planned: 2\n         Workers Launched: 2\n         Buffers: shared hit=4094\n         ->  Partial Aggregate  (cost=7010.55..7010.56 rows=1 width=8) (actual time=11.725..11.725 rows=1 loops=3)\n               Buffers: shared hit=4094\n               ->  Parallel Seq Scan on orders  (cost=0.00..6958.58 rows=20785 width=0) (actual time=8.880..10.796 rows=16667 loops=3)\n                     Filter: (status = 'cancelled'::text)\n                     Rows Removed by Filter: 166667\n                     Buffers: shared hit=4094\n Planning:\n   Buffers: shared hit=22\n Planning Time: 0.123 ms\n Execution Time: 16.670 ms\n(16 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "After ANALYZE the per-process estimate is 20,785, now the right size, and the planner changes the plan shape: each worker counts its own rows (Partial Aggregate) and the leader adds the three results (Finalize Aggregate). Keep autovacuum off for now, Step 9 needs it; you switch it back on there."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Spot the classic problems",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Multiply by loops in a nested loop join",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres operating system user, connected to the <b>shop</b> database with <code class=\"inline-code\">sudo -u postgres psql -d shop</code>. In a <b>Nested Loop</b> join, the inner node (the second child) runs once for every row from the outer node. Its numbers are per loop, and forgetting to multiply them is the most common reading mistake."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (ANALYZE, BUFFERS)\nSELECT c.full_name, o.order_id, o.amount\n  FROM customers c\n  JOIN orders o ON o.customer_id = c.customer_id\n WHERE c.customer_id BETWEEN 100 AND 109\n   AND o.status = 'pending';",
+    "caption": "Pending orders for ten customers"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                                QUERY PLAN\n------------------------------------------------------------------------------------------------------------------------------------------\n Nested Loop  (cost=5.53..3509.66 rows=11 width=27) (actual time=0.129..0.690 rows=100 loops=1)\n   Buffers: shared hit=1133\n   ->  Index Scan using customers_pkey on customers c  (cost=0.28..8.48 rows=10 width=17) (actual time=0.004..0.007 rows=10 loops=1)\n         Index Cond: ((customer_id >= 100) AND (customer_id <= 109))\n         Buffers: shared hit=3\n   ->  Bitmap Heap Scan on orders o  (cost=5.25..350.11 rows=1 width=18) (actual time=0.061..0.066 rows=10 loops=10)\n         Recheck Cond: (c.customer_id = customer_id)\n         Filter: (status = 'pending'::text)\n         Rows Removed by Filter: 100\n         Heap Blocks: exact=1100\n         Buffers: shared hit=1130\n         ->  Bitmap Index Scan on orders_customer_id_idx  (cost=0.00..5.25 rows=110 width=0) (actual time=0.004..0.004 rows=110 loops=10)\n               Index Cond: (customer_id = c.customer_id)\n               Buffers: shared hit=30\n Planning:\n   Buffers: shared hit=103 read=2 dirtied=1\n Planning Time: 0.589 ms\n Execution Time: 0.812 ms\n(18 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The outer Index Scan on customers returns 10 rows, so the inner Bitmap Heap Scan on orders runs <code class=\"inline-code\">loops=10</code>. Its <code class=\"inline-code\">rows=10</code> is an average: 10 × 10 = 100 rows in total, which matches the top node. <code class=\"inline-code\">Rows Removed by Filter: 100</code> is also per loop, so 1,000 orders were read and discarded. <code class=\"inline-code\">Heap Blocks: exact=1100</code> and the Buffers line are already totals for all loops."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now look at the estimate: <code class=\"inline-code\">rows=1</code> per loop against 10 actual. The planner treats customer and status as independent, but in this data all 100 pending orders belong to one customer (101). An average of 10 hides that fact: one loop returned 100 rows and nine returned none. When numbers like this matter, extended statistics (Part 32) can teach the planner about related columns."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: See a sort spill to disk and fix it with work_mem",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres operating system user, connected to the <b>shop</b> database with <code class=\"inline-code\">sudo -u postgres psql -d shop</code>. Sorts and hash tables may use up to <code class=\"inline-code\">work_mem</code> of memory each (default 4MB; hash operations can use <code class=\"inline-code\">hash_mem_multiplier</code> times that, default 2.0). If the data does not fit, PostgreSQL writes it to temporary files. EXPLAIN shows this in two places."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SHOW work_mem;\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT * FROM orders ORDER BY amount DESC, order_id;",
+    "caption": "Sort all 550,000 orders with the default work_mem"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                     QUERY PLAN\n---------------------------------------------------------------------------------------------------------------------\n Sort  (cost=75193.95..76568.95 rows=550000 width=30) (actual time=462.127..614.122 rows=550000 loops=1)\n   Sort Key: amount DESC, order_id\n   Sort Method: external merge  Disk: 22184kB\n   Buffers: shared hit=4094, temp read=2773 written=2784\n   ->  Seq Scan on orders  (cost=0.00..9594.00 rows=550000 width=30) (actual time=0.002..37.466 rows=550000 loops=1)\n         Buffers: shared hit=4094\n Planning:\n   Buffers: shared hit=15\n Planning Time: 0.052 ms\n Execution Time: 648.005 ms\n(10 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">Sort Method: external merge  Disk: 22184kB</code> means the sort did not fit in 4 MB and used about 22 MB of temporary files. The Buffers line confirms it with <code class=\"inline-code\">temp read=2773 written=2784</code>: temporary blocks written and read back. Now give this session more memory and run it again:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET work_mem = '64MB';\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT * FROM orders ORDER BY amount DESC, order_id;\n\nRESET work_mem;",
+    "caption": "Same sort with 64MB of work_mem"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                     QUERY PLAN\n---------------------------------------------------------------------------------------------------------------------\n Sort  (cost=62033.95..63408.95 rows=550000 width=30) (actual time=656.370..728.560 rows=550000 loops=1)\n   Sort Key: amount DESC, order_id\n   Sort Method: quicksort  Memory: 50039kB\n   Buffers: shared hit=4094\n   ->  Seq Scan on orders  (cost=0.00..9594.00 rows=550000 width=30) (actual time=0.008..38.421 rows=550000 loops=1)\n         Buffers: shared hit=4094\n Planning Time: 0.125 ms\n Execution Time: 753.313 ms\n(8 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Verify: the sort now runs in memory (<code class=\"inline-code\">quicksort  Memory: 50039kB</code>) and the temp numbers are gone. Notice that the execution time did <i>not</i> improve on this test machine; it was a little slower. The temporary files were small and stayed in the operating system's file cache, so the disk sort was cheap. On a busy server with real disk I/O the in-memory sort usually wins, but this is exactly why you measure instead of assuming."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Do not raise work_mem for everyone at once",
+    "text": "work_mem applies to each sort or hash operation, and one query can run several at the same time, in many sessions. Setting it to 64MB in postgresql.conf could use many times that amount of RAM under load. Raise it per session (SET work_mem) or per role (ALTER ROLE ... SET work_mem) for the reports that need it. Part 28 covers memory tuning in detail."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: Read Heap Fetches on an index-only scan",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres operating system user, connected to the <b>shop</b> database with <code class=\"inline-code\">sudo -u postgres psql -d shop</code>. An <b>Index Only Scan</b> answers the query from the index alone, but only for table pages marked all-visible in the <b>visibility map</b> (a small file per table that VACUUM maintains, see Part 12). For other pages it must visit the table to check whether each row is visible to your transaction. <code class=\"inline-code\">Heap Fetches</code> counts those table visits. Update some rows first, with autovacuum still off:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders SET amount = amount + 1 WHERE customer_id <= 500;\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT count(*) FROM orders WHERE customer_id <= 500;",
+    "caption": "Count rows right after an UPDATE"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                                      QUERY PLAN\n------------------------------------------------------------------------------------------------------------------------------------------------------\n Aggregate  (cost=4845.64..4845.65 rows=1 width=8) (actual time=31.461..31.462 rows=1 loops=1)\n   Buffers: shared hit=110087\n   ->  Index Only Scan using orders_customer_id_idx on orders  (cost=0.42..4695.47 rows=60067 width=0) (actual time=0.466..28.200 rows=55000 loops=1)\n         Index Cond: (customer_id <= 500)\n         Heap Fetches: 110000\n         Buffers: shared hit=110087\n Planning Time: 0.078 ms\n Execution Time: 31.486 ms\n(8 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The index-only scan returned 55,000 rows but made 110,000 heap fetches and touched 110,087 buffers. The UPDATE created new row versions and new index entries, while the old ones are still there (MVCC, Part 11), so PostgreSQL checked both. The buffer count is larger than the whole table because Buffers counts every access, not distinct pages."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "VACUUM orders;\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT count(*) FROM orders WHERE customer_id <= 500;\n\nALTER TABLE orders RESET (autovacuum_enabled);",
+    "caption": "VACUUM, check again, and switch autovacuum back on"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                                     QUERY PLAN\n-----------------------------------------------------------------------------------------------------------------------------------------------------\n Aggregate  (cost=1418.11..1418.12 rows=1 width=8) (actual time=6.965..6.965 rows=1 loops=1)\n   Buffers: shared hit=87\n   ->  Index Only Scan using orders_customer_id_idx on orders  (cost=0.42..1282.89 rows=54084 width=0) (actual time=0.011..3.943 rows=55000 loops=1)\n         Index Cond: (customer_id <= 500)\n         Heap Fetches: 0\n         Buffers: shared hit=87\n Planning:\n   Buffers: shared hit=12\n Planning Time: 0.103 ms\n Execution Time: 6.986 ms\n(10 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Verify: <code class=\"inline-code\">Heap Fetches: 0</code>, 87 buffers instead of 110,087, and about 7 ms instead of 31 ms. When you see high Heap Fetches on a production table, check its vacuum history in <code class=\"inline-code\">pg_stat_user_tables</code> before you touch the query. The last statement undoes the change from Step 6."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Explain writes and parameterised queries safely",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: EXPLAIN ANALYZE an UPDATE inside a transaction",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres operating system user, connected to the <b>shop</b> database with <code class=\"inline-code\">sudo -u postgres psql -d shop</code>. The documentation's advice for data-changing statements is to wrap them in a transaction and roll it back. The <code class=\"inline-code\">WAL</code> option adds how much write-ahead log the statement produced, which matters for replication and backups (Parts 15 and 19)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\n\nEXPLAIN (ANALYZE, BUFFERS, WAL)\nUPDATE orders SET status = 'shipped'\n WHERE customer_id = 101 AND status = 'pending';\n\nROLLBACK;",
+    "caption": "Measure an UPDATE without keeping its changes"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Option",
+      "What it does"
+     ],
+     [
+      "ANALYZE",
+      "Runs the UPDATE for real, so the measured numbers are real."
+     ],
+     [
+      "BUFFERS",
+      "Shows pages hit, read, dirtied and written, including the pages the update changes."
+     ],
+     [
+      "WAL",
+      "Shows WAL records, full page images (fpi), bytes and, on PostgreSQL 18, how often WAL buffers were full. Only non-zero values are printed. Requires ANALYZE."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                                               QUERY PLAN\n-----------------------------------------------------------------------------------------------------------------------------------------\n Update on orders  (cost=5.24..388.70 rows=0 width=0) (actual time=1.121..1.121 rows=0 loops=1)\n   Buffers: shared hit=1309\n   WAL: records=397 bytes=28490\n   ->  Bitmap Heap Scan on orders  (cost=5.24..388.70 rows=1 width=38) (actual time=0.036..0.186 rows=100 loops=1)\n         Recheck Cond: (customer_id = 101)\n         Filter: (status = 'pending'::text)\n         Rows Removed by Filter: 10\n         Heap Blocks: exact=110\n         Buffers: shared hit=113\n         ->  Bitmap Index Scan on orders_customer_id_idx  (cost=0.00..5.24 rows=109 width=0) (actual time=0.014..0.014 rows=110 loops=1)\n               Index Cond: (customer_id = 101)\n               Buffers: shared hit=3\n Planning:\n   Buffers: shared hit=5\n Planning Time: 0.098 ms\n Execution Time: 1.148 ms\n(16 rows)",
+    "caption": "Output (expected output: captured on PostgreSQL 16; on PostgreSQL 18 row counts show two decimals and index scans add an Index Searches line)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The Update node shows <code class=\"inline-code\">rows=0</code> because an UPDATE without RETURNING sends no rows back; the Bitmap Heap Scan below it found the 100 rows that were changed. <code class=\"inline-code\">WAL: records=397 bytes=28490</code> is the log volume for changing 100 rows and their index entries. No <code class=\"inline-code\">fpi</code> value appears, which means no full page images were needed in this run."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Verify that nothing changed after the ROLLBACK:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT count(*) FROM orders WHERE customer_id = 101 AND status = 'pending';",
+    "caption": "Verify the rows are still pending"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " count\n-------\n   100\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "danger",
+    "title": "Statements that ROLLBACK cannot undo",
+    "text": "BEGIN and ROLLBACK protect table data, but not everything. A sequence used by an INSERT stays advanced, and a statement that calls a function with outside effects (for example sending data with dblink) cannot be rolled back. Never run EXPLAIN ANALYZE on a DELETE or UPDATE on production outside a transaction."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: Explain a query that contains $1 with GENERIC_PLAN",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On db1, as the postgres operating system user, connected to the <b>shop</b> database with <code class=\"inline-code\">sudo -u postgres psql -d shop</code>. Queries you copy from pg_stat_statements have their constants replaced by <code class=\"inline-code\">$1</code>, <code class=\"inline-code\">$2</code> and so on. EXPLAIN cannot run them as they are, but the <code class=\"inline-code\">GENERIC_PLAN</code> option (PostgreSQL 16 and later) plans them without values."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (GENERIC_PLAN) SELECT * FROM orders WHERE customer_id = $1;",
+    "caption": "Plan a parameterised query"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                      QUERY PLAN\n---------------------------------------------------------------------------------------\n Bitmap Heap Scan on orders  (cost=5.27..388.46 rows=109 width=30)\n   Recheck Cond: (customer_id = $1)\n   ->  Bitmap Index Scan on orders_customer_id_idx  (cost=0.00..5.24 rows=109 width=0)\n         Index Cond: (customer_id = $1)\n(4 rows)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is the generic plan: the one PostgreSQL would use for a prepared statement without knowing the value. It cannot be combined with ANALYZE, because there is nothing to run. To measure real times, replace <code class=\"inline-code\">$1</code> with a typical value, ideally one taken from your application logs, and use <code class=\"inline-code\">EXPLAIN (ANALYZE, BUFFERS)</code> as before."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "A DBA's order for reading any plan",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Plans for real queries can be a hundred lines long. Go through them in this order:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "<b>Execution Time</b> at the bottom: is it really slow, and is Planning Time a surprise?",
+      "items": []
+     },
+     {
+      "content": "<b>Estimated rows versus actual rows × loops</b> on each node. Find the lowest node where they differ by ten times or more; that is usually the root cause.",
+      "items": []
+     },
+     {
+      "content": "<b>Buffers</b>: which node has the biggest jump in shared hit + read compared with its children? That node does the work.",
+      "items": []
+     },
+     {
+      "content": "<b>Rows Removed by Filter</b> much larger than the rows returned: a missing or unusable index.",
+      "items": []
+     },
+     {
+      "content": "<b>temp read/written</b>, <b>Sort Method: external merge</b> or <b>Batches</b> greater than 1 on a Hash node: work_mem is too small for this operation.",
+      "items": []
+     },
+     {
+      "content": "<b>Heap Fetches</b> close to the rows returned on an Index Only Scan: the table needs VACUUM.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For a plan you want to keep or compare later, <code class=\"inline-code\">EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)</code> gives the same information in a form that tools and scripts can read. <code class=\"inline-code\">EXPLAIN (SETTINGS)</code> adds any planner-related setting that differs from its default, for example <code class=\"inline-code\">Settings: work_mem = '64MB'</code>, which is useful when you send a plan to a colleague."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: EXPLAIN option WAL requires ANALYZE",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (WAL) DELETE FROM orders WHERE order_id = 1;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  EXPLAIN option WAL requires ANALYZE",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "WAL, TIMING and SERIALIZE only make sense when the statement runs. Add ANALYZE, and for a DELETE like this one put it inside BEGIN ... ROLLBACK as in Step 10."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: there is no parameter $1",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN ANALYZE SELECT * FROM orders WHERE customer_id = $1;",
+    "caption": ""
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  there is no parameter $1\nLINE 1: EXPLAIN ANALYZE SELECT * FROM orders WHERE customer_id = $1;\n                                                                 ^",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The query came from pg_stat_statements or a log. Use <code class=\"inline-code\">EXPLAIN (GENERIC_PLAN)</code> to see the plan, or replace the placeholders with real values to run it. Trying both at once gives <code class=\"inline-code\">ERROR:  EXPLAIN options ANALYZE and GENERIC_PLAN cannot be used together</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Comparing cost with milliseconds",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Cost is in planner units, actual time is in milliseconds, and they are not expected to match. Compare estimated rows with actual rows instead, and compare costs only between plans for the same query."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Forgetting to multiply by loops",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A node with <code class=\"inline-code\">actual time=0.061..0.066 rows=10 loops=10</code> spent about 0.66 ms and returned 100 rows in total, not 0.066 ms and 10 rows. On the inner side of nested loops and in parallel plans, always multiply."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Treating a LIMIT plan as a bad estimate",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Under a Limit node, child nodes show estimated cost and rows as if they ran to completion, while the actual numbers stop early. The documentation calls this a display difference, not an estimation error."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Trusting timings from EXPLAIN ANALYZE too much",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Measuring the time of every node adds overhead, especially for nodes that run many times and on machines with slow clock calls. If you only need row counts, use <code class=\"inline-code\">EXPLAIN (ANALYZE, TIMING OFF)</code>; the total execution time is still measured. EXPLAIN ANALYZE also does not send rows to the client, so network time and, unless you add <code class=\"inline-code\">SERIALIZE</code>, the cost of converting results to text are not included."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Run <code class=\"inline-code\">EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE order_date = '2026-03-15';</code> What kind of scan do you get, how many rows are removed by the filter, and how many buffers are used?",
+      "items": []
+     },
+     {
+      "content": "Create an index that fixes it, run the query again and compare the buffer counts. Then drop your index.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "Without an index on order_date you get a Parallel Seq Scan that returns 1,667 rows (about 556 per process over 3 loops), removes about 182,778 rows per process by the filter and uses about 4,500 shared buffers: the whole table, which grew after the UPDATE in Step 9. After CREATE INDEX orders_order_date_idx ON orders (order_date); the plan switches to a Bitmap Index Scan plus Bitmap Heap Scan with Heap Blocks: exact=1667 and about 1,671 buffers, and the time falls from about 42 ms to about 2 ms on the test machine. The buffer saving is smaller than in Step 5 because each matching row sits on a different page. Clean up with DROP INDEX orders_order_date_idx;"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Create and connect to the practice database (db1, as your sudo user)\nsudo -u postgres createdb shop\nsudo -u postgres psql -d shop\n\n# Estimated plan only, the statement does not run\nEXPLAIN SELECT * FROM orders WHERE customer_id = 42;\n\n# Run it and show actual time, rows, loops and buffers\nEXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE customer_id = 42;\n\n# Add I/O wait times for this session (superuser)\nSET track_io_timing = on;\n\n# Enable I/O timing for the whole cluster (reload is enough)\nALTER SYSTEM SET track_io_timing = on;\nSELECT pg_reload_conf();\n\n# Measure a data change without keeping it\nBEGIN;\nEXPLAIN (ANALYZE, BUFFERS, WAL) UPDATE orders SET status = 'shipped' WHERE customer_id = 101;\nROLLBACK;\n\n# Plan a query that contains $1 (PostgreSQL 16+)\nEXPLAIN (GENERIC_PLAN) SELECT * FROM orders WHERE customer_id = $1;\n\n# Only row counts, less overhead\nEXPLAIN (ANALYZE, TIMING OFF) SELECT count(*) FROM orders WHERE customer_id = 42;\n\n# Show non-default planner settings, or machine-readable output\nEXPLAIN (SETTINGS) SELECT * FROM orders WHERE customer_id = 42;\nEXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT * FROM orders WHERE customer_id = 42;\n\n# Fixes used in this part\nCREATE INDEX orders_customer_id_idx ON orders (customer_id);\nANALYZE orders;\nSET work_mem = '64MB';\nVACUUM orders;\n\n# Clean up the practice database (from the shell)\nsudo -u postgres dropdb shop",
+    "caption": "Every command from this part, in order"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Clean up only the practice database",
+    "text": "dropdb removes the database and all its data without asking. Check the name twice and never run it against a real database."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Plain EXPLAIN shows the estimated plan and is safe to run anywhere.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "EXPLAIN (ANALYZE, BUFFERS) runs the statement and shows actual time, rows, loops and pages; on PostgreSQL 18 BUFFERS is included automatically.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Read plans from the inside out and multiply per-loop numbers by loops.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "A large gap between estimated and actual rows usually means stale or missing statistics; run ANALYZE.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Big Rows Removed by Filter points to a missing index; temp read/written points to work_mem; high Heap Fetches points to VACUUM.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Wrap EXPLAIN ANALYZE of INSERT, UPDATE, DELETE and MERGE in BEGIN ... ROLLBACK.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use GENERIC_PLAN for queries with $1 copied from pg_stat_statements.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 27 we build on these plans to choose the right index type: B-tree, GIN, GiST, BRIN, partial and expression indexes."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "EXPLAIN said 1 row. The query returned 50,000. That gap is where most slow PostgreSQL plans start.\n\nPart 26 of my PostgreSQL DBA series is about reading EXPLAIN (ANALYZE, BUFFERS) the way a DBA does:\n\n→ Compare estimated rows with actual rows x loops on every node. A 10x gap usually means stale statistics. Run ANALYZE.\n→ Buffers shared read vs shared hit tells you if pages came from disk or from cache. Compare buffers, not just milliseconds.\n→ A huge \"Rows Removed by Filter\" on a Seq Scan is the classic missing-index sign.\n→ \"Sort Method: external merge\" and temp read/written mean work_mem was too small for that sort.\n→ High Heap Fetches on an Index Only Scan means the table needs VACUUM.\n\nTwo PostgreSQL 18 changes: BUFFERS is now included with ANALYZE automatically, and row counts show decimals, so rows=33.33 loops=3 no longer hides small numbers.\n\nAnd always wrap EXPLAIN ANALYZE of an UPDATE or DELETE in BEGIN ... ROLLBACK. It really runs.\n\nFollow the series for Part 27 on index strategy.\n\nWhat is the first line you look at in a slow plan?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #SQL #Database",
+  "slides": [
+   {
+    "title": "Reading EXPLAIN (ANALYZE, BUFFERS)",
+    "body": "PostgreSQL DBA series, Part 26: find out why a query is slow"
+   },
+   {
+    "title": "Estimate vs reality",
+    "points": [
+     "EXPLAIN shows the plan and estimated cost and rows",
+     "ANALYZE runs it and adds actual time, rows, loops",
+     "BUFFERS adds pages hit in cache or read from disk",
+     "PostgreSQL 18 adds BUFFERS to ANALYZE by default"
+    ],
+    "code": "EXPLAIN (ANALYZE, BUFFERS)\nSELECT *\n  FROM orders\n WHERE customer_id = 42;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Read it inside out",
+    "points": [
+     "The most indented node runs first",
+     "Per-loop numbers: multiply rows and time by loops",
+     "Cost is planner units, actual time is milliseconds"
+    ]
+   },
+   {
+    "title": "Missing index",
+    "body": "A Seq Scan that removes almost every row it reads, with Buffers close to the whole table, is the classic sign. After the index, 3,677 buffers became 103.",
+    "code": "CREATE INDEX orders_customer_id_idx\n  ON orders (customer_id);",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Bad estimates, spills, heap fetches",
+    "points": [
+     "rows=1 estimated, 50,000 actual: run ANALYZE",
+     "Sort Method external merge, temp written: work_mem",
+     "Heap Fetches near rows returned: VACUUM the table"
+    ]
+   },
+   {
+    "title": "Explain writes safely",
+    "body": "EXPLAIN ANALYZE really runs INSERT, UPDATE and DELETE. Wrap it in a transaction and roll back.",
+    "code": "BEGIN;\nEXPLAIN (ANALYZE, BUFFERS, WAL)\nUPDATE orders SET status = 'shipped'\n WHERE customer_id = 101;\nROLLBACK;",
+    "lang": "postgresql"
+   }
+  ]
+ }
+}
