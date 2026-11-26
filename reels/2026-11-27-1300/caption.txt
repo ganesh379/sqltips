@@ -1,0 +1,13 @@
+How connection pooling with PgBouncer protects PostgreSQL, and the transaction mode trap.
+
+PgBouncer is a PostgreSQL connection pooler: apps connect to it (default port 6432) as if it were PostgreSQL, and it reuses a few real server connections. max_client_conn defaults to 100 and default_pool_size to 20 per user and database pair.
+
+pool_mode decides when a server connection goes back to the pool: session (the default) after the client disconnects, transaction after the transaction finishes, statement after each query. In our lab with transaction mode and a pool of 2, SHOW POOLS showed 2 clients active, 8 waiting, and PostgreSQL saw only 2 backends for 10 clients.
+
+The catch for every PostgreSQL DBA: in transaction mode server_reset_query is not used, so session state leaks. One client ran SET work_mem = '64MB' and a new client saw 64MB. Use SET LOCAL instead, avoid session features like LISTEN, advisory locks and temp tables, and set max_prepared_statements above 0 for driver prepared statements. Tested on PgBouncer 1.22 and PostgreSQL 16.
+
+Episode 24 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #pgbouncer #postgres #database

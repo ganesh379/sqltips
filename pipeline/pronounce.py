@@ -111,7 +111,7 @@ SPOKEN_CAPS = {"VACUUM", "ANALYZE", "EXPLAIN", "SELECT", "INSERT", "UPDATE", "DE
                "VACUUMDB", "REASSIGN", "OWNED", "SECURITY", "POLICY", "ENABLE", "DISABLE", "RULE",
                "DECLARE", "CURSOR", "SYSTEM", "VERSION", "FETCH", "CALL", "DO", "ON", "OR", "IN", "AS", "BY", "IS", "TO",
                "OF", "IF", "AT", "NO", "UP",
-               "ALLOW", "CONNECTIONS", "FORCE"}
+               "ALLOW", "CONNECTIONS", "FORCE", "LOCAL", "POOLS"}
 
 _KEYS = sorted(WORDS, key=len, reverse=True)
 _WORD_RE = re.compile(r"(?<![\w-])(" + "|".join(re.escape(k) for k in _KEYS) + r")(?![\w-])")

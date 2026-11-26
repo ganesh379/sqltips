@@ -1,0 +1,572 @@
+{
+ "ep": 24,
+ "total": 140,
+ "title": "Connection Pooling with PgBouncer",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "How connection pooling protects PostgreSQL.",
+   "cap": "How *connection pooling* protects *PostgreSQL.*"
+  },
+  {
+   "say": "This is episode twenty four of the PostgreSQL DBA series. Today: PgBouncer, its three pool modes, and the traps.",
+   "cap": "Episode 24: *PgBouncer,* pool modes and *traps.*",
+   "cue": "modes"
+  },
+  {
+   "say": "Every PostgreSQL connection costs a whole server process.",
+   "cap": "Every connection = *1 server process.*",
+   "cue": "process"
+  },
+  {
+   "say": "PgBouncer is a connection pooler. Apps connect to it, by default on port six four three two, as if it were PostgreSQL.",
+   "cap": "Apps connect to *PgBouncer* on *6432,* like PostgreSQL.",
+   "cue": "port"
+  },
+  {
+   "say": "PgBouncer keeps a small set of real server connections, and reuses them for many clients.",
+   "cap": "A few *server connections,* reused by *many clients.*",
+   "cue": "reuses"
+  },
+  {
+   "say": "max_client_conn caps the client connections. The default is one hundred.",
+   "cap": "*max_client_conn:* default *100* clients.",
+   "cue": "hundred"
+  },
+  {
+   "say": "default_pool_size is the server connections per user and database pair. The default is twenty.",
+   "cap": "*default_pool_size:* *20* per user and database.",
+   "cue": "twenty"
+  },
+  {
+   "say": "The key question: when does a server connection go back to the pool? That is pool_mode.",
+   "cap": "*pool_mode:* when is a server *released?*",
+   "cue": "pool_mode"
+  },
+  {
+   "say": "Session mode is the default. The server goes back when the client disconnects.",
+   "cap": "*session* (default): when the client *disconnects.*",
+   "cue": "disconnects"
+  },
+  {
+   "say": "Transaction mode: the server goes back as soon as the transaction finishes.",
+   "cap": "*transaction:* when the *transaction finishes.*",
+   "cue": "finishes"
+  },
+  {
+   "say": "Statement mode: after every query, and transactions with several statements are not allowed.",
+   "cap": "*statement:* after each query. *No multi statement* transactions.",
+   "cue": "allowed"
+  },
+  {
+   "say": "Let's test transaction mode. In a lab, default_pool_size is two, and ten clients each run a six second query.",
+   "cap": "Lab: *pool size 2,* *10 clients* at once.",
+   "cue": "ten"
+  },
+  {
+   "say": "On the admin console, SHOW POOLS, output trimmed, says two clients active, eight waiting, and two server connections.",
+   "cap": "*2 active,* *8 waiting,* *2 server* connections.",
+   "cue": "eight"
+  },
+  {
+   "say": "pg_stat_activity agrees: only two app_user backends, for ten clients.",
+   "cap": "PostgreSQL sees only *2 backends.*",
+   "cue": "two"
+  },
+  {
+   "say": "Now the catch. In transaction mode, your next transaction may run on another server connection, and server_reset_query is not used.",
+   "cap": "Next transaction, *maybe another server.* No reset query.",
+   "cue": "another"
+  },
+  {
+   "say": "So session state can leak. One client runs SET work_mem to sixty four megabytes.",
+   "cap": "Client A: *SET work_mem = 64MB.*",
+   "cue": "SET"
+  },
+  {
+   "say": "A brand new client connects, and SHOW work_mem says sixty four megabytes, not the default of four.",
+   "cap": "Client B sees *64MB,* not *4MB.*",
+   "cue": "sixty"
+  },
+  {
+   "say": "The PgBouncer docs say: no session based features in transaction mode.",
+   "cap": "No *session features* in transaction mode.",
+   "cue": "session"
+  },
+  {
+   "say": "That means session settings, prepared statements, LISTEN, advisory locks and temp tables.",
+   "cap": "Settings, PREPARE, LISTEN, *locks,* *temp tables.*",
+   "cue": "LISTEN"
+  },
+  {
+   "say": "Need a setting for one transaction? SET LOCAL lasts until commit or rollback. Our next client saw four megabytes.",
+   "cap": "Use *SET LOCAL:* gone after *COMMIT.*",
+   "cue": "LOCAL"
+  },
+  {
+   "say": "Prepared statements from drivers need max_prepared_statements above zero.",
+   "cap": "*max_prepared_statements* above *0* for drivers.",
+   "cue": "zero"
+  },
+  {
+   "say": "In version one point two two, it ships at zero, which disables that support.",
+   "cap": "PgBouncer 1.22 ships it at *0:* *disabled.*",
+   "cue": "zero"
+  },
+  {
+   "say": "Common mistake: switching an app to transaction mode without checking its session features.",
+   "cap": "Mistake: switch modes *without checking the app.*",
+   "cue": "mistake"
+  },
+  {
+   "say": "Recap: PgBouncer lends a few server connections to many clients. Session mode is the default.",
+   "cap": "Recap: *few servers,* *many clients.*",
+   "cue": "default"
+  },
+  {
+   "say": "Transaction mode shares the most, but session state does not follow you. Use SET LOCAL, and watch waiting clients.",
+   "cap": "*SET LOCAL,* and watch *cl_waiting.*",
+   "cue": "waiting"
+  },
+  {
+   "say": "Next up: tablespaces, when and why to use them. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *tablespaces.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "How *connection pooling* protects *PostgreSQL*",
+   "sub": "Episode 24 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 24 \u00b7 INSTALLATION & ADMINISTRATION",
+   "title": "Connection Pooling with PgBouncer",
+   "sub": "Pool modes, limits and traps"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 5,
+   "heading": "Many clients, few servers",
+   "nodes": [
+    {
+     "id": "c1",
+     "label": "App 1",
+     "x": 200,
+     "y": 520,
+     "w": 260,
+     "h": 120,
+     "icon": "users",
+     "color": "cyan",
+     "at": 2
+    },
+    {
+     "id": "c2",
+     "label": "App 2",
+     "x": 540,
+     "y": 520,
+     "w": 260,
+     "h": 120,
+     "icon": "users",
+     "color": "cyan",
+     "at": 2
+    },
+    {
+     "id": "c3",
+     "label": "App 3",
+     "x": 880,
+     "y": 520,
+     "w": 260,
+     "h": 120,
+     "icon": "users",
+     "color": "cyan",
+     "at": 2
+    },
+    {
+     "id": "pgb",
+     "label": "PgBouncer",
+     "sub": "port 6432",
+     "x": 540,
+     "y": 840,
+     "w": 380,
+     "h": 140,
+     "icon": "flow",
+     "color": "orange",
+     "shape": "pill",
+     "at": 3
+    },
+    {
+     "id": "db",
+     "label": "PostgreSQL",
+     "sub": "2 server connections",
+     "x": 540,
+     "y": 1180,
+     "w": 380,
+     "h": 150,
+     "icon": "database",
+     "color": "green",
+     "shape": "db",
+     "at": 4
+    }
+   ],
+   "edges": [
+    {
+     "from": "c1",
+     "to": "pgb",
+     "at": 3,
+     "flow": true,
+     "color": "cyan"
+    },
+    {
+     "from": "c2",
+     "to": "pgb",
+     "label": "connect",
+     "at": 3,
+     "flow": true,
+     "color": "cyan"
+    },
+    {
+     "from": "c3",
+     "to": "pgb",
+     "at": 3,
+     "flow": true,
+     "color": "cyan"
+    },
+    {
+     "from": "pgb",
+     "to": "db",
+     "label": "reused",
+     "at": 4,
+     "flow": true,
+     "color": "green"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "db"
+    },
+    {
+     "at": 3,
+     "id": "pgb"
+    },
+    {
+     "at": 4,
+     "id": "db"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 5,
+   "to": 7,
+   "heading": "Sizing the pool",
+   "columns": 1,
+   "items": [
+    {
+     "at": 5,
+     "icon": "users",
+     "title": "max_client_conn = 100",
+     "text": "maximum client connections allowed",
+     "color": "cyan"
+    },
+    {
+     "at": 6,
+     "icon": "database",
+     "title": "default_pool_size = 20",
+     "text": "server connections per user and database pair",
+     "color": "green"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 7,
+   "to": 11,
+   "heading": "pool_mode: when released?",
+   "columns": 1,
+   "items": [
+    {
+     "at": 8,
+     "icon": "lock",
+     "title": "session (default)",
+     "text": "after the client disconnects",
+     "color": "blue"
+    },
+    {
+     "at": 9,
+     "icon": "sync",
+     "title": "transaction",
+     "text": "after the transaction finishes",
+     "color": "orange"
+    },
+    {
+     "at": 10,
+     "icon": "bolt",
+     "title": "statement",
+     "text": "after each query; multi statement transactions disallowed",
+     "color": "purple"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 11,
+   "to": 13,
+   "heading": "Lab: 10 clients, pool of 2",
+   "title": "psql: PgBouncer 1.22 admin console",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- pool_mode = transaction",
+     "at": 11
+    },
+    {
+     "kind": "comment",
+     "text": "-- default_pool_size = 2",
+     "at": 11
+    },
+    {
+     "kind": "comment",
+     "text": "-- 10 clients: SELECT pg_sleep(6);",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "text": "SHOW POOLS;",
+     "prompt": "pgbouncer=# ",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "database              | appdb",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "cl_active             | 2",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "cl_waiting            | 8",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "sv_active             | 2",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": "pool_mode             | transaction",
+     "at": 12
+    },
+    {
+     "kind": "comment",
+     "text": "-- expanded output, trimmed",
+     "at": 12
+    }
+   ]
+  },
+  {
+   "type": "stat",
+   "from": 13,
+   "to": 14,
+   "value": "2",
+   "label": "backends in pg_stat_activity",
+   "text": "for 10 connected clients",
+   "color": "green"
+  },
+  {
+   "type": "callout",
+   "from": 14,
+   "to": 15,
+   "kind": "warning",
+   "title": "Transaction mode catch",
+   "text": "The next transaction may use another server connection, and server_reset_query is not used."
+  },
+  {
+   "type": "terminal",
+   "from": 15,
+   "to": 17,
+   "heading": "Session state leaks",
+   "title": "psql via PgBouncer (PostgreSQL 16)",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- client A",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "text": "SET work_mem = '64MB';",
+     "prompt": "appdb=> ",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "SET",
+     "at": 15
+    },
+    {
+     "kind": "comment",
+     "text": "-- client B, a new connection",
+     "at": 16
+    },
+    {
+     "kind": "cmd",
+     "text": "SHOW work_mem;",
+     "prompt": "appdb=> ",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": " work_mem ",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "----------",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": " 64MB",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "(1 row)",
+     "at": 16
+    },
+    {
+     "kind": "comment",
+     "text": "-- the default is 4MB",
+     "at": 16
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 17,
+   "to": 19,
+   "heading": "Session state to avoid",
+   "columns": 2,
+   "items": [
+    {
+     "at": 17,
+     "icon": "wrench",
+     "title": "SET (session)",
+     "text": "settings stay on the server",
+     "color": "orange"
+    },
+    {
+     "at": 18,
+     "icon": "file",
+     "title": "SQL PREPARE",
+     "text": "forwarded straight to PostgreSQL",
+     "color": "purple"
+    },
+    {
+     "at": 18,
+     "icon": "eye",
+     "title": "LISTEN",
+     "text": "tied to one session",
+     "color": "blue"
+    },
+    {
+     "at": 18,
+     "icon": "lock",
+     "title": "Advisory locks",
+     "text": "session level locks",
+     "color": "red"
+    },
+    {
+     "at": 18,
+     "icon": "table",
+     "title": "Temp tables",
+     "text": "live in one session",
+     "color": "cyan"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 19,
+   "to": 20,
+   "kind": "tip",
+   "title": "Use SET LOCAL",
+   "text": "SET LOCAL lasts only until COMMIT or ROLLBACK. The next client saw 4MB again."
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "fact",
+   "title": "max_prepared_statements",
+   "text": "Above 0, PgBouncer tracks protocol level prepared statements. In 1.22 it ships at 0 (disabled)."
+  },
+  {
+   "type": "stat",
+   "from": 21,
+   "to": 22,
+   "value": "0",
+   "label": "max_prepared_statements in 1.22",
+   "text": "zero disables prepared statement support",
+   "color": "amber"
+  },
+  {
+   "type": "callout",
+   "from": 22,
+   "to": 23,
+   "kind": "warning",
+   "title": "Common mistake",
+   "text": "Switching to transaction mode without checking which session features the app uses."
+  },
+  {
+   "type": "checklist",
+   "from": 23,
+   "to": 25,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 23,
+     "title": "Few servers, many clients"
+    },
+    {
+     "at": 23,
+     "title": "session mode is the default"
+    },
+    {
+     "at": 24,
+     "title": "transaction mode shares most"
+    },
+    {
+     "at": 24,
+     "title": "Session state does not follow"
+    },
+    {
+     "at": 24,
+     "title": "Use SET LOCAL"
+    },
+    {
+     "at": 24,
+     "title": "Watch cl_waiting in SHOW POOLS"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 25,
+   "to": 26,
+   "next": "Ep 25 \u00b7 Tablespaces: When and Why"
+  }
+ ]
+}
