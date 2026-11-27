@@ -1,0 +1,1468 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL DBA Part 27: Index Strategy, B-tree to BRIN",
+ "slug": "postgresql-dba-part-27-index-strategy",
+ "category": "postgresql",
+ "description": "PostgreSQL index types explained for DBAs: B-tree, GIN, GiST and BRIN, plus partial, expression and covering indexes, with real EXPLAIN output.",
+ "focusKeyword": "postgresql index types",
+ "tags": [
+  "postgresql-dba-series",
+  "postgresql",
+  "indexes",
+  "performance",
+  "explain"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-dba-part-13-table-index-bloat/",
+  "/posts/postgresql/postgresql-jsonb-query/",
+  "/posts/postgresql/postgresql-dba-part-12-vacuum-autovacuum/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: Index Types",
+   "url": "https://www.postgresql.org/docs/18/indexes-types.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Multicolumn Indexes",
+   "url": "https://www.postgresql.org/docs/18/indexes-multicolumn.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Indexes on Expressions",
+   "url": "https://www.postgresql.org/docs/18/indexes-expressional.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Partial Indexes",
+   "url": "https://www.postgresql.org/docs/18/indexes-partial.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Index-Only Scans and Covering Indexes",
+   "url": "https://www.postgresql.org/docs/18/indexes-index-only-scans.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Examining Index Usage",
+   "url": "https://www.postgresql.org/docs/18/indexes-examine.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: CREATE INDEX",
+   "url": "https://www.postgresql.org/docs/18/sql-createindex.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: GIN Indexes",
+   "url": "https://www.postgresql.org/docs/18/gin.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: BRIN Indexes",
+   "url": "https://www.postgresql.org/docs/18/brin.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Release 18",
+   "url": "https://www.postgresql.org/docs/18/release-18.html"
+  }
+ ],
+ "reviewNotes": "Series part 27. Publish Part 26 first (Parts 19-26 are not live yet; Part 26 is named without a link and is not in related). TEST ENVIRONMENT: PostgreSQL 18 could NOT be installed in this sandbox: postgresql-18 (18.7-1.pgdg24.04+5) is in PGDG but depends on liburing2 from the Ubuntu archive, which the sandbox network blocks ('E: Unable to correct problems, you have held broken packages'). As the task instructions allow, every statement was run exactly as written on the distribution PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on Ubuntu 24.04.5 LTS; all outputs are real output from that server and are captioned '(expected output)'. Documentation followed: PostgreSQL 18 (/docs/18/ URLs, since /docs/current/ now serves PostgreSQL 19). PLEASE RE-RUN ON 18 AND CHECK: (1) plans will show 'Index Searches: N' lines and fractional actual rows (rows=20.00), noted in a callout; (2) Step 5 date-only query on the (customer_id, created_at) index: PostgreSQL 18 skip scan might change this plan; the article says 18 is expected to still prefer another plan because customer_id has 50,000 distinct values, which follows the docs' guidance but was not verified on 18; (3) 18 uses asynchronous I/O, so cold-cache timings can differ; buffer counts, sizes and estimates should match. Everything else (index sizes, error messages, pg_get_indexdef output, exercise answer plan) was run. The DIWALI10 timing comparison in Common mistakes (GIN bitmap 103 ms vs seq scan 78 ms) is real output from a run not shown as a code block. last_idx_scan exists since PostgreSQL 16. The btree_gin remark rests on the real 'no default operator class for access method \"gin\"' error. Server time zone was UTC, explained in Step 10. Plans include parallel workers from default settings.\n LENGTH: about 3,800 words of prose (including tables and lists) plus code, above the series' 3,200-word guideline because the part covers all six index types and four index shapes in 12 tested steps; trim Step 10 or Step 12 if you want it shorter.",
+ "generatedAt": "2026-11-27T13:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This is <b>Part 27 of the PostgreSQL DBA series</b>. In Part 26 we read <code class=\"inline-code\">EXPLAIN (ANALYZE, BUFFERS)</code> output and saw how a missing index shows up as a Seq Scan with a huge \"Rows Removed by Filter\". This part answers the next question: <b>which index should you build?</b> By the end you will know what each PostgreSQL index type is for, how to build an index on a live table without blocking writes, and how to find and drop the indexes that only cost you."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The short answer: <b>B-tree</b>, the default, handles equality, ranges and sorting and covers most needs. <b>GIN</b> is for jsonb, arrays and full-text search. <b>GiST</b> and <b>SP-GiST</b> handle ranges, geometry and overlap searches. <b>BRIN</b> is a tiny index for huge tables stored in time order. <b>Hash</b> handles only equality. Then you choose the shape: multicolumn, covering (INCLUDE), partial (WHERE) or expression."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What you will learn",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "What each index type (B-tree, Hash, GIN, GiST, SP-GiST, BRIN) is good at, with a decision table",
+      "items": []
+     },
+     {
+      "content": "How to build indexes on a busy table with CREATE INDEX CONCURRENTLY, and how to recover when it fails",
+      "items": []
+     },
+     {
+      "content": "How to design multicolumn, covering (INCLUDE), partial and expression indexes",
+      "items": []
+     },
+     {
+      "content": "How to prove an index helps with EXPLAIN (ANALYZE, BUFFERS) and index sizes",
+      "items": []
+     },
+     {
+      "content": "How to find unused and invalid indexes and drop them safely",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Prerequisites",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Parts 1 to 26 of this series, especially Part 24 (statistics views), Part 25 (pg_stat_statements) and Part 26 (reading EXPLAIN)",
+      "items": []
+     },
+     {
+      "content": "One Ubuntu server with PostgreSQL 18 from the PGDG repository, cluster \"18 main\" running (Part 2)",
+      "items": []
+     },
+     {
+      "content": "A login with sudo, so you can run psql as the postgres operating system user",
+      "items": []
+     },
+     {
+      "content": "About 400 MB of free disk for the practice table and its indexes",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How it works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An index is a separate structure, stored in its own files, that points to rows in a table. Think of the index at the back of a book: instead of reading every page to find \"checkpoint\", you look up the word and go straight to pages 212 and 340. Without an index, PostgreSQL must read every page of the table (a <b>sequential scan</b>)."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each index type stores those pointers differently, and that decides which questions it can answer. The planner (the part of PostgreSQL that chooses how to run a query) uses an index only when the query uses an <b>operator</b> the index supports, such as <code class=\"inline-code\">=</code>, <code class=\"inline-code\">&lt;</code> or the jsonb containment operator <code class=\"inline-code\">@&gt;</code>. If a query returns a large share of the table, reading the whole table is cheaper than jumping through an index, and the planner ignores the index. That is correct behaviour, not a bug."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Indexes are not free. Every INSERT adds an entry to every index, an UPDATE of an indexed column cannot be a cheap HOT update (Part 13), and each index uses disk, cache, WAL and backup space. So a DBA adds an index only when a real query needs it, and removes indexes nobody uses."
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Index type",
+      "Operators it serves (built-in)",
+      "Use it for"
+     ],
+     [
+      "B-tree (default)",
+      "=, <, <=, >, >=, BETWEEN, IN, IS NULL, LIKE 'abc%'",
+      "Almost everything: keys, foreign keys, dates, sorting, ORDER BY ... LIMIT"
+     ],
+     [
+      "Hash",
+      "= only",
+      "Equality on long values where you never need ranges or sorting"
+     ],
+     [
+      "GIN",
+      "jsonb: @>, ?, ?|, ?&, @?, @@; arrays: @>, <@, &&, =; tsvector: @@",
+      "jsonb documents, arrays, full-text search"
+     ],
+     [
+      "GiST",
+      "Depends on the operator class: &&, @>, <@, <-> (nearest) and more",
+      "Range types, geometry, exclusion constraints, nearest-neighbour search"
+     ],
+     [
+      "SP-GiST",
+      "Depends on the operator class (points, ranges, text prefixes)",
+      "Data that splits into non-overlapping regions: points, IP ranges, tries"
+     ],
+     [
+      "BRIN",
+      "=, <, <=, >, >= (minmax operator classes)",
+      "Very large tables where the column follows physical row order (timestamps, serial ids)"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "What changed in PostgreSQL 18",
+    "level": 3
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<b>Skip scan for B-tree:</b> an index on (a, b) can serve a filter on b alone, usually only when a has few distinct values.",
+      "items": []
+     },
+     {
+      "content": "<b>Parallel GIN builds</b>, like B-tree and BRIN already had.",
+      "items": []
+     },
+     {
+      "content": "<b>EXPLAIN ANALYZE</b> shows \"Index Searches\" per index scan node and fractional row counts.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Set up the practice database",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All examples use one table of one million online orders. The values are generated so that some columns are very selective (customer_id), some are skewed (status: 97% shipped, 1% pending) and one follows the physical order of the rows (created_at, because the rows are inserted in time order)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 1: Create the shop database and the orders table",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where to run it:</b> on the database server (db1), as your sudo user. The first command creates the database; the second opens psql in it as the postgres user."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "sudo -u postgres createdb shop\nsudo -u postgres psql -d shop",
+    "caption": "Create the practice database and connect"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now paste this SQL into psql. It creates the table, loads one million rows and then runs VACUUM ANALYZE, which sets the visibility map (needed for index-only scans later) and collects the planner statistics."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders (\n  order_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  customer_id integer       NOT NULL,\n  status      text          NOT NULL,\n  email       text          NOT NULL,\n  amount      numeric(10,2) NOT NULL,\n  created_at  timestamptz   NOT NULL,\n  tags        text[]        NOT NULL DEFAULT '{}',\n  attrs       jsonb         NOT NULL DEFAULT '{}'\n);\n\nINSERT INTO orders (customer_id, status, email, amount, created_at, tags, attrs)\nSELECT (g % 50000) + 1,\n       CASE WHEN g % 100 = 0 THEN 'pending'\n            WHEN g % 100 < 3 THEN 'cancelled'\n            ELSE 'shipped' END,\n       'Customer' || ((g % 50000) + 1) || '@Example.com',\n       round((10 + (g % 990))::numeric, 2),\n       timestamptz '2025-01-01 00:00:00+00' + (g * interval '30 seconds'),\n       CASE WHEN g % 10 = 0 THEN ARRAY['gift']\n            WHEN g % 7 = 0 THEN ARRAY['express','fragile']\n            ELSE '{}' END,\n       jsonb_build_object('channel', CASE WHEN g % 4 = 0 THEN 'app' ELSE 'web' END,\n                          'coupon',  CASE WHEN g % 50 = 0 THEN 'DIWALI10' END)\nFROM generate_series(1, 1000000) AS g;\n\nVACUUM ANALYZE orders;\n\nSELECT count(*), pg_size_pretty(pg_relation_size('orders')) AS table_size\n  FROM orders;",
+    "caption": "Practice table with one million orders"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE TABLE\nINSERT 0 1000000\nVACUUM\n  count  | table_size \n---------+------------\n 1000000 | 149 MB\n(1 row)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The table holds one million rows in 149 MB. <b>Check it worked:</b> the count must be 1000000."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 2: See which indexes exist and how big they are",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where to run it:</b> in the same psql session. The meta-command <code class=\"inline-code\">\\di+</code> (Part 4) lists indexes with their access method (the index type) and size."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "\\di+",
+    "caption": "List indexes with type and size"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Schema |    Name     | Type  |  Owner   | Table  | Persistence | Access method | Size  | Description \n--------+-------------+-------+----------+--------+-------------+---------------+-------+-------------\n public | orders_pkey | index | postgres | orders | permanent   | btree         | 21 MB | ",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only <code class=\"inline-code\">orders_pkey</code> exists, the B-tree created automatically for the PRIMARY KEY. PostgreSQL also creates one for each UNIQUE constraint, but <b>not</b> for foreign keys."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "Reading the plans",
+    "text": "On PostgreSQL 18 the plans also show an \"Index Searches: 1\" line under index scan nodes and row counts such as rows=20.00. Timings will differ on your machine; buffer counts and sizes should match."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "B-tree indexes: build them without blocking writes",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A support team looks up a customer's orders all day: <code class=\"inline-code\">WHERE customer_id = 4242</code>. Each customer has 20 orders out of one million rows. That is the perfect case for a B-tree: a selective equality search."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 3: Measure the query before adding an index",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where to run it:</b> psql, connected to shop as postgres. Always measure first so you can prove the index helped."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (ANALYZE, BUFFERS)\nSELECT order_id, amount FROM orders WHERE customer_id = 4242;",
+    "caption": "Plan without an index"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Gather  (cost=1000.00..25255.33 rows=20 width=13) (actual time=0.631..30.636 rows=20 loops=1)\n   Workers Planned: 2\n   Workers Launched: 2\n   Buffers: shared hit=13347 read=5698\n   ->  Parallel Seq Scan on orders  (cost=0.00..24253.33 rows=8 width=13) (actual time=3.233..24.975 rows=7 loops=3)\n         Filter: (customer_id = 4242)\n         Rows Removed by Filter: 333327\n         Buffers: shared hit=13347 read=5698\n Planning:\n   Buffers: shared hit=61 read=2\n Planning Time: 0.303 ms\n Execution Time: 30.685 ms",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL read all 19,045 pages (13347 + 5698 buffers) with three processes to return 20 rows. Each process removed about 333,000 rows. This is the classic missing-index plan from Part 26."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 4: Create the B-tree with CREATE INDEX CONCURRENTLY",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A plain <code class=\"inline-code\">CREATE INDEX</code> blocks INSERT, UPDATE and DELETE (reads still work) until the build finishes, which on a big table can mean minutes of waiting application writes. <code class=\"inline-code\">CONCURRENTLY</code> avoids that lock. The price: PostgreSQL scans the table twice and waits for running transactions, so the build takes longer."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where to run it:</b> psql on the primary, as postgres or the table owner. Run it as a single statement, not inside BEGIN ... COMMIT."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX CONCURRENTLY orders_customer_id_idx\n    ON orders (customer_id);",
+    "caption": "Build a B-tree without blocking writes"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Part of the command",
+      "What it does"
+     ],
+     [
+      "CONCURRENTLY",
+      "Builds the index without taking locks that prevent concurrent inserts, updates or deletes. Cannot run inside a transaction block."
+     ],
+     [
+      "orders_customer_id_idx",
+      "The index name. Use a pattern such as table_column_idx so the name tells you what it covers."
+     ],
+     [
+      "ON orders (customer_id)",
+      "The table and the column (the index key)."
+     ],
+     [
+      "USING method (not written)",
+      "Without USING, PostgreSQL uses the default method, btree."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE INDEX",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Check it worked:</b> confirm the index is valid (usable by queries), then run the same EXPLAIN again."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT indexrelid::regclass AS index_name, indisvalid, indisready\n  FROM pg_index\n WHERE indrelid = 'orders'::regclass;\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT order_id, amount FROM orders WHERE customer_id = 4242;",
+    "caption": "Verify the index and the new plan"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "       index_name       | indisvalid | indisready \n------------------------+------------+------------\n orders_pkey            | t          | t\n orders_customer_id_idx | t          | t\n(2 rows)\n\n Bitmap Heap Scan on orders  (cost=4.58..82.89 rows=20 width=13) (actual time=0.135..0.178 rows=20 loops=1)\n   Recheck Cond: (customer_id = 4242)\n   Heap Blocks: exact=20\n   Buffers: shared hit=17 read=6\n   ->  Bitmap Index Scan on orders_customer_id_idx  (cost=0.00..4.58 rows=20 width=0) (actual time=0.013..0.013 rows=20 loops=1)\n         Index Cond: (customer_id = 4242)\n         Buffers: shared hit=3\n Planning:\n   Buffers: shared hit=16 read=2\n Planning Time: 0.170 ms\n Execution Time: 0.198 ms",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Both indexes show <code class=\"inline-code\">indisvalid = t</code>. The query now reads 23 buffers instead of about 19,000 (3 index pages plus the 20 table pages holding the rows), and runs in 0.2 ms instead of 30.7 ms."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Undo:</b> <code class=\"inline-code\">DROP INDEX CONCURRENTLY orders_customer_id_idx;</code> removes an index without blocking reads and writes on the table. We will drop it ourselves in Step 5, for a better reason."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Multicolumn and covering indexes",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A single-column index is often not enough. The customer page shows the five most recent orders: <code class=\"inline-code\">WHERE customer_id = 4242 ORDER BY created_at DESC LIMIT 5</code>. With an index only on customer_id, PostgreSQL must fetch all 20 rows and sort them."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 5: Build a multicolumn index that also does the sorting",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where to run it:</b> psql on the primary. First look at the current plan, then build an index on (customer_id, created_at)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (ANALYZE, BUFFERS)\nSELECT order_id, created_at, amount\n  FROM orders\n WHERE customer_id = 4242\n ORDER BY created_at DESC\n LIMIT 5;",
+    "caption": "Latest five orders, single-column index"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Limit  (cost=83.22..83.23 rows=5 width=21) (actual time=0.194..0.195 rows=5 loops=1)\n   Buffers: shared hit=26\n   ->  Sort  (cost=83.22..83.27 rows=20 width=21) (actual time=0.193..0.193 rows=5 loops=1)\n         Sort Key: created_at DESC\n         Sort Method: top-N heapsort  Memory: 25kB\n         Buffers: shared hit=26\n         ->  Bitmap Heap Scan on orders  (cost=4.58..82.89 rows=20 width=21) (actual time=0.036..0.174 rows=20 loops=1)\n               Recheck Cond: (customer_id = 4242)\n               Heap Blocks: exact=20\n               Buffers: shared hit=23\n               ->  Bitmap Index Scan on orders_customer_id_idx  (cost=0.00..4.58 rows=20 width=0) (actual time=0.022..0.022 rows=20 loops=1)\n                     Index Cond: (customer_id = 4242)\n                     Buffers: shared hit=3\n Planning:\n   Buffers: shared hit=109 read=1\n Planning Time: 0.316 ms\n Execution Time: 0.229 ms",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX CONCURRENTLY orders_customer_created_idx\n    ON orders (customer_id, created_at);\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT order_id, created_at, amount\n  FROM orders\n WHERE customer_id = 4242\n ORDER BY created_at DESC\n LIMIT 5;",
+    "caption": "Multicolumn index: filter column first, sort column second"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE INDEX\n Limit  (cost=0.42..21.49 rows=5 width=21) (actual time=0.011..0.015 rows=5 loops=1)\n   Buffers: shared hit=8\n   ->  Index Scan Backward using orders_customer_created_idx on orders  (cost=0.42..84.68 rows=20 width=21) (actual time=0.010..0.014 rows=5 loops=1)\n         Index Cond: (customer_id = 4242)\n         Buffers: shared hit=8\n Planning:\n   Buffers: shared hit=16 read=1\n Planning Time: 0.150 ms\n Execution Time: 0.027 ms",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The Sort node is gone. Inside the index, the entries for customer 4242 are already ordered by created_at, so PostgreSQL reads them backwards (newest first) and stops after five rows: 8 buffers instead of 26. A B-tree can be read in either direction, so you do not need DESC in the index for this query."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The new index also serves every query on customer_id alone, because customer_id is its <b>leading (leftmost) column</b>. That makes the single-column index redundant: it costs writes and space and adds nothing. Drop it, then check that the customer_id lookup still uses an index."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DROP INDEX CONCURRENTLY orders_customer_id_idx;\n\nEXPLAIN SELECT order_id, amount FROM orders WHERE customer_id = 4242;",
+    "caption": "Drop the redundant index and verify"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "DROP INDEX\n Bitmap Heap Scan on orders  (cost=4.58..82.89 rows=20 width=13)\n   Recheck Cond: (customer_id = 4242)\n   ->  Bitmap Index Scan on orders_customer_created_idx  (cost=0.00..4.58 rows=20 width=0)\n         Index Cond: (customer_id = 4242)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A query that filters only on created_at, the second column, gets little help from it:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (ANALYZE, BUFFERS)\nSELECT count(*) FROM orders\n WHERE created_at >= '2025-06-01' AND created_at < '2025-06-02';",
+    "caption": "Filter on the second column only"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Aggregate  (cost=25451.16..25451.17 rows=1 width=8) (actual time=25.720..25.721 rows=1 loops=1)\n   Buffers: shared hit=3835\n   ->  Index Only Scan using orders_customer_created_idx on orders  (cost=0.42..25443.42 rows=3099 width=0) (actual time=16.685..25.531 rows=2880 loops=1)\n         Index Cond: ((created_at >= '2025-06-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2025-06-02 00:00:00+00'::timestamp with time zone))\n         Heap Fetches: 0\n         Buffers: shared hit=3835\n Planning:\n   Buffers: shared hit=93 read=6\n Planning Time: 0.480 ms\n Execution Time: 25.778 ms",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL read the <b>whole</b> 30 MB index (3,835 pages), because the dates are scattered across 50,000 customer_id groups. Equality conditions on the leading columns, plus a range on the next column, decide how much of a B-tree is scanned; conditions on later columns are only checked along the way. So put the <code class=\"inline-code\">=</code> column first and the range or ORDER BY column after it."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Skip scan in PostgreSQL 18",
+    "text": "PostgreSQL 18 can use <b>skip scan</b> here: it jumps to each distinct customer_id and searches created_at inside it. That pays off only when the leading column has few distinct values (for example a status or region column). With 50,000 customers, expect PostgreSQL 18 to still prefer another plan, and give date-only queries their own index (Step 11)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 6: Add INCLUDE columns for an index-only scan",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An <b>index-only scan</b> answers a query from the index alone, without visiting the table. It needs two things: every column the query uses must be in the index, and the table pages must be marked all-visible in the visibility map (VACUUM does that, Part 12). The query <code class=\"inline-code\">SELECT created_at, amount ... WHERE customer_id = 4242</code> also needs amount, which is not in the index, so PostgreSQL still visits 20 table pages."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The <code class=\"inline-code\">INCLUDE</code> clause adds <b>non-key</b> columns: they are stored in the index leaf entries but are not part of the search key. Such an index is called a <b>covering index</b>. <b>Where to run it:</b> psql on the primary."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX CONCURRENTLY orders_customer_created_incl_idx\n    ON orders (customer_id, created_at) INCLUDE (amount);\n\nDROP INDEX CONCURRENTLY orders_customer_created_idx;\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT created_at, amount FROM orders WHERE customer_id = 4242;",
+    "caption": "Covering index with INCLUDE"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Clause",
+      "What it does"
+     ],
+     [
+      "(customer_id, created_at)",
+      "Key columns: used for searching and ordering."
+     ],
+     [
+      "INCLUDE (amount)",
+      "Non-key column: stored in the index so an index-only scan can return it, but never used to search, and ignored by UNIQUE. Supported by B-tree, GiST and SP-GiST."
+     ]
+    ]
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE INDEX\nDROP INDEX\n Index Only Scan using orders_customer_created_incl_idx on orders  (cost=0.42..4.78 rows=20 width=13) (actual time=0.025..0.027 rows=20 loops=1)\n   Index Cond: (customer_id = 4242)\n   Heap Fetches: 0\n   Buffers: shared hit=1 read=3\n Planning:\n   Buffers: shared hit=15 read=1\n Planning Time: 0.152 ms\n Execution Time: 0.045 ms",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Four buffers instead of 24, and <code class=\"inline-code\">Heap Fetches: 0</code> means no table page was visited. <b>Check the cost too:</b>"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_size_pretty(pg_relation_size('orders_customer_created_incl_idx'));",
+    "caption": "Size of the covering index"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " pg_size_pretty \n----------------\n 39 MB",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The covering index is 39 MB against 30 MB without INCLUDE: the amount values take space, and B-tree <b>deduplication</b> (storing a repeated key once) is never used in indexes with non-key columns. Add INCLUDE columns only for a hot query, keep them narrow, and only on tables that change slowly enough for the visibility map to stay set. Add <code class=\"inline-code\">status</code> to the SELECT list and the plan goes back to a Bitmap Heap Scan."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Partial and expression indexes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 7: Index only the rows you search with a partial index",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A warehouse screen shows the oldest pending orders: <code class=\"inline-code\">WHERE status = 'pending' ORDER BY created_at LIMIT 20</code>. Only 1% of rows are pending. A <b>partial index</b> has a WHERE clause (its predicate) and stores entries only for rows that match it, so it skips the 970,000 shipped orders you never search this way."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT status, count(*) FROM orders GROUP BY status ORDER BY status;",
+    "caption": "How skewed is status?"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  status   | count  \n-----------+--------\n cancelled |  20000\n pending   |  10000\n shipped   | 970000",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Where to run it:</b> psql on the primary. To show the difference in size, build a full index on (status, created_at) and a partial one, compare them, then drop the full one."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_status_created_idx\n    ON orders (status, created_at);\nCREATE INDEX orders_pending_created_idx\n    ON orders (created_at) WHERE status = 'pending';\n\nSELECT indexrelname, pg_size_pretty(pg_relation_size(indexrelid)) AS size\n  FROM pg_stat_user_indexes\n WHERE indexrelname IN ('orders_status_created_idx', 'orders_pending_created_idx');\n\nDROP INDEX orders_status_created_idx;",
+    "caption": "Full index vs partial index"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "        indexrelname        |  size  \n----------------------------+--------\n orders_status_created_idx  | 30 MB\n orders_pending_created_idx | 240 kB",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The partial index is 240 kB, about 1/125 of the full one, because it holds 10,000 entries instead of one million. It is also cheaper to maintain: inserting a shipped order does not touch it. (These two indexes were built without CONCURRENTLY to keep the demo short; on a busy table, add it.) Now <b>check it is used</b>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "EXPLAIN (ANALYZE, BUFFERS)\nSELECT order_id, created_at FROM orders\n WHERE status = 'pending'\n ORDER BY created_at\n LIMIT 20;",
+    "caption": "The query matches the predicate"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Limit  (cost=0.29..1.21 rows=20 width=16) (actual time=0.021..0.097 rows=20 loops=1)\n   Buffers: shared read=22\n   ->  Index Scan using orders_pending_created_idx on orders  (cost=0.29..447.78 rows=9633 width=16) (actual time=0.020..0.094 rows=20 loops=1)\n         Buffers: shared read=22\n Planning:\n   Buffers: shared hit=24 read=1\n Planning Time: 0.171 ms\n Execution Time: 0.108 ms",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There is no Index Cond and no Filter line: every entry in the index already satisfies <code class=\"inline-code\">status = 'pending'</code>, so PostgreSQL just reads the first 20 entries in created_at order. A query for <code class=\"inline-code\">status = 'cancelled'</code> cannot use this index and falls back to a sequential scan."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The planner decides at <b>planning time</b> whether the query's WHERE clause implies the index predicate. A prepared statement with a parameter, <code class=\"inline-code\">WHERE status = $1</code>, cannot be proved to match, so its <b>generic plan</b> ignores the partial index:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "PREPARE p(text) AS\n  SELECT order_id FROM orders WHERE status = $1 ORDER BY created_at LIMIT 20;\nSET plan_cache_mode = force_generic_plan;\nEXPLAIN EXECUTE p('pending');\nRESET plan_cache_mode;",
+    "caption": "Partial indexes and parameters"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Limit  (cost=28949.14..28951.48 rows=20 width=16)\n   ->  Gather Merge  (cost=28949.14..61358.84 rows=277778 width=16)\n         Workers Planned: 2\n         ->  Sort  (cost=27949.12..28296.34 rows=138889 width=16)\n               Sort Key: created_at\n               ->  Parallel Seq Scan on orders  (cost=0.00..24253.33 rows=138889 width=16)\n                     Filter: (status = $1)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "So write the constant in the SQL for this screen (<code class=\"inline-code\">WHERE status = 'pending'</code>) instead of a bind parameter. The documentation also warns that many partial indexes, one per category, are not a substitute for a multicolumn index or for partitioning (Part 31)."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 8: Index a calculated value with an expression index",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Customers type their email in any case, so the login query is <code class=\"inline-code\">WHERE lower(email) = 'customer4242@example.com'</code>. A plain index on email is useless for this, because the index stores <code class=\"inline-code\">email</code>, not <code class=\"inline-code\">lower(email)</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_email_idx ON orders (email);\nEXPLAIN SELECT order_id FROM orders\n WHERE lower(email) = 'customer4242@example.com';\nDROP INDEX orders_email_idx;",
+    "caption": "A plain index does not help a function in WHERE"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Gather  (cost=1000.00..26795.00 rows=5000 width=8)\n   Workers Planned: 2\n   ->  Parallel Seq Scan on orders  (cost=0.00..25295.00 rows=2083 width=8)\n         Filter: (lower(email) = 'customer4242@example.com'::text)",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An <b>expression index</b> stores the result of the expression for each row. <b>Where to run it:</b> psql on the primary. Run ANALYZE afterwards: PostgreSQL then also collects statistics on the indexed expression, which fixes the row estimate."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_lower_email_idx ON orders (lower(email));\nANALYZE orders;\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT order_id FROM orders\n WHERE lower(email) = 'customer4242@example.com';",
+    "caption": "Expression index on lower(email)"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE INDEX\nANALYZE\n Bitmap Heap Scan on orders  (cost=4.58..82.94 rows=20 width=8) (actual time=0.045..0.082 rows=20 loops=1)\n   Recheck Cond: (lower(email) = 'customer4242@example.com'::text)\n   Heap Blocks: exact=20\n   Buffers: shared hit=20 read=3\n   ->  Bitmap Index Scan on orders_lower_email_idx  (cost=0.00..4.58 rows=20 width=0) (actual time=0.033..0.033 rows=20 loops=1)\n         Index Cond: (lower(email) = 'customer4242@example.com'::text)\n         Buffers: shared read=3\n Planning:\n   Buffers: shared hit=23 read=1\n Planning Time: 0.355 ms\n Execution Time: 0.115 ms",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The estimate changed from 5,000 rows (a default guess for a function result) to 20, which is exactly right, and the index is used. The query must use the <b>same expression</b>: <code class=\"inline-code\">WHERE upper(email) = 'CUSTOMER4242@EXAMPLE.COM'</code> still gives a Parallel Seq Scan on this table. Expression indexes cost more on every INSERT and on updates of the column, because the expression is computed for each new row version."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "GIN, GiST and BRIN: the specialist indexes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 9: GIN for jsonb containment queries",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A B-tree on a jsonb column can only compare whole documents. To answer \"which orders contain <code class=\"inline-code\">\"coupon\": \"NEWYEAR25\"</code>\" you need <b>GIN</b> (Generalized Inverted Index), which stores one entry per key and value inside each document, like a book index that lists every word. First mark 50 orders with a new coupon so the search is selective:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "UPDATE orders\n   SET attrs = attrs || '{\"coupon\": \"NEWYEAR25\"}'\n WHERE order_id % 20000 = 0;\nVACUUM ANALYZE orders;",
+    "caption": "Give 50 orders a rare coupon"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "UPDATE 50\nVACUUM",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "jsonb has two GIN <b>operator classes</b> (an operator class tells the index how to store values and which operators it supports). The default <code class=\"inline-code\">jsonb_ops</code> supports <code class=\"inline-code\">@&gt;</code>, <code class=\"inline-code\">?</code>, <code class=\"inline-code\">?|</code>, <code class=\"inline-code\">?&amp;</code>, <code class=\"inline-code\">@?</code> and <code class=\"inline-code\">@@</code>. <code class=\"inline-code\">jsonb_path_ops</code> supports only <code class=\"inline-code\">@&gt;</code>, <code class=\"inline-code\">@?</code> and <code class=\"inline-code\">@@</code>, and is smaller and faster for them. <b>Where to run it:</b> psql on the primary."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_attrs_gin_idx  ON orders USING gin (attrs);\nCREATE INDEX orders_attrs_path_idx ON orders USING gin (attrs jsonb_path_ops);\n\nSELECT indexrelname, pg_size_pretty(pg_relation_size(indexrelid)) AS size\n  FROM pg_stat_user_indexes\n WHERE indexrelname LIKE 'orders_attrs%';",
+    "caption": "Two GIN operator classes for jsonb"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "     indexrelname      |  size   \n-----------------------+---------\n orders_attrs_gin_idx  | 4336 kB\n orders_attrs_path_idx | 2208 kB",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Our queries only use containment (<code class=\"inline-code\">@&gt;</code>), so keep the smaller <code class=\"inline-code\">jsonb_path_ops</code> index and drop the other. Then check the plan:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DROP INDEX orders_attrs_gin_idx;\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT order_id, amount FROM orders\n WHERE attrs @> '{\"coupon\": \"NEWYEAR25\"}';",
+    "caption": "GIN index in use"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Bitmap Heap Scan on orders  (cost=231.27..235.28 rows=1 width=13) (actual time=0.024..0.041 rows=50 loops=1)\n   Recheck Cond: (attrs @> '{\"coupon\": \"NEWYEAR25\"}'::jsonb)\n   Heap Blocks: exact=3\n   Buffers: shared hit=5\n   ->  Bitmap Index Scan on orders_attrs_path_idx  (cost=0.00..231.27 rows=1 width=0) (actual time=0.014..0.014 rows=50 loops=1)\n         Index Cond: (attrs @> '{\"coupon\": \"NEWYEAR25\"}'::jsonb)\n         Buffers: shared hit=2\n Planning:\n   Buffers: shared hit=43\n Planning Time: 0.233 ms\n Execution Time: 0.099 ms",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Five buffers and 0.1 ms; with index scans disabled in a test session the same query needed a Parallel Seq Scan of about 19,000 buffers and 74.5 ms. GIN never gives index-only scans, because each entry holds only part of a value. The same index type serves arrays (<code class=\"inline-code\">tags @&gt; ARRAY['gift']</code>) and full-text search; the jsonb operators are covered in our <a href=\"/posts/postgresql/postgresql-jsonb-query/\">PostgreSQL JSONB query guide</a>."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Inserting into GIN is slow because one row adds many keys, so for a large bulk load the documentation advises dropping the GIN index and recreating it afterwards with a generous <code class=\"inline-code\">maintenance_work_mem</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 10: GiST for ranges and an exclusion constraint",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>GiST</b> (Generalized Search Tree) is a framework for data that is not simply \"smaller or larger\", such as time ranges, geometric shapes and nearest-neighbour searches. Its most useful DBA trick is the <b>exclusion constraint</b>: a rule like \"no two bookings for the same room may overlap\", which a UNIQUE constraint cannot express. Try it without preparation first:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE room_bookings (\n  booking_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  room_id    integer   NOT NULL,\n  during     tstzrange NOT NULL,\n  EXCLUDE USING gist (room_id WITH =, during WITH &&)\n);",
+    "caption": "Exclusion constraint: same room, overlapping time"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  data type integer has no default operator class for access method \"gist\"\nHINT:  You must specify an operator class for the index or define a default operator class for the data type.",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "GiST has no built-in operator class for plain <code class=\"inline-code\">=</code> on integers. The <b>btree_gist</b> extension adds them; it ships with PostgreSQL in the contrib modules, which the postgresql-18 package already installs. <b>Where to run it:</b> psql in the shop database, as postgres (extensions are covered in Part 45)."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE EXTENSION btree_gist;\n-- now run the CREATE TABLE room_bookings statement above again\n\nINSERT INTO room_bookings (room_id, during) VALUES\n  (101, '[2026-12-01 10:00+05:30, 2026-12-01 11:00+05:30)'),\n  (101, '[2026-12-01 11:00+05:30, 2026-12-01 12:00+05:30)');\n\nINSERT INTO room_bookings (room_id, during) VALUES\n  (101, '[2026-12-01 10:30+05:30, 2026-12-01 11:30+05:30)');",
+    "caption": "Install btree_gist, then test the constraint"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "CREATE EXTENSION\nCREATE TABLE\nINSERT 0 2\nERROR:  conflicting key value violates exclusion constraint \"room_bookings_room_id_during_excl\"\nDETAIL:  Key (room_id, during)=(101, [\"2026-12-01 05:00:00+00\",\"2026-12-01 06:00:00+00\")) conflicts with existing key (room_id, during)=(101, [\"2026-12-01 04:30:00+00\",\"2026-12-01 05:30:00+00\")).",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The two back-to-back bookings are accepted, because <code class=\"inline-code\">[10:00, 11:00)</code> excludes its end point. The 10:30 to 11:30 booking overlaps both and is rejected by the database itself, whatever the application does. (The server runs in UTC, so times are shown converted from +05:30.) <b>Check it worked:</b> <code class=\"inline-code\">\\d room_bookings</code> lists the constraint as <code class=\"inline-code\">EXCLUDE USING gist (room_id WITH =, during WITH &amp;&amp;)</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 11: BRIN for a huge, time-ordered column",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>BRIN</b> (Block Range INdex) does not store one entry per row. It stores a summary, by default the minimum and maximum value, for each <b>block range</b> of 128 table pages. A query for one day skips every range whose min to max does not include that day. That works only when the column is <b>correlated</b> with the physical order of rows, which is true for created_at here and for most append-only log, event and audit tables. Check the correlation from the planner statistics first:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT attname, correlation\n  FROM pg_stats\n WHERE tablename = 'orders' AND attname IN ('created_at', 'customer_id');",
+    "caption": "Correlation between column order and physical order"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "   attname   | correlation \n-------------+-------------\n customer_id | 0.046290465\n created_at  |           1",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A correlation of 1 means perfectly ordered; near 0 means random, so BRIN suits created_at and not customer_id. <b>Where to run it:</b> psql on the primary. Build both a B-tree and a BRIN on created_at to compare:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_created_btree_idx ON orders (created_at);\nCREATE INDEX orders_created_brin_idx  ON orders USING brin (created_at);\n\nSELECT indexrelname, pg_size_pretty(pg_relation_size(indexrelid)) AS size\n  FROM pg_stat_user_indexes\n WHERE indexrelname LIKE 'orders_created%';",
+    "caption": "B-tree vs BRIN on the same column"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "       indexrelname       | size  \n--------------------------+-------\n orders_created_brin_idx  | 24 kB\n orders_created_btree_idx | 21 MB",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "24 kB against 21 MB, about 900 times smaller. With both indexes present the planner picks the B-tree for the one-day query (0.39 ms, 12 buffers). Drop the B-tree and run the query again to see the BRIN plan:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "DROP INDEX orders_created_btree_idx;\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT count(*) FROM orders\n WHERE created_at >= '2025-06-01' AND created_at < '2025-06-02';",
+    "caption": "One day of orders through BRIN"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " Aggregate  (cost=13575.46..13575.47 rows=1 width=8) (actual time=1.362..1.363 rows=1 loops=1)\n   Buffers: shared hit=261\n   ->  Bitmap Heap Scan on orders  (cost=12.81..13567.71 rows=3099 width=0) (actual time=0.423..1.246 rows=2880 loops=1)\n         Recheck Cond: ((created_at >= '2025-06-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2025-06-02 00:00:00+00'::timestamp with time zone))\n         Rows Removed by Index Recheck: 10560\n         Heap Blocks: lossy=256\n         Buffers: shared hit=261\n         ->  Bitmap Index Scan on orders_created_brin_idx  (cost=0.00..12.03 rows=6711 width=0) (actual time=0.028..0.028 rows=2560 loops=1)\n               Index Cond: ((created_at >= '2025-06-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2025-06-02 00:00:00+00'::timestamp with time zone))\n               Buffers: shared hit=5\n Planning:\n   Buffers: shared hit=8\n Planning Time: 0.084 ms\n Execution Time: 1.382 ms",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "BRIN is <b>lossy</b>: it returns whole block ranges (\"Heap Blocks: lossy=256\", two ranges of 128 pages) and PostgreSQL rechecks every row in them, so 10,560 rows were removed by the recheck. Still, it read 261 pages instead of about 19,000. A B-tree is faster for small lookups; BRIN is far cheaper to store and maintain on very large tables."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "New pages at the end of the table are not summarized immediately. VACUUM and autovacuum summarize them, or call <code class=\"inline-code\">SELECT brin_summarize_new_values('orders_created_brin_idx');</code> (it returns the number of ranges summarized, 0 on our freshly vacuumed table). The <code class=\"inline-code\">autosummarize</code> (default off) and <code class=\"inline-code\">pages_per_range</code> (default 128) storage parameters tune this."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Keep the index set lean",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Step 12: Find unused indexes and drop them safely",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Every index you built above costs writes. A DBA reviews index usage regularly with <code class=\"inline-code\">pg_stat_user_indexes</code> (Part 24): <code class=\"inline-code\">idx_scan</code> counts how many times the index was used, and <code class=\"inline-code\">last_idx_scan</code> (available since PostgreSQL 16) shows when. The query below skips indexes that back a constraint (primary key, unique, exclusion), because you cannot drop those without dropping the rule they enforce. <b>Where to run it:</b> psql on the primary, in each database you manage."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT s.relname      AS table_name,\n       s.indexrelname AS index_name,\n       s.idx_scan,\n       s.last_idx_scan,\n       pg_size_pretty(pg_relation_size(s.indexrelid)) AS index_size\n  FROM pg_stat_user_indexes s\n WHERE NOT EXISTS (SELECT 1 FROM pg_constraint c\n                    WHERE c.conindid = s.indexrelid)\n ORDER BY s.idx_scan, pg_relation_size(s.indexrelid) DESC;",
+    "caption": "Index usage, least used first"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " table_name |            index_name            | idx_scan |         last_idx_scan         | index_size \n------------+----------------------------------+----------+-------------------------------+------------\n orders     | orders_lower_email_idx           |        1 | 2026-11-27 12:48:35.24475+00  | 8984 kB\n orders     | orders_pending_created_idx       |        1 | 2026-11-27 12:48:27.748425+00 | 240 kB\n orders     | orders_created_brin_idx          |        1 | 2026-11-27 12:48:12.032428+00 | 24 kB\n orders     | orders_customer_created_incl_idx |        2 | 2026-11-27 12:48:21.351282+00 | 39 MB\n orders     | orders_attrs_path_idx            |        2 | 2026-11-27 12:48:59.132711+00 | 2216 kB",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An index with <code class=\"inline-code\">idx_scan = 0</code> after weeks of normal traffic (including month-end jobs) is a candidate for removal. First check that the counters were not reset recently (<code class=\"inline-code\">stats_reset</code> in <code class=\"inline-code\">pg_stat_database</code>), that the index is not used on a <b>standby</b> (each server keeps its own counters), and save its definition:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_get_indexdef('orders_lower_email_idx'::regclass);",
+    "caption": "Save the definition before dropping"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "                                 pg_get_indexdef                                 \n---------------------------------------------------------------------------------\n CREATE INDEX orders_lower_email_idx ON public.orders USING btree (lower(email))",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "warning",
+    "title": "Before you drop an index",
+    "text": "Dropping an index can make the queries that used it slow immediately. Drop with <code class=\"inline-code\">DROP INDEX CONCURRENTLY index_name;</code> so you do not block the table, do it in a quiet period, and watch pg_stat_statements (Part 25) afterwards. <b>Undo:</b> run the saved CREATE INDEX statement with CONCURRENTLY added."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Indexes also bloat over time, like tables. Measuring and rebuilding a bloated index is covered in <a href=\"/posts/postgresql/postgresql-dba-part-13-table-index-bloat/\">Part 13: Table and Index Bloat</a>, and REINDEX CONCURRENTLY in Part 46."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes and how to fix them",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "BEGIN;\nCREATE INDEX CONCURRENTLY orders_status_idx ON orders (status);",
+    "caption": "Concurrent build inside BEGIN"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "BEGIN\nERROR:  CREATE INDEX CONCURRENTLY cannot run inside a transaction block",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> run <code class=\"inline-code\">ROLLBACK;</code>, then run the statement on its own. Migration tools that wrap every file in a transaction need their \"no transaction\" option for this file. The same rule applies to DROP INDEX CONCURRENTLY."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "An INVALID index left behind by a failed concurrent build",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If a concurrent build fails, for example a unique index meets duplicate values, PostgreSQL leaves the half-built index in place and marks it INVALID. Queries ignore it, but every write still maintains it."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE UNIQUE INDEX CONCURRENTLY orders_customer_uq ON orders (customer_id);\n\nSELECT indexrelid::regclass AS index_name, indisvalid\n  FROM pg_index WHERE NOT indisvalid;",
+    "caption": "Failed unique build"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  could not create unique index \"orders_customer_uq\"\nDETAIL:  Key (customer_id)=(18770) is duplicated.\n     index_name     | indisvalid \n--------------------+------------\n orders_customer_uq | f",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">\\d orders</code> also shows it as <code class=\"inline-code\">\"orders_customer_uq\" UNIQUE, btree (customer_id) INVALID</code>. <b>Fix:</b> as the documentation recommends, drop it (<code class=\"inline-code\">DROP INDEX CONCURRENTLY orders_customer_uq;</code>), fix the cause, and build it again; or rebuild it with <code class=\"inline-code\">REINDEX INDEX CONCURRENTLY</code> when the cause was temporary. Add the <code class=\"inline-code\">WHERE NOT indisvalid</code> query to your weekly checks."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: data type integer has no default operator class for access method \"gist\"",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You get this when a GiST index or exclusion constraint includes a plain scalar column (integer, text, date) compared with <code class=\"inline-code\">=</code>. <b>Fix:</b> <code class=\"inline-code\">CREATE EXTENSION btree_gist;</code> in that database, as in Step 10. The same error with \"gin\" for a scalar column means you need the btree_gin extension, or a B-tree instead."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "ERROR: syntax error at or near \"||\" in CREATE INDEX",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE INDEX orders_bad_idx ON orders (email || '#');",
+    "caption": "Expression without its own parentheses"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  syntax error at or near \"||\"\nLINE 1: CREATE INDEX orders_bad_idx ON orders (email || '#');\n                                                     ^",
+    "caption": "Output (expected output)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<b>Fix:</b> an index expression needs its own pair of parentheses unless it is a single function call like <code class=\"inline-code\">lower(email)</code>: write <code class=\"inline-code\">CREATE INDEX ... ON orders ((email || '#'));</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "The index exists but the planner does not use it",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Check these causes in order. The query uses a different expression or operator than the index (<code class=\"inline-code\">upper(email)</code> against <code class=\"inline-code\">lower(email)</code>, <code class=\"inline-code\">LIKE '%abc'</code> with a leading wildcard, <code class=\"inline-code\">?</code> against <code class=\"inline-code\">jsonb_path_ops</code>). Statistics are stale: run <code class=\"inline-code\">ANALYZE orders;</code>. Or the query matches rows on most pages: for the common coupon DIWALI10 (20,000 rows on all 19,045 pages) the GIN bitmap scan took 103 ms against 78 ms for a sequential scan."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To test whether an index <b>can</b> be used, run <code class=\"inline-code\">SET enable_seqscan = off;</code> in your session only, then EXPLAIN, then <code class=\"inline-code\">RESET enable_seqscan;</code>. If the index is still not used, the query does not match it. Never set this in postgresql.conf."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Practice exercise",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "ordered",
+    "items": [
+     {
+      "content": "Write the best index for: <code class=\"inline-code\">SELECT order_id, amount FROM orders WHERE status = 'cancelled' AND customer_id = 777 ORDER BY created_at DESC LIMIT 10;</code> Build it, show the plan, and explain why your column order is right.",
+      "items": []
+     },
+     {
+      "content": "Use the Step 12 query on a database at work or on shop. List every index with idx_scan = 0 and write the pg_get_indexdef output for each, so you could recreate it.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "Answer",
+    "text": "Exercise 1: both conditions are equality, so they go first and the ORDER BY column last: <code class=\"inline-code\">CREATE INDEX CONCURRENTLY orders_cust_status_created_idx ON orders (customer_id, status, created_at);</code> The plan shows <code class=\"inline-code\">Index Scan Backward using orders_cust_status_created_idx</code> with <code class=\"inline-code\">Index Cond: ((customer_id = 777) AND (status = 'cancelled'::text))</code> and no Sort node. Since cancelled orders are 2% of rows, a partial index <code class=\"inline-code\">ON orders (customer_id, created_at) WHERE status = 'cancelled'</code> is a smaller alternative. Exercise 2: check stats_reset and your standbys before dropping anything."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Quick reference",
+    "level": 2
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "bash",
+    "code": "# Connect to the database as postgres\nsudo -u postgres psql -d shop\n\n# List indexes with type and size (inside psql)\n\\di+\n\n# B-tree without blocking writes, then check it is valid\nCREATE INDEX CONCURRENTLY orders_customer_id_idx ON orders (customer_id);\nSELECT indexrelid::regclass, indisvalid FROM pg_index WHERE indrelid = 'orders'::regclass;\n\n# Multicolumn: equality column first, then the sort or range column\nCREATE INDEX CONCURRENTLY orders_customer_created_idx ON orders (customer_id, created_at);\n\n# Covering index for index-only scans\nCREATE INDEX CONCURRENTLY orders_customer_created_incl_idx ON orders (customer_id, created_at) INCLUDE (amount);\n\n# Partial index for a small, hot subset\nCREATE INDEX CONCURRENTLY orders_pending_created_idx ON orders (created_at) WHERE status = 'pending';\n\n# Expression index, then refresh statistics\nCREATE INDEX CONCURRENTLY orders_lower_email_idx ON orders (lower(email));\nANALYZE orders;\n\n# GIN for jsonb containment (@>, @?, @@ only)\nCREATE INDEX CONCURRENTLY orders_attrs_path_idx ON orders USING gin (attrs jsonb_path_ops);\n\n# GiST exclusion constraint (needs btree_gist for the = column)\nCREATE EXTENSION btree_gist;\nALTER TABLE room_bookings ADD EXCLUDE USING gist (room_id WITH =, during WITH &&);\n\n# BRIN for a huge, time-ordered column\nCREATE INDEX CONCURRENTLY orders_created_brin_idx ON orders USING brin (created_at);\nSELECT brin_summarize_new_values('orders_created_brin_idx');\n\n# Find unused indexes and invalid indexes\nSELECT relname, indexrelname, idx_scan, last_idx_scan FROM pg_stat_user_indexes ORDER BY idx_scan;\nSELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;\n\n# Save the definition, then drop without blocking\nSELECT pg_get_indexdef('orders_lower_email_idx'::regclass);\nDROP INDEX CONCURRENTLY orders_lower_email_idx;",
+    "caption": "Every command from this part, in order (SQL lines run inside psql)"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary and what's next",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "Start from the slowest real queries (Part 25) and their plans (Part 26), not from the table",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "B-tree by default; in a multicolumn index, equality columns first, then the range or sort column",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "INCLUDE columns give index-only scans, at the cost of a bigger index without deduplication",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Partial indexes are tiny for skewed data, but the query must match the predicate with a constant",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Expression indexes need the exact same expression in the query, plus ANALYZE",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "GIN for jsonb, arrays and text; GiST for ranges and exclusion constraints; BRIN for huge time-ordered tables",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Build and drop with CONCURRENTLY in production, check indisvalid, and review idx_scan regularly",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "In Part 28 we tune memory: shared_buffers, work_mem, maintenance_work_mem and effective_cache_size."
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "A 24 kB index answered a one-day query on a 1 million row table. The B-tree for the same column was 21 MB.\n\nThat index was BRIN, and picking the right index type is Part 27 of my PostgreSQL DBA series. What I tested on a 1 million row orders table:\n\n→ B-tree is the default. In a multicolumn index put the = column first and the ORDER BY column last: (customer_id, created_at) removed the Sort and read 8 buffers.\n→ A partial index WHERE status = 'pending' was 240 kB, against 30 MB for the full index. But a prepared WHERE status = $1 cannot use it in a generic plan.\n→ An index on lower(email) only helps queries that use lower(email). upper(email) still does a seq scan.\n→ GIN with jsonb_path_ops was half the size of the default jsonb_ops and serves @> searches.\n→ BRIN works only when the column follows the physical row order. Check correlation in pg_stats first.\n\nAnd build in production with CREATE INDEX CONCURRENTLY, then check pg_index.indisvalid: a failed build leaves an INVALID index that still slows every write.\n\nFollow the series, Part 28 is memory tuning.\n\nWhich index type have you never used in production?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #DBA #SQL #Database",
+  "slides": [
+   {
+    "title": "PostgreSQL index types for DBAs",
+    "body": "DBA series Part 27: B-tree, GIN, GiST, BRIN and when to use each"
+   },
+   {
+    "title": "Pick the type by the operator",
+    "points": [
+     "B-tree: =, <, >, BETWEEN, ORDER BY",
+     "GIN: jsonb @>, arrays, full-text search",
+     "GiST: ranges, geometry, exclusion rules",
+     "BRIN: huge tables in time order"
+    ]
+   },
+   {
+    "title": "Multicolumn: = first, sort last",
+    "body": "With (customer_id, created_at) the latest-orders query read the index backwards and stopped after 5 rows. No Sort node. A filter on created_at alone scanned the whole index.",
+    "code": "CREATE INDEX CONCURRENTLY\n  orders_customer_created_idx\n  ON orders (customer_id, created_at);",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Partial index for hot rows",
+    "points": [
+     "Only 1% of orders are pending",
+     "Partial index: 240 kB, full index: 30 MB",
+     "The query must use the constant, not $1"
+    ],
+    "code": "CREATE INDEX orders_pending_idx\n  ON orders (created_at)\n  WHERE status = 'pending';",
+    "lang": "postgresql"
+   },
+   {
+    "title": "GIN for jsonb",
+    "body": "jsonb_path_ops supports @>, @? and @@ and was half the size of the default jsonb_ops. A search for a rare coupon read 5 buffers instead of about 19,000.",
+    "code": "CREATE INDEX orders_attrs_idx\n  ON orders USING gin\n  (attrs jsonb_path_ops);",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Build and drop safely",
+    "points": [
+     "Use CREATE INDEX CONCURRENTLY on live tables",
+     "It cannot run inside BEGIN ... COMMIT",
+     "A failed build leaves an INVALID index: drop it",
+     "Drop indexes with idx_scan = 0 after checking standbys"
+    ]
+   }
+  ]
+ }
+}
