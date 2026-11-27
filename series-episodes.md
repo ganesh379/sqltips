@@ -107,7 +107,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain client/server pooling modes, transaction pooling caveats, prepared statements and session state.
   - Format: Animated pool · Level: Intermediate
   - Hook: How connection pooling protects PostgreSQL.
-- [ ] Ep 025 | 2026-11-28 | Tablespaces: When and Why
+- [x] Ep 025 | 2026-11-28 | Tablespaces: When and Why (posted 2026-11-28 13:00, Buffer 6b091683062ed764a8e87141)
   - Objective: Explain tablespace mapping, storage placement, permissions and operational risks; avoid treating tablespaces as automatic performance tuning.
   - Format: Storage map · Level: Intermediate
   - Hook: Should you move PostgreSQL tables to another disk?
