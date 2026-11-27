@@ -1,0 +1,13 @@
+Should you move PostgreSQL tables to another disk? Tablespaces explained for DBAs.
+
+A PostgreSQL tablespace is a named directory where the cluster stores data files. Every cluster has pg_default and pg_global. The docs give two uses: more space when the main volume is full, and placing a busy index on a fast disk or archive data on a slower one.
+
+In our PostgreSQL 16 lab, CREATE TABLESPACE needed a superuser and an existing directory owned by the postgres user, otherwise: ERROR: directory does not exist. ALTER TABLE ... SET TABLESPACE moved the table file under pg_tblspc, but the index stayed behind until ALTER INDEX moved it, and the move held an AccessExclusiveLock. Without CREATE on the tablespace, app_user got: permission denied for tablespace fastspace.
+
+The DBA warning: a tablespace is part of the cluster. You cannot back it up alone or attach it to another cluster, and losing it can stop the cluster from starting. In plain format, pg_basebackup writes tablespaces to the same paths unless you use --tablespace-mapping. A tablespace is a location, not automatic performance tuning.
+
+Episode 25 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql

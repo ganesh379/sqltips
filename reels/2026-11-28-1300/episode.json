@@ -1,0 +1,757 @@
+{
+ "ep": 25,
+ "total": 140,
+ "title": "Tablespaces: When and Why",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "Should you move PostgreSQL tables to another disk?",
+   "cap": "Should you move tables to *another disk?*"
+  },
+  {
+   "say": "This is episode twenty five of the PostgreSQL DBA series. Today: tablespaces, and their risks.",
+   "cap": "Episode 25: *tablespaces,* when and why.",
+   "cue": "tablespaces"
+  },
+  {
+   "say": "A tablespace is a named directory where PostgreSQL stores data files for tables, indexes or databases.",
+   "cap": "A *tablespace* = a named *directory* for data files.",
+   "cue": "directory"
+  },
+  {
+   "say": "Every cluster has two built in: pg_default for normal data, and pg_global for shared catalogs.",
+   "cap": "Built in: *pg_default* and *pg_global.*",
+   "cue": "pg_default"
+  },
+  {
+   "say": "The docs give two reasons to add one. First, the main volume runs out of space and cannot be extended.",
+   "cap": "Reason 1: the volume is *full.*",
+   "cue": "space"
+  },
+  {
+   "say": "Second: a busy index on a fast disk, and rarely used archive data on a cheaper one.",
+   "cap": "Reason 2: *busy index* fast, *archive* slow.",
+   "cue": "busy"
+  },
+  {
+   "say": "Let's build one. The directory must exist, should be empty, and must be owned by the PostgreSQL system user.",
+   "cap": "Directory: *exists,* *empty,* owned by *postgres.*",
+   "cue": "owned"
+  },
+  {
+   "say": "Then a superuser runs CREATE TABLESPACE fastspace with that location.",
+   "cap": "*Superuser:* CREATE TABLESPACE ... LOCATION",
+   "cue": "CREATE"
+  },
+  {
+   "say": "PostgreSQL will not create the directory for you. The error says: directory does not exist.",
+   "cap": "Missing directory: *does not exist.*",
+   "cue": "error"
+  },
+  {
+   "say": "psql's backslash d b command now lists the new tablespace.",
+   "cap": "*\\db* lists *fastspace.*",
+   "cue": "lists"
+  },
+  {
+   "say": "And in the data directory, pg_tblspc holds a symbolic link to it. Output trimmed.",
+   "cap": "*pg_tblspc* holds a *symlink.*",
+   "cue": "symbolic"
+  },
+  {
+   "say": "Now move a table. ALTER TABLE orders SET TABLESPACE fastspace.",
+   "cap": "*ALTER TABLE* ... *SET TABLESPACE*",
+   "cue": "ALTER"
+  },
+  {
+   "say": "pg_relation_filepath went from base to pg_tblspc. The data file moved.",
+   "cap": "File path: *base* to *pg_tblspc.*",
+   "cue": "moved"
+  },
+  {
+   "say": "Watch out: indexes are not moved. orders_pkey stayed in base until ALTER INDEX moved it.",
+   "cap": "*Indexes are not moved* with the table.",
+   "cue": "INDEX"
+  },
+  {
+   "say": "The move holds an access exclusive lock, as pg_locks shows. Even reads wait until it commits.",
+   "cap": "Moving takes an *ACCESS EXCLUSIVE* lock.",
+   "cue": "pg_locks"
+  },
+  {
+   "say": "Users need the CREATE privilege on it. Without it, app_user got: permission denied for tablespace fastspace.",
+   "cap": "No CREATE privilege: *permission denied.*",
+   "cue": "permission"
+  },
+  {
+   "say": "After GRANT CREATE ON TABLESPACE, the same CREATE TABLE worked.",
+   "cap": "*GRANT CREATE ON TABLESPACE* fixes it.",
+   "cue": "worked"
+  },
+  {
+   "say": "default_tablespace places new tables and indexes that have no TABLESPACE clause.",
+   "cap": "*default_tablespace:* where new objects go.",
+   "cue": "TABLESPACE"
+  },
+  {
+   "say": "temp_tablespaces does the same for temp tables and the temporary files of big sorts.",
+   "cap": "*temp_tablespaces:* temp tables and *sort files.*",
+   "cue": "sorts"
+  },
+  {
+   "say": "Big warning: a tablespace is part of the cluster. You cannot attach it elsewhere or back it up alone.",
+   "cap": "Part of the cluster. *Never standalone.*",
+   "cue": "warning"
+  },
+  {
+   "say": "Lose that disk, and the cluster might not start. Never use a ram disk or removable storage.",
+   "cap": "Lose it: cluster *may not start.*",
+   "cue": "ram"
+  },
+  {
+   "say": "In plain format, pg_basebackup writes each tablespace to the same path, unless you use tablespace mapping.",
+   "cap": "*pg_basebackup:* same paths, or *tablespace mapping.*",
+   "cue": "mapping"
+  },
+  {
+   "say": "Myth: tablespaces are automatic tuning. They are only locations, and two on one file system usually gain little.",
+   "cap": "Myth: tablespace = *speed.* It is a *location.*",
+   "cue": "location"
+  },
+  {
+   "say": "Recap: a location, not a tuning knob. Reliable storage, grant CREATE, move indexes too, and plan for the lock.",
+   "cap": "Recap: *location,* not a *tuning knob.*",
+   "cue": "grant"
+  },
+  {
+   "say": "Next up: PostgreSQL extensions, how to install and manage them. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *extensions.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "Should you move PostgreSQL tables to *another disk?*",
+   "sub": "Episode 25 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 25 \u00b7 INSTALLATION & ADMINISTRATION",
+   "title": "Tablespaces: When and Why",
+   "sub": "Locations, permissions and risks"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 4,
+   "heading": "One cluster, several locations",
+   "nodes": [
+    {
+     "id": "cl",
+     "label": "PostgreSQL cluster",
+     "sub": "data directory",
+     "x": 540,
+     "y": 540,
+     "w": 380,
+     "h": 150,
+     "icon": "database",
+     "color": "blue",
+     "shape": "db",
+     "at": 2
+    },
+    {
+     "id": "ts",
+     "label": "fastspace",
+     "sub": "/srv/ssd1/pgtbs",
+     "x": 540,
+     "y": 1200,
+     "w": 360,
+     "h": 140,
+     "icon": "disk",
+     "color": "orange",
+     "at": 2
+    },
+    {
+     "id": "pd",
+     "label": "pg_default",
+     "sub": "normal data",
+     "x": 230,
+     "y": 870,
+     "w": 300,
+     "h": 130,
+     "icon": "folder",
+     "color": "green",
+     "at": 3
+    },
+    {
+     "id": "pgl",
+     "label": "pg_global",
+     "sub": "shared catalogs",
+     "x": 850,
+     "y": 870,
+     "w": 300,
+     "h": 130,
+     "icon": "book",
+     "color": "purple",
+     "at": 3
+    }
+   ],
+   "edges": [
+    {
+     "from": "cl",
+     "to": "ts",
+     "label": "data files",
+     "at": 2,
+     "flow": true,
+     "color": "orange"
+    },
+    {
+     "from": "cl",
+     "to": "pd",
+     "at": 3,
+     "color": "green"
+    },
+    {
+     "from": "cl",
+     "to": "pgl",
+     "at": 3,
+     "color": "purple"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "ts"
+    },
+    {
+     "at": 3,
+     "id": "pd"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 4,
+   "to": 6,
+   "heading": "When the docs suggest one",
+   "columns": 1,
+   "items": [
+    {
+     "at": 4,
+     "icon": "disk",
+     "title": "Volume is full",
+     "text": "main volume out of space and cannot be extended",
+     "color": "red"
+    },
+    {
+     "at": 5,
+     "icon": "bolt",
+     "title": "Busy index, fast disk",
+     "text": "heavily used index on a very fast, highly available disk",
+     "color": "orange"
+    },
+    {
+     "at": 5,
+     "icon": "folder",
+     "title": "Archive, slow disk",
+     "text": "rarely used archive data on a cheaper, slower disk",
+     "color": "blue"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 6,
+   "to": 8,
+   "heading": "Create a tablespace",
+   "title": "PostgreSQL 16 lab",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "sudo mkdir -p /srv/ssd1/pgtbs",
+     "at": 6
+    },
+    {
+     "kind": "cmd",
+     "text": "sudo chown postgres:postgres \\",
+     "at": 6
+    },
+    {
+     "kind": "cmd",
+     "text": "  /srv/ssd1/pgtbs",
+     "at": 6,
+     "prompt": "> "
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE TABLESPACE fastspace",
+     "at": 7,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  LOCATION '/srv/ssd1/pgtbs';",
+     "at": 7,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "out",
+     "text": "CREATE TABLESPACE",
+     "at": 7
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 8,
+   "to": 9,
+   "heading": "A real error",
+   "title": "psql: PostgreSQL 16",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- directory not created first",
+     "at": 8
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE TABLESPACE badspace",
+     "at": 8,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  LOCATION '/srv/missing/dir';",
+     "at": 8,
+     "prompt": "postgres-# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  directory \"/srv/missing/dir\"",
+     "at": 8
+    },
+    {
+     "kind": "out",
+     "text": "        does not exist",
+     "at": 8
+    },
+    {
+     "kind": "comment",
+     "text": "-- create it first, then retry",
+     "at": 8
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 9,
+   "to": 11,
+   "heading": "Where it lives",
+   "title": "psql and shell",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "\\db",
+     "at": 9,
+     "prompt": "postgres=# "
+    },
+    {
+     "kind": "out",
+     "text": "    Name    |  Owner   |    Location",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": " fastspace  | postgres | /srv/ssd1/pgtbs",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": " pg_default | postgres |",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": " pg_global  | postgres |",
+     "at": 9
+    },
+    {
+     "kind": "comment",
+     "text": "-- in the data directory",
+     "at": 10
+    },
+    {
+     "kind": "cmd",
+     "text": "ls -l pg_tblspc",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "... 16384 -> /srv/ssd1/pgtbs",
+     "at": 10
+    },
+    {
+     "kind": "comment",
+     "text": "-- output trimmed",
+     "at": 10
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 11,
+   "to": 13,
+   "heading": "Move a table",
+   "title": "psql: appdb",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT pg_relation_filepath(",
+     "at": 11,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  'orders');",
+     "at": 11,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": " base/16386/16388",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "text": "ALTER TABLE orders",
+     "at": 11,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  SET TABLESPACE fastspace;",
+     "at": 11,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "ALTER TABLE",
+     "at": 11
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT pg_relation_filepath(",
+     "at": 12,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  'orders');",
+     "at": 12,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": " pg_tblspc/16384/PG_16_202307071/",
+     "at": 12
+    },
+    {
+     "kind": "out",
+     "text": " 16386/16395",
+     "at": 12
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 13,
+   "to": 14,
+   "heading": "Indexes stay behind",
+   "title": "psql: appdb",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT pg_relation_filepath(",
+     "at": 13,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  'orders_pkey');",
+     "at": 13,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": " base/16386/16393",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "text": "ALTER INDEX orders_pkey",
+     "at": 13,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  SET TABLESPACE fastspace;",
+     "at": 13,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "ALTER INDEX",
+     "at": 13
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 14,
+   "to": 15,
+   "heading": "The lock it takes",
+   "title": "psql: appdb",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "BEGIN;",
+     "at": 14,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "ALTER TABLE orders",
+     "at": 14,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  SET TABLESPACE pg_default;",
+     "at": 14,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT mode FROM pg_locks",
+     "at": 14,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": " WHERE relation =",
+     "at": 14,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  'orders'::regclass;",
+     "at": 14,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "        mode",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "---------------------",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": " AccessExclusiveLock",
+     "at": 14
+    },
+    {
+     "kind": "cmd",
+     "text": "ROLLBACK;",
+     "at": 14,
+     "prompt": "appdb=# "
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 15,
+   "to": 17,
+   "heading": "Who may use it",
+   "title": "psql: appdb",
+   "lines": [
+    {
+     "kind": "comment",
+     "text": "-- SET ROLE app_user;",
+     "at": 15
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE TABLE t1 (i int)",
+     "at": 15,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  TABLESPACE fastspace;",
+     "at": 15,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied for",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "        tablespace fastspace",
+     "at": 15
+    },
+    {
+     "kind": "comment",
+     "text": "-- as postgres",
+     "at": 16
+    },
+    {
+     "kind": "cmd",
+     "text": "GRANT CREATE ON TABLESPACE",
+     "at": 16,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  fastspace TO app_user;",
+     "at": 16,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "GRANT",
+     "at": 16
+    },
+    {
+     "kind": "comment",
+     "text": "-- as app_user again: same CREATE",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": "CREATE TABLE",
+     "at": 16
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 17,
+   "to": 19,
+   "heading": "Two settings",
+   "columns": 1,
+   "items": [
+    {
+     "at": 17,
+     "icon": "table",
+     "title": "default_tablespace",
+     "text": "new tables and indexes with no TABLESPACE clause. Default: empty",
+     "color": "cyan"
+    },
+    {
+     "at": 18,
+     "icon": "layers",
+     "title": "temp_tablespaces",
+     "text": "temp tables, their indexes and sort files. Default: empty",
+     "color": "purple"
+    }
+   ]
+  },
+  {
+   "type": "cards",
+   "from": 19,
+   "to": 21,
+   "heading": "Operational risks",
+   "columns": 1,
+   "items": [
+    {
+     "at": 19,
+     "icon": "layers",
+     "title": "Part of the cluster",
+     "text": "depends on metadata in the main data directory",
+     "color": "orange"
+    },
+    {
+     "at": 19,
+     "icon": "backup",
+     "title": "Not a standalone backup",
+     "text": "cannot attach to another cluster or back up alone",
+     "color": "amber"
+    },
+    {
+     "at": 20,
+     "icon": "alert",
+     "title": "Lose it, risk the cluster",
+     "text": "cluster might become unreadable or unable to start",
+     "color": "red"
+    },
+    {
+     "at": 20,
+     "icon": "disk",
+     "title": "Reliable storage only",
+     "text": "no RAM disk, no removable or transient storage",
+     "color": "red"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 21,
+   "to": 22,
+   "kind": "fact",
+   "title": "pg_basebackup",
+   "text": "Plain format writes each tablespace to the same absolute path, unless you remap it with the -T option (tablespace mapping)."
+  },
+  {
+   "type": "callout",
+   "from": 22,
+   "to": 23,
+   "kind": "myth",
+   "title": "Tablespace = speed?",
+   "text": "It is a location, not tuning. Usually not much point in more than one per file system."
+  },
+  {
+   "type": "checklist",
+   "from": 23,
+   "to": 24,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 23,
+     "title": "A location, not a tuning knob"
+    },
+    {
+     "at": 23,
+     "title": "Reliable storage only"
+    },
+    {
+     "at": 23,
+     "title": "GRANT CREATE to app roles"
+    },
+    {
+     "at": 23,
+     "title": "Move indexes separately"
+    },
+    {
+     "at": 23,
+     "title": "Plan for ACCESS EXCLUSIVE"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 24,
+   "to": 25,
+   "next": "Ep 26 \u00b7 Extensions: Install, Create, Manage"
+  }
+ ]
+}
