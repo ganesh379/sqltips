@@ -73,3 +73,4 @@
 - 2026-11-25 [PostgreSQL] pg_stat_statements -> _drafts/2026-11-25-postgresql-postgresql-dba-part-25-pg-stat-statements.json
 - 2026-11-26 [PostgreSQL] postgresql explain analyze buffers -> _drafts/2026-11-26-postgresql-postgresql-dba-part-26-explain-analyze-buffers.json
 - 2026-11-27 [PostgreSQL] postgresql index types -> _drafts/2026-11-27-postgresql-postgresql-dba-part-27-index-strategy.json
+- 2026-11-28 [PostgreSQL] postgresql generate_series date -> _drafts/2026-11-28-postgresql-postgresql-generate-series-date.json

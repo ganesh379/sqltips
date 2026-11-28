@@ -1,0 +1,1090 @@
+{
+ "schemaVersion": 1,
+ "title": "PostgreSQL generate_series Date: Fill Missing Dates in Reports",
+ "slug": "postgresql-generate-series-date",
+ "category": "postgresql",
+ "description": "Generate a list of dates in PostgreSQL with generate_series and fill missing days in reports with 0. Real examples: daily, hourly, monthly and per store.",
+ "focusKeyword": "postgresql generate_series date",
+ "tags": [
+  "postgresql",
+  "generate-series",
+  "dates",
+  "reporting",
+  "sql"
+ ],
+ "related": [
+  "/posts/postgresql/postgresql-distinct-on/"
+ ],
+ "sources": [
+  {
+   "title": "PostgreSQL 18 docs: Set Returning Functions",
+   "url": "https://www.postgresql.org/docs/18/functions-srf.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Date/Time Functions and Operators",
+   "url": "https://www.postgresql.org/docs/18/functions-datetime.html"
+  },
+  {
+   "title": "PostgreSQL 18 docs: Table Expressions (table functions, LATERAL)",
+   "url": "https://www.postgresql.org/docs/18/queries-table-expressions.html"
+  },
+  {
+   "title": "PostgreSQL 16 release notes (generate_series time zone argument)",
+   "url": "https://www.postgresql.org/docs/release/16.0/"
+  }
+ ],
+ "reviewNotes": "Regular Saturday article (not a series part). TESTED ON PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on Ubuntu 24.04.5 LTS, NOT on 18: the PGDG repository was reachable but postgresql-18 could not be installed because its dependency liburing2 comes from the Ubuntu archive, which the sandbox network blocks. Every function, signature and behaviour used here is identical in the PostgreSQL 18.7 docs (functions-srf.html), and all outputs are plain SQL results that do not depend on the server version, so no output is captioned as expected; please re-run one or two queries on 18 if you want certainty. Docs followed: /docs/18/ pages (note /docs/current/ now shows PostgreSQL 19, released 19 Nov 2026; the generate_series table is unchanged there). The four-argument time zone form was added in PostgreSQL 16 per the 16.0 release notes. DST example adapted from the official docs example (stop date shortened). The sensor_readings temperatures use random(), so only count/min/max are shown. Only one related live article fits (DISTINCT ON); the window functions and lateral join drafts are not live yet.",
+ "generatedAt": "2026-11-28T00:00:00Z",
+ "blocks": [
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To generate a list of dates in PostgreSQL, call <code class=\"inline-code\">generate_series(start, stop, step)</code> with a date range and an interval step, for example <code class=\"inline-code\">generate_series(date '2026-11-01', date '2026-11-07', interval '1 day')</code>. It returns one row per day. Cast each value with <code class=\"inline-code\">::date</code> because the function actually returns timestamps."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The most common use is a report that must show every day, even days with no sales. A plain GROUP BY only returns days that have rows. If you LEFT JOIN your data to a generated calendar, the empty days appear with a total of 0."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This tutorial shows the full pattern on a small orders table: daily and hourly reports, per-store calendars, month-end dates, running totals, finding missing days and creating test data. Every query was run and the output is real."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How generate_series works",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "<code class=\"inline-code\">generate_series</code> is a <b>set-returning function</b>: a function that returns many rows instead of one value. You use it in the FROM clause like a table. It starts at <i>start</i>, adds <i>step</i> again and again, and stops once the next value would pass <i>stop</i>. The stop value is included when the series lands on it exactly."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "PostgreSQL 18 has these forms:"
+   }
+  },
+  {
+   "type": "table",
+   "data": {
+    "withHeadings": true,
+    "content": [
+     [
+      "Arguments",
+      "Returns",
+      "Step"
+     ],
+     [
+      "integer, integer [, integer]",
+      "setof integer",
+      "optional, default 1"
+     ],
+     [
+      "bigint, bigint [, bigint]",
+      "setof bigint",
+      "optional, default 1"
+     ],
+     [
+      "numeric, numeric [, numeric]",
+      "setof numeric",
+      "optional, default 1"
+     ],
+     [
+      "timestamp, timestamp, interval",
+      "setof timestamp",
+      "required"
+     ],
+     [
+      "timestamptz, timestamptz, interval [, timezone text]",
+      "setof timestamptz",
+      "required"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A few rules from the documentation that explain most surprises:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "If the step is positive and start is greater than stop, you get zero rows (and the reverse for a negative step). No error is raised.",
+      "items": []
+     },
+     {
+      "content": "If any argument is NULL, you get zero rows.",
+      "items": []
+     },
+     {
+      "content": "A step of zero is an error.",
+      "items": []
+     },
+     {
+      "content": "There is no separate <code class=\"inline-code\">date</code> version. When you pass dates, PostgreSQL converts them to <code class=\"inline-code\">timestamp with time zone</code> and uses that version.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Start with numbers to see the basic behaviour:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT * FROM generate_series(1, 5);\n\nSELECT * FROM generate_series(10, 0, -5);",
+    "caption": "Integer series, ascending and descending"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " generate_series \n-----------------\n               1\n               2\n               3\n               4\n               5\n(5 rows)\n\n generate_series \n-----------------\n              10\n               5\n               0\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The second query counts down because the step is negative. Notice that 0 is included: the series reached the stop value exactly."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Generate a series of dates",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Now the date version. Pass a start date, an end date and an interval:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT generate_series(date '2026-11-01', date '2026-11-05', interval '1 day');",
+    "caption": "Five days as timestamps"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "    generate_series     \n------------------------\n 2026-11-01 00:00:00+00\n 2026-11-02 00:00:00+00\n 2026-11-03 00:00:00+00\n 2026-11-04 00:00:00+00\n 2026-11-05 00:00:00+00\n(5 rows)",
+    "caption": "Output (session TimeZone is UTC)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "You asked for dates but got timestamps with a time zone. Check the type with <code class=\"inline-code\">pg_typeof</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT pg_typeof(g)\nFROM generate_series(date '2026-11-01', date '2026-11-01', interval '1 day') AS g;",
+    "caption": "Which type comes back?"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "        pg_typeof         \n--------------------------\n timestamp with time zone\n(1 row)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To get plain dates, give the function call an alias and cast it with <code class=\"inline-code\">::date</code>:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT g::date AS day\nFROM generate_series(date '2026-11-01', date '2026-11-05', interval '1 day') AS g;",
+    "caption": "Five days as dates"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "    day     \n------------\n 2026-11-01\n 2026-11-02\n 2026-11-03\n 2026-11-04\n 2026-11-05\n(5 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "An equivalent approach uses the integer version and the date-plus-integer operator (<code class=\"inline-code\">date + 7</code> means seven days later). This returns real <code class=\"inline-code\">date</code> values with no cast:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT date '2026-11-01' + n AS day\nFROM generate_series(0, 4) AS n;",
+    "caption": "Dates from an integer series"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The output is the same five dates. Both styles are fine. The interval style reads more naturally when the step is a week, a month or an hour."
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "tip",
+    "title": "",
+    "text": "In <code class=\"inline-code\">... FROM generate_series(...) AS g</code>, the alias <code class=\"inline-code\">g</code> names both the row source and its single column, so you can write <code class=\"inline-code\">g::date</code> directly. You can also name the column explicitly with <code class=\"inline-code\">AS t(day)</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Sample setup: an orders table with gaps",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Create a small orders table. Some days have several orders, and 3, 5 and 6 November have none:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE orders (\n  order_id    integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  order_date  date          NOT NULL,\n  store       text          NOT NULL,\n  amount      numeric(10,2) NOT NULL\n);\n\nINSERT INTO orders (order_date, store, amount) VALUES\n  ('2026-11-01', 'Chennai',   1200.00),\n  ('2026-11-01', 'Pune',       450.00),\n  ('2026-11-02', 'Chennai',    800.00),\n  ('2026-11-04', 'Pune',       975.50),\n  ('2026-11-04', 'Chennai',    300.00),\n  ('2026-11-07', 'Chennai',   1500.00);",
+    "caption": "Sample data"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "A normal daily report groups by the date:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT order_date, sum(amount) AS total\nFROM orders\nGROUP BY order_date\nORDER BY order_date;",
+    "caption": "Daily totals without gap filling"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_date |  total  \n------------+---------\n 2026-11-01 | 1650.00\n 2026-11-02 |  800.00\n 2026-11-04 | 1275.50\n 2026-11-07 | 1500.00\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only four rows. A chart built from this would draw a straight line from 4 to 7 November and hide the three days with no sales. That is the problem generate_series solves."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fill missing dates with a LEFT JOIN",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Generate the full calendar first, then LEFT JOIN the orders to it. A LEFT JOIN keeps every row from the left side (the calendar) even when no order matches."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT d::date AS order_date,\n       COALESCE(sum(o.amount), 0) AS total,\n       count(o.order_id) AS orders\nFROM generate_series(date '2026-11-01', date '2026-11-07', interval '1 day') AS d\nLEFT JOIN orders o ON o.order_date = d::date\nGROUP BY d\nORDER BY d;",
+    "caption": "Daily report with every day shown"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_date |  total  | orders \n------------+---------+--------\n 2026-11-01 | 1650.00 |      2\n 2026-11-02 |  800.00 |      1\n 2026-11-03 |       0 |      0\n 2026-11-04 | 1275.50 |      2\n 2026-11-05 |       0 |      0\n 2026-11-06 |       0 |      0\n 2026-11-07 | 1500.00 |      1\n(7 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "All seven days are there. Three details make this work:"
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "<code class=\"inline-code\">sum()</code> of no rows is NULL, so <code class=\"inline-code\">COALESCE(sum(o.amount), 0)</code> turns it into 0.",
+      "items": []
+     },
+     {
+      "content": "<code class=\"inline-code\">count(o.order_id)</code> counts only non-NULL values, so empty days get 0. Using <code class=\"inline-code\">count(*)</code> here would wrongly return 1 for empty days, because the calendar row itself is counted.",
+      "items": []
+     },
+     {
+      "content": "The query groups by the calendar column d, not by o.order_date, which is NULL on the empty days.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "To build the range from the data instead of typing dates, read the minimum and maximum first. The function can use columns from an earlier item in FROM:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT d::date AS order_date, COALESCE(sum(o.amount), 0) AS total\nFROM (SELECT min(order_date) AS lo, max(order_date) AS hi FROM orders) AS r\nCROSS JOIN generate_series(r.lo, r.hi, interval '1 day') AS d\nLEFT JOIN orders o ON o.order_date = d::date\nGROUP BY d\nORDER BY d;",
+    "caption": "Calendar range taken from the table"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This returns the same seven rows. In a real report you would usually pass the range as parameters, for example the first and last day of the month the user picked."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Fill gaps for each store",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "If the report shows one line per store, each store needs its own full calendar. CROSS JOIN the list of stores with the dates (every store paired with every day), then LEFT JOIN the orders on both columns:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT s.store, d::date AS order_date, COALESCE(sum(o.amount), 0) AS total\nFROM (SELECT DISTINCT store FROM orders) AS s\nCROSS JOIN generate_series(date '2026-11-01', date '2026-11-04', interval '1 day') AS d\nLEFT JOIN orders o ON o.store = s.store AND o.order_date = d::date\nGROUP BY s.store, d\nORDER BY s.store, d;",
+    "caption": "One calendar per store"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "  store  | order_date |  total  \n---------+------------+---------\n Chennai | 2026-11-01 | 1200.00\n Chennai | 2026-11-02 |  800.00\n Chennai | 2026-11-03 |       0\n Chennai | 2026-11-04 |  300.00\n Pune    | 2026-11-01 |  450.00\n Pune    | 2026-11-02 |       0\n Pune    | 2026-11-03 |       0\n Pune    | 2026-11-04 |  975.50\n(8 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Two stores times four days gives eight rows. In production, take the store list from a stores master table rather than from orders, so a store with no orders at all in the period still appears."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Running totals over the filled calendar",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Once every day is present, a window function can add a running total. Days without sales keep the previous running value, which is what a cumulative chart should show:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT d::date AS order_date,\n       COALESCE(sum(o.amount), 0) AS day_total,\n       sum(COALESCE(sum(o.amount), 0)) OVER (ORDER BY d) AS running_total\nFROM generate_series(date '2026-11-01', date '2026-11-07', interval '1 day') AS d\nLEFT JOIN orders o ON o.order_date = d::date\nGROUP BY d\nORDER BY d;",
+    "caption": "Daily and running totals"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_date | day_total | running_total \n------------+-----------+---------------\n 2026-11-01 |   1650.00 |       1650.00\n 2026-11-02 |    800.00 |       2450.00\n 2026-11-03 |         0 |       2450.00\n 2026-11-04 |   1275.50 |       3725.50\n 2026-11-05 |         0 |       3725.50\n 2026-11-06 |         0 |       3725.50\n 2026-11-07 |   1500.00 |       5225.50\n(7 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The inner <code class=\"inline-code\">sum</code> is the GROUP BY aggregate; the outer <code class=\"inline-code\">sum(...) OVER (ORDER BY d)</code> adds those daily values up in date order."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Find the missing dates",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Sometimes you only want the list of days with no data, for example to check that a daily load job ran. Use <code class=\"inline-code\">NOT EXISTS</code> against the calendar:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT d::date AS missing_day\nFROM generate_series(date '2026-11-01', date '2026-11-07', interval '1 day') AS d\nWHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.order_date = d::date)\nORDER BY d;",
+    "caption": "Days with no orders"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " missing_day \n-------------\n 2026-11-03\n 2026-11-05\n 2026-11-06\n(3 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Monthly series and the month-end trap",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Monthly series work the same way with an interval of one month:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT m::date AS month_start\nFROM generate_series(date '2026-01-01', date '2026-06-01', interval '1 month') AS m;",
+    "caption": "First day of each month"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " month_start \n-------------\n 2026-01-01\n 2026-02-01\n 2026-03-01\n 2026-04-01\n 2026-05-01\n 2026-06-01\n(6 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Starting on the 1st is safe. Starting on the 31st is not. Suppose you want a billing date on the last day of each month:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT m::date AS bill_date\nFROM generate_series(date '2026-01-31', date '2026-06-30', interval '1 month') AS m;",
+    "caption": "Wrong: the dates drift to the 28th"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " bill_date  \n------------\n 2026-01-31\n 2026-02-28\n 2026-03-28\n 2026-04-28\n 2026-05-28\n 2026-06-28\n(6 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This happens because generate_series adds the step to the previous value. When PostgreSQL adds one month to 31 January, February has no 31st, so it uses the last day, 28 February. The next step adds one month to 28 February and gets 28 March, and so on. The day never moves back to 31."
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Fix it by stepping from the first of each month and then going to the end of that month:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT (m + interval '1 month' - interval '1 day')::date AS month_end\nFROM generate_series(date '2026-01-01', date '2026-06-01', interval '1 month') AS m;",
+    "caption": "Correct month-end dates"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " month_end  \n------------\n 2026-01-31\n 2026-02-28\n 2026-03-31\n 2026-04-30\n 2026-05-31\n 2026-06-30\n(6 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Another fix is to always add to the original start date, multiplying the interval by a counter. Each date is then calculated from 31 January, not from the previous result:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT (date '2026-01-31' + n * interval '1 month')::date AS bill_date\nFROM generate_series(0, 5) AS n;",
+    "caption": "Correct: offset from a fixed start"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This returns 31 January, 28 February, 31 March, 30 April, 31 May and 30 June."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Hourly reports on timestamp columns",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Most event tables store a <code class=\"inline-code\">timestamptz</code> rather than a date. Here is a payments table with times in India Standard Time:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET TimeZone = 'Asia/Kolkata';\n\nCREATE TABLE payments (\n  payment_id  integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  paid_at     timestamptz   NOT NULL,\n  amount      numeric(10,2) NOT NULL\n);\n\nINSERT INTO payments (paid_at, amount) VALUES\n  ('2026-11-27 09:15+05:30', 250.00),\n  ('2026-11-27 09:40+05:30', 100.00),\n  ('2026-11-27 11:05+05:30', 600.00),\n  ('2026-11-27 12:59+05:30',  80.00);",
+    "caption": "Sample payments"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Generate one row per hour and join each payment to the hour it falls in, using a half-open range: greater than or equal to the start, and strictly less than the start plus one hour."
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT h AS hour_start,\n       count(p.payment_id) AS payments,\n       COALESCE(sum(p.amount), 0) AS total\nFROM generate_series(timestamptz '2026-11-27 09:00+05:30',\n                     timestamptz '2026-11-27 12:00+05:30',\n                     interval '1 hour') AS h\nLEFT JOIN payments p\n       ON p.paid_at >= h\n      AND p.paid_at <  h + interval '1 hour'\nGROUP BY h\nORDER BY h;",
+    "caption": "Payments per hour, empty hours included"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "        hour_start         | payments | total  \n---------------------------+----------+--------\n 2026-11-27 09:00:00+05:30 |        2 | 350.00\n 2026-11-27 10:00:00+05:30 |        0 |      0\n 2026-11-27 11:00:00+05:30 |        1 | 600.00\n 2026-11-27 12:00:00+05:30 |        1 |  80.00\n(4 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "The 10:00 hour shows 0, and the 12:59 payment lands in the 12:00 hour. The half-open range means a payment at exactly 10:00:00 belongs to the 10:00 hour only, never to both. It also lets PostgreSQL use an index on <code class=\"inline-code\">paid_at</code>, which a condition like <code class=\"inline-code\">date_trunc('hour', paid_at) = h</code> cannot do without an expression index."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Time zones and daylight saving",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "For <code class=\"inline-code\">timestamptz</code>, PostgreSQL works out times of day in the session's <code class=\"inline-code\">TimeZone</code> setting. India has no daylight saving, so a step of one day is always 24 hours there. In zones that do change clocks, one day is not always 24 hours. Since PostgreSQL 16 you can pass the time zone as a fourth argument, so the series follows local midnight in that zone whatever the session setting is:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SET TimeZone = 'UTC';\n\nSELECT * FROM generate_series('2001-10-22 00:00 -04:00'::timestamptz,\n                              '2001-10-30 00:00 -05:00'::timestamptz,\n                              '1 day'::interval, 'America/New_York');",
+    "caption": "Daily series in New York time, shown in UTC"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "    generate_series     \n------------------------\n 2001-10-22 04:00:00+00\n 2001-10-23 04:00:00+00\n 2001-10-24 04:00:00+00\n 2001-10-25 04:00:00+00\n 2001-10-26 04:00:00+00\n 2001-10-27 04:00:00+00\n 2001-10-28 04:00:00+00\n 2001-10-29 05:00:00+00\n 2001-10-30 05:00:00+00\n(9 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Each value is midnight in New York. After the clocks went back on 28 October 2001, midnight in New York became 05:00 UTC instead of 04:00 UTC. Before PostgreSQL 16 this four-argument form does not exist; set the session TimeZone instead."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Generate test data quickly",
+    "level": 2
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "generate_series is also the quickest way to fill a table with rows for testing a query or an index. This creates one reading per minute for November 2026, using <code class=\"inline-code\">random()</code> for the values:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "CREATE TABLE sensor_readings AS\nSELECT g AS reading_at,\n       round((20 + random() * 10)::numeric, 1) AS temp_c\nFROM generate_series(timestamptz '2026-11-01 00:00+00',\n                     timestamptz '2026-11-30 23:59+00',\n                     interval '1 minute') AS g;\n\nSELECT count(*), min(reading_at), max(reading_at) FROM sensor_readings;",
+    "caption": "43,200 rows of test data"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " count |          min           |          max           \n-------+------------------------+------------------------\n 43200 | 2026-11-01 00:00:00+00 | 2026-11-30 23:59:00+00\n(1 row)",
+    "caption": "Output (session TimeZone is UTC)"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "30 days times 1,440 minutes gives 43,200 rows. The temperatures are random, so your values will differ, but the count and range will match."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Common mistakes",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "1. Leaving out the step for dates",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT * FROM generate_series(date '2026-11-01', date '2026-11-05');",
+    "caption": "No step given"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": "ERROR:  function generate_series(date, date) does not exist\nLINE 1: SELECT * FROM generate_series(date '2026-11-01', date '2026-...\n                      ^\nHINT:  No function matches the given name and argument types. You might need to add explicit type casts.",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Only the numeric forms have a default step. For dates and timestamps, always pass an interval such as <code class=\"inline-code\">interval '1 day'</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "2. Filtering the joined table in WHERE",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "This query is meant to show Pune's sales for every day, but the store filter is in WHERE:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT d::date AS order_date, COALESCE(sum(o.amount), 0) AS total\nFROM generate_series(date '2026-11-01', date '2026-11-07', interval '1 day') AS d\nLEFT JOIN orders o ON o.order_date = d::date\nWHERE o.store = 'Pune'\nGROUP BY d\nORDER BY d;",
+    "caption": "Wrong: the empty days disappear"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_date | total  \n------------+--------\n 2026-11-01 | 450.00\n 2026-11-04 | 975.50\n(2 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "On the empty days <code class=\"inline-code\">o.store</code> is NULL, so <code class=\"inline-code\">o.store = 'Pune'</code> is not true and WHERE removes those rows. The LEFT JOIN now behaves like an inner join. Move the condition into the ON clause:"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT d::date AS order_date, COALESCE(sum(o.amount), 0) AS total\nFROM generate_series(date '2026-11-01', date '2026-11-07', interval '1 day') AS d\nLEFT JOIN orders o ON o.order_date = d::date AND o.store = 'Pune'\nGROUP BY d\nORDER BY d;",
+    "caption": "Correct: filter in ON"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " order_date | total  \n------------+--------\n 2026-11-01 | 450.00\n 2026-11-02 |      0\n 2026-11-03 |      0\n 2026-11-04 | 975.50\n 2026-11-05 |      0\n 2026-11-06 |      0\n 2026-11-07 |      0\n(7 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "3. Start and stop in the wrong order",
+    "level": 3
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "postgresql",
+    "code": "SELECT * FROM generate_series(date '2026-11-05', date '2026-11-01', interval '1 day');",
+    "caption": "Start after stop with a positive step"
+   }
+  },
+  {
+   "type": "sqlcode",
+   "data": {
+    "language": "text",
+    "code": " generate_series \n-----------------\n(0 rows)",
+    "caption": "Output"
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No error, just nothing. If a report is suddenly empty, check that start is before stop and that neither value is NULL (a NULL from <code class=\"inline-code\">max()</code> on an empty table also gives zero rows). For a descending series use a negative step such as <code class=\"inline-code\">interval '-1 day'</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "4. Other quick ones",
+    "level": 3
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Using <code class=\"inline-code\">count(*)</code> instead of <code class=\"inline-code\">count(o.order_id)</code> on the joined side, which reports 1 order on empty days.",
+      "items": []
+     },
+     {
+      "content": "Grouping by the data column (o.order_date) instead of the calendar column, which collapses all empty days into one NULL row.",
+      "items": []
+     },
+     {
+      "content": "Starting a monthly series on the 29th, 30th or 31st and getting dates that drift, as shown above.",
+      "items": []
+     },
+     {
+      "content": "A step of zero: <code class=\"inline-code\">generate_series(1, 5, 0)</code> fails with <code class=\"inline-code\">ERROR:  step size cannot equal zero</code>.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Performance tips",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "unordered",
+    "items": [
+     {
+      "content": "Generating dates is cheap. A one-year daily calendar is 365 rows; even a million integers is fast. The cost is almost always in the join to your data, not in the series.",
+      "items": []
+     },
+     {
+      "content": "Keep the series range tight, the same as the report range. Generating ten years of days to show one month makes the join do needless work.",
+      "items": []
+     },
+     {
+      "content": "Index the column you join on (<code class=\"inline-code\">order_date</code> or <code class=\"inline-code\">paid_at</code>). For timestamp columns, join with a half-open range so the index can be used.",
+      "items": []
+     },
+     {
+      "content": "Filter the data table to the same range as the calendar if you join in a subquery or CTE first, for example <code class=\"inline-code\">WHERE order_date BETWEEN date '2026-11-01' AND date '2026-11-07'</code>.",
+      "items": []
+     },
+     {
+      "content": "If many reports use the same calendar with extra columns (holiday flags, financial week), a permanent calendar table can be simpler than repeating generate_series everywhere.",
+      "items": []
+     }
+    ]
+   }
+  },
+  {
+   "type": "callout",
+   "data": {
+    "type": "note",
+    "title": "",
+    "text": "For a reporting query that picks the latest row per group, such as the last order per store, see <a href=\"/posts/postgresql/postgresql-distinct-on/\">PostgreSQL DISTINCT ON</a>. It combines well with a generated calendar."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Frequently asked questions",
+    "level": 2
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I generate a list of dates between two dates in PostgreSQL?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Use <code class=\"inline-code\">SELECT d::date FROM generate_series(date '2026-11-01', date '2026-11-30', interval '1 day') AS d;</code> Both end dates are included. Change the interval to <code class=\"inline-code\">'1 week'</code> or <code class=\"inline-code\">'1 month'</code> for other steps."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Why does generate_series return a timestamp instead of a date?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "There is no date version of the function. PostgreSQL converts the date arguments to <code class=\"inline-code\">timestamp with time zone</code> and returns that type. Cast the result with <code class=\"inline-code\">::date</code>, or use the integer form with <code class=\"inline-code\">start_date + n</code>."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "How do I show 0 for days with no data?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "LEFT JOIN your table to the generated dates, group by the generated date, and wrap the aggregate in COALESCE: <code class=\"inline-code\">COALESCE(sum(amount), 0)</code>. Put any filter on the joined table in the ON clause, not in WHERE."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Is generate_series inclusive of the end date?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "Yes, when the series lands exactly on the stop value. With a step that skips past it, the last value is the one before stop. For example, generate_series(1, 10, 4) returns 1, 5 and 9."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Does generate_series exist in Oracle?",
+    "level": 3
+   }
+  },
+  {
+   "type": "paragraph",
+   "data": {
+    "text": "No. In Oracle the usual equivalent is CONNECT BY LEVEL against DUAL, or a recursive WITH clause. In PostgreSQL, generate_series is built in and simpler."
+   }
+  },
+  {
+   "type": "header",
+   "data": {
+    "text": "Summary",
+    "level": 2
+   }
+  },
+  {
+   "type": "list",
+   "data": {
+    "style": "checklist",
+    "items": [
+     {
+      "content": "generate_series(start, stop, step) returns one row per value; dates need an interval step.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Dates come back as timestamptz; cast with ::date.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Fill gaps with calendar LEFT JOIN data, GROUP BY the calendar column, COALESCE the aggregate.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use count(column), not count(*), on the joined side.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Put filters on the joined table in ON, not WHERE.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Build month-end dates from the 1st or as start + n * interval '1 month'.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Join timestamps with half-open ranges (>= start AND < start + step).",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     },
+     {
+      "content": "Use the time zone argument (PostgreSQL 16 and later) when daylight saving matters.",
+      "meta": {
+       "checked": true
+      },
+      "items": []
+     }
+    ]
+   }
+  }
+ ],
+ "linkedin": {
+  "post": "Your daily sales report skips the days with zero sales, and the chart quietly lies.\n\nGROUP BY only returns days that have rows. PostgreSQL's generate_series builds the missing calendar for you:\n\n→ generate_series(date '2026-11-01', date '2026-11-30', interval '1 day') returns one row per day, both ends included.\n→ It returns timestamptz, not date. Cast with ::date before you join.\n→ LEFT JOIN your orders to that calendar, GROUP BY the calendar day and wrap the total in COALESCE(sum(amount), 0).\n→ Use count(order_id), not count(*). count(*) reports 1 order on days that had none.\n→ Put filters such as store = 'Pune' in the ON clause. In WHERE they remove the empty days again.\n\nBonus trap: a monthly series that starts on 31 January drifts to the 28th from March onwards, because each step adds one month to the previous value. Start from the 1st and subtract a day instead.\n\nHow do you fill date gaps in your reports today: a calendar table or generate_series?\n\nFull tutorial with examples: link in the first comment.\n#PostgreSQL #SQL #Database #DataAnalytics",
+  "slides": [
+   {
+    "title": "Fill Missing Dates in PostgreSQL Reports",
+    "body": "generate_series, LEFT JOIN and COALESCE, with real output"
+   },
+   {
+    "title": "The problem: GROUP BY hides empty days",
+    "points": [
+     "GROUP BY returns only days that have rows",
+     "Days with no sales simply vanish",
+     "Charts draw a straight line over the gap"
+    ]
+   },
+   {
+    "title": "Step 1: generate the calendar",
+    "body": "There is no date version, so dates come back as timestamptz. Cast to date.",
+    "code": "SELECT d::date AS day\nFROM generate_series(\n  date '2026-11-01',\n  date '2026-11-07',\n  interval '1 day') AS d;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Step 2: LEFT JOIN and COALESCE",
+    "code": "SELECT d::date AS day,\n  COALESCE(sum(o.amount), 0) AS total,\n  count(o.order_id) AS orders\nFROM generate_series(date '2026-11-01',\n  date '2026-11-07', interval '1 day') d\nLEFT JOIN orders o\n  ON o.order_date = d::date\nGROUP BY d ORDER BY d;",
+    "lang": "postgresql"
+   },
+   {
+    "title": "Three mistakes that bring gaps back",
+    "points": [
+     "Filter in WHERE instead of ON: empty days disappear",
+     "count(*) shows 1 order on empty days",
+     "GROUP BY o.order_date merges empty days into one NULL row"
+    ]
+   },
+   {
+    "title": "The month-end trap",
+    "body": "Starting on 31 Jan gives 28 Feb, 28 Mar, 28 Apr. Each step adds a month to the previous value. Offset from a fixed start instead.",
+    "code": "SELECT (date '2026-01-31'\n  + n * interval '1 month')::date\nFROM generate_series(0, 5) AS n;",
+    "lang": "postgresql"
+   }
+  ]
+ }
+}
