@@ -111,7 +111,7 @@ Accuracy rule (from the plan): verify every claim against the official PostgreSQ
   - Objective: Explain tablespace mapping, storage placement, permissions and operational risks; avoid treating tablespaces as automatic performance tuning.
   - Format: Storage map · Level: Intermediate
   - Hook: Should you move PostgreSQL tables to another disk?
-- [ ] Ep 026 | 2026-11-29 | Extensions: Install, Create and Manage
+- [x] Ep 026 | 2026-11-29 | Extensions: Install, Create and Manage (posted 2026-11-29 13:00, Buffer 6b0a6c25eab081a3f5298105)
   - Objective: Explain extension availability versus CREATE EXTENSION, privileges, versioning and controlled rollout.
   - Format: Extension demo · Level: Intermediate
   - Hook: PostgreSQL extensions: plug-ins for your database.

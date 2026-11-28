@@ -59,3 +59,4 @@ One line per post: date | slot (IST) | channel | category | topic | folder | Buf
 - 2026-11-26 | 13:00 | Instagram | Series Ep 023 | Connection Limits and max_connections | reels/2026-11-26-1300 | 6b067440d8874a038cf5c6a1
 - 2026-11-27 | 13:00 | Instagram | Series Ep 024 | Connection Pooling with PgBouncer | reels/2026-11-27-1300 | 6b07c6ea9f6dda31ccc8cda4
 - 2026-11-28 | 13:00 | Instagram | Series Ep 025 | Tablespaces: When and Why | reels/2026-11-28-1300 | 6b091683062ed764a8e87141
+- 2026-11-29 | 13:00 | Instagram | Series Ep 026 | Extensions: Install, Create and Manage | reels/2026-11-29-1300 | 6b0a6c25eab081a3f5298105
