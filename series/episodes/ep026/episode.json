@@ -1,0 +1,900 @@
+{
+ "ep": 26,
+ "total": 140,
+ "title": "Extensions: Install, Create and Manage",
+ "phase": "Installation & Administration",
+ "lines": [
+  {
+   "say": "PostgreSQL extensions: plug-ins for your database.",
+   "cap": "PostgreSQL extensions: *plug-ins* for your database."
+  },
+  {
+   "say": "This is episode twenty six of the PostgreSQL DBA series. Today: installing and managing extensions.",
+   "cap": "Episode 26: *install, create, manage.*",
+   "cue": "installing"
+  },
+  {
+   "say": "An extension is a package of SQL objects, like functions, data types and operators, managed as one unit.",
+   "cap": "An *extension* = SQL objects managed as *one unit.*",
+   "cue": "package"
+  },
+  {
+   "say": "On disk, it is a control file plus SQL scripts.",
+   "cap": "A *control file* plus *SQL scripts.*",
+   "cue": "control"
+  },
+  {
+   "say": "Many also ship a shared library of C code.",
+   "cap": "Often a *shared library* of C code.",
+   "cue": "library"
+  },
+  {
+   "say": "Key idea: available is not the same as installed.",
+   "cap": "*Available* is not *installed.*",
+   "cue": "available"
+  },
+  {
+   "say": "Step one: the extension's files are installed on the server, for example from operating system packages.",
+   "cap": "Step 1: *files on the server.*",
+   "cue": "server"
+  },
+  {
+   "say": "Step two: CREATE EXTENSION loads it into the current database only.",
+   "cap": "Step 2: *CREATE EXTENSION* in *one database.*",
+   "cue": "CREATE"
+  },
+  {
+   "say": "The view pg_available_extensions shows what the server offers.",
+   "cap": "*pg_available_extensions:* what the server offers.",
+   "cue": "offers"
+  },
+  {
+   "say": "installed_version stays empty until CREATE EXTENSION runs in this database.",
+   "cap": "*installed_version* empty = *not created yet.*",
+   "cue": "empty"
+  },
+  {
+   "say": "In psql, backslash dx lists what this database has. Output trimmed.",
+   "cap": "*\\dx* lists installed extensions.",
+   "cue": "lists"
+  },
+  {
+   "say": "Who can create one? Usually only a superuser.",
+   "cap": "Usually: *superuser only.*",
+   "cue": "superuser"
+  },
+  {
+   "say": "But trusted extensions, like pg_trgm and pgcrypto, need only CREATE privilege on the database.",
+   "cap": "*Trusted:* CREATE on the database is enough.",
+   "cue": "trusted"
+  },
+  {
+   "say": "As app_user, pg_trgm worked.",
+   "cap": "app_user: *pg_trgm worked.*",
+   "cue": "worked"
+  },
+  {
+   "say": "dblink is not trusted, so: permission denied to create extension.",
+   "cap": "dblink: *permission denied.*",
+   "cue": "permission"
+  },
+  {
+   "say": "Files missing on the server? The error is: extension is not available.",
+   "cap": "Missing files: *not available.*",
+   "cue": "error"
+  },
+  {
+   "say": "Versions are per database. Here pg_trgm one point five is installed, and the default is one point six.",
+   "cap": "Installed *1.5,* default *1.6.*",
+   "cue": "default"
+  },
+  {
+   "say": "ALTER EXTENSION pg_trgm UPDATE moves it up. Run it again: already installed.",
+   "cap": "*ALTER EXTENSION ... UPDATE*",
+   "cue": "again"
+  },
+  {
+   "say": "With a pg_trgm index in place, DROP EXTENSION is refused.",
+   "cap": "Dependent index: *DROP is refused.*",
+   "cue": "refused"
+  },
+  {
+   "say": "CASCADE would drop that index too, so read the detail first.",
+   "cap": "*CASCADE* drops the *dependents* too.",
+   "cue": "detail"
+  },
+  {
+   "say": "pg_stat_statements must be listed in shared_preload_libraries, which needs a server restart.",
+   "cap": "*shared_preload_libraries* = *restart.*",
+   "cue": "restart"
+  },
+  {
+   "say": "Without it, CREATE EXTENSION works, but the view fails: must be loaded via shared_preload_libraries.",
+   "cap": "Created, but *not loaded.*",
+   "cue": "fails"
+  },
+  {
+   "say": "pg_dump writes only the CREATE EXTENSION command, so the restore server needs the same files.",
+   "cap": "*pg_dump:* only *CREATE EXTENSION.*",
+   "cue": "files"
+  },
+  {
+   "say": "A common rollout practice: test in staging, pin the version, use migrations, and check every database.",
+   "cap": "Rollout: *staging,* *pin version,* *migrations.*",
+   "cue": "pin"
+  },
+  {
+   "say": "Recap: files on the server, CREATE EXTENSION per database, trusted or superuser, and ALTER EXTENSION UPDATE.",
+   "cap": "Recap: *available,* *created,* *updated.*",
+   "cue": "trusted"
+  },
+  {
+   "say": "Next up: useful PostgreSQL catalogs and the information schema. Follow so you don't miss it, and send this to a friend who's learning PostgreSQL.",
+   "cap": "Next up: *catalogs.* *Follow* and share."
+  }
+ ],
+ "scenes": [
+  {
+   "type": "hook",
+   "from": 0,
+   "to": 1,
+   "text": "PostgreSQL extensions: *plug-ins* for your database",
+   "sub": "Episode 26 of 140"
+  },
+  {
+   "type": "title",
+   "from": 1,
+   "to": 2,
+   "kicker": "EPISODE 26 \u00b7 INSTALLATION & ADMINISTRATION",
+   "title": "Extensions: Install, Create and Manage",
+   "sub": "Availability, privileges, versions"
+  },
+  {
+   "type": "diagram",
+   "from": 2,
+   "to": 5,
+   "heading": "What an extension is",
+   "nodes": [
+    {
+     "id": "ctl",
+     "label": "Control file",
+     "sub": "pg_trgm.control",
+     "x": 210,
+     "y": 520,
+     "w": 300,
+     "h": 140,
+     "icon": "file",
+     "color": "cyan",
+     "at": 3
+    },
+    {
+     "id": "sql",
+     "label": "SQL scripts",
+     "sub": "install, update",
+     "x": 540,
+     "y": 520,
+     "w": 300,
+     "h": 140,
+     "icon": "file",
+     "color": "green",
+     "at": 3
+    },
+    {
+     "id": "so",
+     "label": "C library",
+     "sub": "pg_trgm.so",
+     "x": 870,
+     "y": 520,
+     "w": 300,
+     "h": 140,
+     "icon": "cpu",
+     "color": "purple",
+     "at": 4
+    },
+    {
+     "id": "ext",
+     "label": "pg_trgm",
+     "sub": "one extension",
+     "x": 540,
+     "y": 860,
+     "w": 360,
+     "h": 140,
+     "icon": "layers",
+     "color": "orange",
+     "at": 2
+    },
+    {
+     "id": "obj",
+     "label": "SQL objects",
+     "sub": "functions, types",
+     "x": 540,
+     "y": 1200,
+     "w": 380,
+     "h": 140,
+     "icon": "database",
+     "color": "blue",
+     "at": 2
+    }
+   ],
+   "edges": [
+    {
+     "from": "ext",
+     "to": "obj",
+     "label": "managed as one",
+     "at": 2,
+     "flow": true,
+     "color": "orange"
+    },
+    {
+     "from": "ctl",
+     "to": "ext",
+     "at": 3,
+     "color": "cyan"
+    },
+    {
+     "from": "sql",
+     "to": "ext",
+     "at": 3,
+     "color": "green"
+    },
+    {
+     "from": "so",
+     "to": "ext",
+     "at": 4,
+     "color": "purple"
+    }
+   ],
+   "focus": [
+    {
+     "at": 2,
+     "id": "obj"
+    },
+    {
+     "at": 3,
+     "id": "ctl"
+    },
+    {
+     "at": 4,
+     "id": "so"
+    }
+   ]
+  },
+  {
+   "type": "diagram",
+   "from": 5,
+   "to": 8,
+   "heading": "Available vs installed",
+   "nodes": [
+    {
+     "id": "av",
+     "label": "Available",
+     "sub": "on the server",
+     "x": 280,
+     "y": 500,
+     "w": 320,
+     "h": 120,
+     "color": "cyan",
+     "shape": "pill",
+     "at": 5
+    },
+    {
+     "id": "in",
+     "label": "Installed",
+     "sub": "in a database",
+     "x": 800,
+     "y": 500,
+     "w": 320,
+     "h": 120,
+     "color": "orange",
+     "shape": "pill",
+     "at": 5
+    },
+    {
+     "id": "srv",
+     "label": "Extension files",
+     "sub": "OS packages",
+     "x": 280,
+     "y": 820,
+     "w": 380,
+     "h": 140,
+     "icon": "server",
+     "color": "cyan",
+     "at": 6
+    },
+    {
+     "id": "app",
+     "label": "appdb",
+     "sub": "CREATE EXTENSION",
+     "x": 800,
+     "y": 1060,
+     "w": 340,
+     "h": 150,
+     "icon": "database",
+     "color": "orange",
+     "shape": "db",
+     "at": 7
+    },
+    {
+     "id": "pgd",
+     "label": "postgres db",
+     "sub": "not created here",
+     "x": 800,
+     "y": 1290,
+     "w": 340,
+     "h": 140,
+     "icon": "database",
+     "color": "blue",
+     "shape": "db",
+     "at": 7
+    }
+   ],
+   "edges": [
+    {
+     "from": "av",
+     "to": "srv",
+     "at": 6,
+     "color": "cyan",
+     "dashed": true
+    },
+    {
+     "from": "srv",
+     "to": "app",
+     "at": 7,
+     "flow": true,
+     "color": "orange"
+    },
+    {
+     "from": "in",
+     "to": "app",
+     "at": 7,
+     "color": "orange",
+     "dashed": true
+    }
+   ],
+   "focus": [
+    {
+     "at": 5,
+     "id": "av"
+    },
+    {
+     "at": 6,
+     "id": "srv"
+    },
+    {
+     "at": 7,
+     "id": "app"
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 8,
+   "to": 10,
+   "heading": "What the server offers",
+   "title": "psql: PostgreSQL 16",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SELECT name, default_version,",
+     "at": 8,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  installed_version",
+     "at": 8,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  FROM pg_available_extensions",
+     "at": 8,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": " WHERE name IN",
+     "at": 8,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  ('pg_trgm','dblink');",
+     "at": 8,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "  name   | default_ver | installed",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": "---------+-------------+----------",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": " dblink  | 1.2         |",
+     "at": 9
+    },
+    {
+     "kind": "out",
+     "text": " pg_trgm | 1.6         |",
+     "at": 9
+    },
+    {
+     "kind": "comment",
+     "text": "-- headers shortened",
+     "at": 9
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 10,
+   "to": 11,
+   "heading": "What this database has",
+   "title": "psql: appdb",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "\\dx",
+     "at": 10,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "  Name   | Version |   Schema",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": "---------+---------+-----------",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": " pg_trgm | 1.6     | public",
+     "at": 10
+    },
+    {
+     "kind": "out",
+     "text": " plpgsql | 1.0     | pg_catalog",
+     "at": 10
+    },
+    {
+     "kind": "comment",
+     "text": "-- Description column trimmed",
+     "at": 10
+    }
+   ]
+  },
+  {
+   "type": "compare",
+   "from": 11,
+   "to": 13,
+   "heading": "Who may create it",
+   "left": {
+    "title": "Not trusted",
+    "color": "red",
+    "rows": [
+     "Superuser only",
+     "e.g. dblink",
+     "Can reach outside the DB"
+    ]
+   },
+   "right": {
+    "title": "Trusted",
+    "color": "green",
+    "rows": [
+     "CREATE on the database",
+     "e.g. pg_trgm, pgcrypto",
+     "Marked in control file"
+    ]
+   },
+   "at": [
+    11,
+    12
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 13,
+   "to": 15,
+   "heading": "Trusted vs not trusted",
+   "title": "psql: appdb as app_user",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SET ROLE app_user;",
+     "at": 13,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE EXTENSION pg_trgm;",
+     "at": 13,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "CREATE EXTENSION",
+     "at": 13
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE EXTENSION dblink;",
+     "at": 14,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  permission denied to",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "  create extension \"dblink\"",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "HINT:  Must be superuser to",
+     "at": 14
+    },
+    {
+     "kind": "out",
+     "text": "  create this extension.",
+     "at": 14
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 15,
+   "to": 16,
+   "heading": "Files not on the server",
+   "title": "psql: appdb",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "CREATE EXTENSION nosuch_ext;",
+     "at": 15,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  extension \"nosuch_ext\"",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "  is not available",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "DETAIL:  Could not open extension",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "  control file ... No such file",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "HINT:  The extension must first be",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "  installed on the system where",
+     "at": 15
+    },
+    {
+     "kind": "out",
+     "text": "  PostgreSQL is running.",
+     "at": 15
+    },
+    {
+     "kind": "comment",
+     "text": "-- path trimmed",
+     "at": 15
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 16,
+   "to": 18,
+   "heading": "Versions per database",
+   "title": "psql: appdb",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "CREATE EXTENSION pg_trgm",
+     "at": 16,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  VERSION '1.5';",
+     "at": 16,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "CREATE EXTENSION",
+     "at": 16
+    },
+    {
+     "kind": "comment",
+     "text": "-- pg_available_extensions:",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": " installed_version | default",
+     "at": 16
+    },
+    {
+     "kind": "out",
+     "text": " 1.5               | 1.6",
+     "at": 16
+    },
+    {
+     "kind": "cmd",
+     "text": "ALTER EXTENSION pg_trgm UPDATE;",
+     "at": 17,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "ALTER EXTENSION",
+     "at": 17
+    },
+    {
+     "kind": "cmd",
+     "text": "ALTER EXTENSION pg_trgm UPDATE;",
+     "at": 17,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "NOTICE:  version \"1.6\" of extension",
+     "at": 17
+    },
+    {
+     "kind": "out",
+     "text": "  \"pg_trgm\" is already installed",
+     "at": 17
+    }
+   ]
+  },
+  {
+   "type": "terminal",
+   "from": 18,
+   "to": 20,
+   "heading": "DROP is guarded",
+   "title": "psql: appdb",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "CREATE INDEX customers_name_trgm",
+     "at": 18,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  ON customers USING gin",
+     "at": 18,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  (name gin_trgm_ops);",
+     "at": 18,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "cmd",
+     "text": "DROP EXTENSION pg_trgm;",
+     "at": 18,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  cannot drop extension",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "  pg_trgm because other objects",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "  depend on it",
+     "at": 18
+    },
+    {
+     "kind": "out",
+     "text": "DETAIL:  index customers_name_trgm",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "  depends on operator class ...",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "HINT:  Use DROP ... CASCADE to drop",
+     "at": 19
+    },
+    {
+     "kind": "out",
+     "text": "  the dependent objects too.",
+     "at": 19
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 20,
+   "to": 21,
+   "kind": "warning",
+   "title": "Preloaded extensions",
+   "text": "pg_stat_statements must be in shared_preload_libraries in postgresql.conf. Adding or removing it needs a server restart."
+  },
+  {
+   "type": "terminal",
+   "from": 21,
+   "to": 22,
+   "heading": "Created, not loaded",
+   "title": "psql: appdb",
+   "lines": [
+    {
+     "kind": "cmd",
+     "text": "SHOW shared_preload_libraries;",
+     "at": 21,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "out",
+     "text": " shared_preload_libraries",
+     "at": 21
+    },
+    {
+     "kind": "out",
+     "text": "--------------------------",
+     "at": 21
+    },
+    {
+     "kind": "out",
+     "text": " ",
+     "at": 21
+    },
+    {
+     "kind": "cmd",
+     "text": "CREATE EXTENSION",
+     "at": 21,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  pg_stat_statements;",
+     "at": 21,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "CREATE EXTENSION",
+     "at": 21
+    },
+    {
+     "kind": "cmd",
+     "text": "SELECT count(*)",
+     "at": 21,
+     "prompt": "appdb=# "
+    },
+    {
+     "kind": "cmd",
+     "text": "  FROM pg_stat_statements;",
+     "at": 21,
+     "prompt": "appdb-# "
+    },
+    {
+     "kind": "out",
+     "text": "ERROR:  pg_stat_statements must be",
+     "at": 21
+    },
+    {
+     "kind": "out",
+     "text": "  loaded via shared_preload_libraries",
+     "at": 21
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "from": 22,
+   "to": 23,
+   "kind": "fact",
+   "title": "pg_dump and extensions",
+   "text": "A dump holds only the CREATE EXTENSION command, not the member objects. The target server needs the extension files installed."
+  },
+  {
+   "type": "steps",
+   "from": 23,
+   "to": 24,
+   "heading": "A careful rollout",
+   "items": [
+    {
+     "at": 23,
+     "icon": "check",
+     "title": "Test in staging",
+     "text": "same PostgreSQL and extension packages"
+    },
+    {
+     "at": 23,
+     "icon": "key",
+     "title": "Pin the version",
+     "text": "CREATE EXTENSION ... VERSION"
+    },
+    {
+     "at": 23,
+     "icon": "file",
+     "title": "Keep it in migrations",
+     "text": "the same script for every environment"
+    },
+    {
+     "at": 23,
+     "icon": "search",
+     "title": "Check every database",
+     "text": "\\dx or pg_extension in each one"
+    }
+   ]
+  },
+  {
+   "type": "checklist",
+   "from": 24,
+   "to": 25,
+   "heading": "Recap",
+   "items": [
+    {
+     "at": 24,
+     "title": "Files on the server first"
+    },
+    {
+     "at": 24,
+     "title": "CREATE EXTENSION per database"
+    },
+    {
+     "at": 24,
+     "title": "Trusted: CREATE privilege"
+    },
+    {
+     "at": 24,
+     "title": "Others: superuser only"
+    },
+    {
+     "at": 24,
+     "title": "ALTER EXTENSION ... UPDATE"
+    },
+    {
+     "at": 24,
+     "title": "Preload needs a restart"
+    }
+   ]
+  },
+  {
+   "type": "outro",
+   "from": 25,
+   "to": 26,
+   "next": "Ep 27 \u00b7 Catalogs and Information Schema"
+  }
+ ]
+}

@@ -1,0 +1,13 @@
+PostgreSQL extensions: plug-ins for your database. Available is not the same as installed.
+
+A PostgreSQL extension is a package of SQL objects managed as one unit: a control file, SQL scripts and often a C library. Its files must first be installed on the server. Then CREATE EXTENSION loads it into the current database only. pg_available_extensions shows what the server offers, and \dx shows what one database has.
+
+Most extensions need a superuser. Trusted ones such as pg_trgm and pgcrypto only need CREATE privilege on the database. In our PostgreSQL 16 lab, app_user created pg_trgm, but dblink failed with: permission denied to create extension "dblink". Missing files give: extension "nosuch_ext" is not available.
+
+Versions are tracked per database: ALTER EXTENSION pg_trgm UPDATE moved 1.5 to the default 1.6. DROP EXTENSION was refused while an index used gin_trgm_ops, and CASCADE would drop that index too. pg_stat_statements must be in shared_preload_libraries, which needs a restart. pg_dump stores only the CREATE EXTENSION command, so the restore server needs the same extension files.
+
+Episode 26 of 140 in the PostgreSQL DBA series. Follow @daily_sql_notes for two new episodes every day.
+
+Send this to a friend who's learning PostgreSQL.
+
+#postgresql #dba #postgres #database #sql

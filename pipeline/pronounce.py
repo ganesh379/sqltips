@@ -69,6 +69,7 @@ WORDS = {
     "pgvector": "P-G vector", "pgaudit": "P-G audit", "pglogical": "P-G logical",
     "pgBadger": "P-G Badger", "pgbadger": "P-G Badger", "PostGIS": "Post-G-I-S",
     "TimescaleDB": "Timescale D-B", "CloudNativePG": "Cloud Native P-G", "pgcrypto": "P-G crypto",
+    "trgm": "trigram", "dblink": "D-B link", "dx": "D-X", "contrib": "con-trib",
     "PL/pgSQL": "P-L P-G S-Q-L", "plpgsql": "P-L P-G S-Q-L", "PL/SQL": "P-L S-Q-L",
     "MySQL": "My-S-Q-L", "NoSQL": "No-S-Q-L", "SQLite": "S-Q-Lite", "pg_stat": "P-G stat",
     "IVFFlat": "I-V-F flat", "HNSW": "H-N-S-W", "GUC": "G-U-C", "GUCs": "G-U-Cs",
